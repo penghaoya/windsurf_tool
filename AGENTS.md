@@ -1,0 +1,105 @@
+# AGENTS.md — windsurf-tools
+
+## 项目定位
+
+Windsurf IDE 无感号池引擎 VSIX 扩展。自动管理多 Windsurf 账号，rate limit 前主动切换，零中断。
+
+## 技术栈
+
+- **语言**: JavaScript (ESM 源码，Vite 构建)
+- **运行时**: VS Code Extension API (vscode ^1.85.0)
+- **前端**: Vue 3 + Vite (Webview 侧边栏)
+- **后端**: Node.js (Extension Host)
+- **构建**: Vite 双流水线 (webview + extension)
+- **打包**: @vscode/vsce → .vsix
+- **网络**: 纯 Node.js https/http/tls，零第三方依赖
+- **数据**: JSON 文件存储 (账号持久化) + 读写 Windsurf 内置 state.vscdb (SQLite，通过 Node.js 22.5+ 内置 `node:sqlite` DatabaseSync)
+
+## 目录结构
+
+```
+windsurf-tools/
+├── src/
+│   ├── extension/              # Extension Host (Node.js ESM → CJS 输出)
+│   │   ├── extension.js        # 主入口，号池引擎，12 命令，10 层防御
+│   │   ├── authService.js      # Firebase 认证链 + Protobuf 积分查询
+│   │   ├── accountManager.js   # 账号 CRUD + 三重持久化 + 号池聚合
+│   │   ├── fingerprintManager.js # 设备指纹 6ID 读取/重置/热轮转
+│   │   ├── sqliteHelper.js     # state.vscdb 读写 (node:sqlite DatabaseSync)
+│   │   └── webviewProvider.js  # Vue 产物加载器 + 消息路由 + 状态推送
+│   └── webview/                # Vue 3 前端 (ESM)
+│       ├── main.js             # Vue 入口
+│       ├── App.vue             # 根组件
+│       ├── composables/useVscode.js  # Extension Host 通信桥接
+│       ├── utils/format.js     # 格式化工具
+│       ├── styles/theme.css    # 主题变量
+│       └── components/         # UI 组件
+│           ├── PoolOverview.vue    # 号池总览
+│           ├── Toolbar.vue         # 工具栏
+│           ├── AddAccount.vue      # 添加账号
+│           ├── AccountList.vue     # 账号列表
+│           ├── AccountCard.vue     # 账号卡片
+│           ├── QuotaMeter.vue      # 额度进度条
+│           └── ToastMessage.vue    # Toast 通知
+├── dist/                       # 构建产物
+│   ├── extension.js            # Extension Host (Vite CJS)
+│   └── webview/                # Vue 产物
+│       ├── index.js
+│       └── index.css
+├── output/                     # VSIX 打包产物
+├── vite.config.js              # Webview 构建配置
+├── vite.config.extension.js    # Extension Host 构建配置
+└── package.json                # VSIX 清单 + 构建脚本
+```
+
+## 构建命令
+
+```bash
+npm run build           # 双构建 (webview + extension)
+npm run build:webview   # 仅 Vue webview → dist/webview/
+npm run build:ext       # 仅 Extension Host → dist/extension.js
+npm run package         # 构建 + 打包 → output/windsurf-tools-{version}.vsix
+npm run install-ext     # 打包并安装到 IDE
+```
+
+## 认证链 (四步)
+
+1. Firebase 登录 (email+password) → idToken
+2. RegisterUser (idToken) → apiKey
+3. provideAuthTokenToAuthProvider (idToken) → 注入 Windsurf session
+4. GetPlanStatus (idToken) → Protobuf 解析 → credits/quota
+
+## 10 层防御
+
+| 层级 | 机制 |
+|------|------|
+| L1-L2 | Context Key 轮询 (quota 检测) |
+| L3-L4 | Context Key 轮询 (model/tier 限流) |
+| L5 | gRPC 容量主动探测 (CheckUserMessageRateLimit) |
+| L6 | 斜率预测 (线性外推) |
+| L7 | 速度检测器 (120s 突变) |
+| L8 | Opus 消息预算守卫 |
+| L9 | 输出通道实时拦截 |
+| L10 | 多窗口协调 (账号隔离+心跳) |
+
+## 数据流
+
+```
+Extension Host                          Vue Webview
+─────────────                          ─────────────
+_pushState() ──── postMessage ────→ useVscode.state (reactive)
+                                       │
+              ◄── postMessage ──── postMessage('requestState')
+              ◄── postMessage ──── postMessage('refresh')
+              ◄── postMessage ──── postMessage('remove', {index})
+```
+
+## 开发规则
+
+- Extension Host 6 个源文件 (含 sqliteHelper.js)
+- 所有源码 ESM (import/export)，构建时 Vite 转 CJS 输出
+- `vscode` 和 Node.js 内置模块作为 external，不打包
+- Webview 通过 `postMessage` 双向通信，不直接访问 Node.js API
+- CSS 使用 VS Code 主题变量 (`--vscode-*`)，适配深/浅色主题
+- 修改后验证: `npm run build` 无报错
+- 发布前验证: `npm run package` 生成 .vsix

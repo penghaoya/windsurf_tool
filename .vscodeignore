@@ -1,0 +1,11 @@
+src/**
+index.html
+node_modules/**
+.gitignore
+vite.config.js
+vite.config.extension.js
+package-lock.json
+**/*.map
+output/**
+dist/webview/index.html
+
