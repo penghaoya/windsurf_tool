@@ -1990,6 +1990,8 @@ async function _seamlessSwitch(context, targetIndex) {
     _quotaHistory = [];
     _velocityLog = [];
     _lastQuota = null;
+    _resetOpusMsgLog(targetIndex); // v12.0: 清除目标账号旧Opus计数，防止切入即触发预算守卫
+    _hourlyMsgLog = []; // 新账号小时消息从0开始
     _heartbeatWindow();
     _logInfo(
       "SWITCH",

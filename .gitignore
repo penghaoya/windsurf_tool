@@ -3,4 +3,3 @@ dist/
 output/
 *.vsix
 .DS_Store
-README.md
