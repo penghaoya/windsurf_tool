@@ -130,19 +130,19 @@ _performSwitch(context, options)
 
 支持参数: `targetPolicy` (same_strategy/quota_first/same_model), `panic`, `refreshPool`, `allowThresholdFallback`, `candidates`
 
-### 账号选择排序 (selectOptimal) — v14.0 废料最小化
+### 账号选择排序 (selectOptimal) — v14.1 价值最大化
 
 - 返回**有序数组** (非单个对象), `findBestForModel` 委托给 `selectOptimal`
 - **Mode-Aware 分组排序**: quota/credits/unknown 三类分别排序后合并
 - 支持 `excludeEmails` (多窗口隔离), `preferredMode`, `modelUid` 过滤
 - 候选数据含 `dailyRemaining`, `weeklyRemaining` 独立字段 (v14.0)
 
-**核心原则: 废料最小化** — 优先消耗"不用就浪费"的账号
+**核心原则: 到期近+额度高 = 最优先** — 最大化"过期前能用掉的额度"
 
 Quota 模式排序 (7级):
 1. **T1 过期紧急度** — urgent(≤3d) > soon(≤7d) > safe(>7d)
-2. **T2 剩余少优先** — 先用完快耗尽的, 减少碎片浪费 (差>15%时生效)
-3. **T3 周额度少优先** — 周重置前用完, 避免重置浪费 (差>15%时生效)
+2. **T2 额度高优先** — 最大化价值榨取 (差>15%时生效)
+3. **T3 周额度高优先** — 更多周内可用容量 (差>15%时生效)
 4. **T4 周重置更近优先** — 即将重置的先用 (>1h差异时生效)
 5. **T5 过期更近优先** — 天数少的先用
 6. **T6 Round-Robin** — 最久未用优先, 均匀消耗
@@ -150,7 +150,7 @@ Quota 模式排序 (7级):
 
 Credits 模式排序 (4级):
 1. **T1 过期紧急度**
-2. **T2 剩余少优先**
+2. **T2 额度高优先**
 3. **T3 过期更近优先**
 4. **T4 Round-Robin**
 

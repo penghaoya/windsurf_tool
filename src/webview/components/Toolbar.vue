@@ -19,13 +19,13 @@ import { postMessage } from '../composables/useVscode.js'
 </script>
 
 <style scoped>
-.toolbar{display:flex;gap:4px;margin-bottom:8px;align-items:center}
+.toolbar{display:flex;gap:3px;margin-bottom:5px;align-items:center}
 .toolbar .spacer{flex:1}
-.tb{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:5px 10px;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);border-radius:var(--R);cursor:pointer;font-size:10px;font-weight:500;transition:all .15s ease;white-space:nowrap}
+.tb{display:inline-flex;align-items:center;justify-content:center;gap:3px;padding:3px 8px;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);border-radius:var(--R3);cursor:pointer;font-size:9px;font-weight:500;transition:all .15s ease;white-space:nowrap}
 .tb:hover{background:var(--sf2);border-color:var(--bd2);color:var(--tx)}
 .tb:active{transform:scale(.97)}
 .tb.primary{background:transparent;border-color:var(--ac);color:var(--ac)}
 .tb.primary:hover{background:var(--ac-bg);border-color:var(--ac);color:var(--ac)}
 .tb svg{flex-shrink:0}
-.tb-icon{padding:5px 7px}
+.tb-icon{padding:3px 5px}
 </style>

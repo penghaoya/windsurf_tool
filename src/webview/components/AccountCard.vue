@@ -4,10 +4,9 @@
     :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired }"
     :id="`row${index}`"
   >
-    <!-- Header -->
+    <!-- Row 1: Tags left + Actions right -->
     <div class="ac-head">
       <span class="dot" :class="statusClass"></span>
-      <span class="ac-name" :title="account.email">{{ account.email }}</span>
       <span v-if="account.usage?.plan" class="a-plan">{{ account.usage.plan }}</span>
       <span v-if="daysTag" class="a-days" :style="{ color: daysColor }">{{ daysTag }}</span>
       <div class="ac-acts">
@@ -59,6 +58,12 @@
           <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
+    </div>
+
+    <!-- Row 2: #序号 + 完整邮箱 -->
+    <div class="ac-email-row">
+      <span class="ac-idx">#{{ index + 1 }}</span>
+      <span class="ac-name" :title="account.email">{{ account.email }}</span>
     </div>
 
     <!-- Quota Meters -->
@@ -208,10 +213,12 @@ onBeforeUnmount(() => {
 .ac.cur{border-color:rgba(94,218,158,.25);background:rgba(94,218,158,.04)}
 .ac.rl{opacity:.45}
 .ac.exp{opacity:.3}
-.ac-head{display:flex;align-items:center;gap:5px;margin-bottom:5px}
+.ac-head{display:flex;align-items:center;gap:5px;margin-bottom:3px}
 .dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
 .dot.ok{background:var(--gn)}.dot.warn{background:var(--yw)}.dot.bad{background:var(--rd)}.dot.dm{background:var(--tx3)}
-.ac-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--tx);font-size:11px}
+.ac-email-row{display:flex;align-items:baseline;gap:4px;margin-bottom:5px}
+.ac-idx{font-size:10px;font-weight:700;color:var(--tx2);flex-shrink:0}
+.ac-name{font-weight:600;color:var(--tx);font-size:11px;word-break:break-all;line-height:1.3}
 .a-plan{font-size:8px;font-weight:600;padding:0 4px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
 .a-days{font-size:9px;font-weight:500;flex-shrink:0}
 .ac-acts{display:flex;gap:1px;flex-shrink:0;margin-left:auto}

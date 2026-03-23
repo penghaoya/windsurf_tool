@@ -53,12 +53,12 @@ function onInput() {
 
 function onFocus() {
   isFocused.value = true
-  if (inputRef.value) inputRef.value.style.height = '68px'
+  if (inputRef.value) inputRef.value.style.height = '60px'
 }
 
 function onBlur() {
   isFocused.value = false
-  if (inputRef.value && !inputText.value.trim()) inputRef.value.style.height = '32px'
+  if (inputRef.value && !inputText.value.trim()) inputRef.value.style.height = '28px'
 }
 
 function doBatch() {
@@ -66,21 +66,21 @@ function doBatch() {
   if (t) {
     postMessage('batchAdd', { text: t })
     inputText.value = ''
-    if (inputRef.value) inputRef.value.style.height = '32px'
+    if (inputRef.value) inputRef.value.style.height = '28px'
   }
 }
 </script>
 
 <style scoped>
-.add-section{margin-bottom:8px}
-.addbar{display:flex;gap:4px;align-items:flex-end}
-.addbar textarea{flex:1;padding:7px 10px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--R);color:var(--tx);font-size:11px;font-family:inherit;resize:none;height:32px;min-height:32px;transition:all .2s ease;line-height:1.4}
+.add-section{margin-bottom:5px}
+.addbar{display:flex;gap:3px;align-items:flex-end}
+.addbar textarea{flex:1;padding:5px 8px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--R3);color:var(--tx);font-size:10px;font-family:inherit;resize:none;height:28px;min-height:28px;transition:all .2s ease;line-height:1.4}
 .addbar textarea::placeholder{color:var(--tx3)}
 .addbar textarea:focus{outline:0;border-color:var(--ac);background:var(--bg);box-shadow:0 0 0 2px var(--ac-bg)}
-.add-btn{width:32px;height:32px;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd);background:transparent;color:var(--tx2);border-radius:var(--R);cursor:pointer;font-size:16px;font-weight:300;transition:all .15s ease;flex-shrink:0}
+.add-btn{width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd);background:transparent;color:var(--tx2);border-radius:var(--R3);cursor:pointer;font-size:14px;font-weight:300;transition:all .15s ease;flex-shrink:0}
 .add-btn:hover{background:var(--sf2);border-color:var(--ac);color:var(--ac);transform:scale(1.05)}
 .add-btn:active{transform:scale(.95)}
-#preview{font-size:9px;color:var(--tx2);max-height:36px;overflow-y:auto;padding:4px 2px 0;line-height:1.6}
+#preview{font-size:8px;color:var(--tx2);max-height:32px;overflow-y:auto;padding:3px 2px 0;line-height:1.5}
 #preview :deep(.pe){color:var(--tx2)}
 #preview :deep(.pp){color:var(--yw)}
 #preview :deep(.pf){color:var(--tx3);font-style:italic}

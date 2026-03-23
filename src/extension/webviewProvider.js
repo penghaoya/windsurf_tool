@@ -109,6 +109,7 @@ class AccountViewProvider {
       effective: this._am.effectiveRemaining(i),
       isExpired: this._am.isExpired ? this._am.isExpired(i) : false,
       planDays: this._am.getPlanDaysRemaining ? this._am.getPlanDaysRemaining(i) : null,
+      planEnd: a.usage?.planEnd || null,
       urgency: this._am.getExpiryUrgency ? this._am.getExpiryUrgency(i) : -1,
       rateLimitInfo: this._am.getRateLimitInfo ? this._am.getRateLimitInfo(i) : null,
     }));
