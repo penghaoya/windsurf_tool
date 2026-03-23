@@ -473,15 +473,17 @@ function _activateBoost() {
 // 解法: 共享状态文件，窗口注册+心跳+账号隔离，selectOptimal排除其他窗口占用。
 
 function _getWindowStatePath() {
-  const appdata =
-    process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
-  return path.join(
-    appdata,
-    "Windsurf",
-    "User",
-    "globalStorage",
-    WINDOW_STATE_FILE,
-  );
+  const p = process.platform;
+  let gsPath;
+  if (p === "win32") {
+    const appdata = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    gsPath = path.join(appdata, "Windsurf", "User", "globalStorage");
+  } else if (p === "darwin") {
+    gsPath = path.join(os.homedir(), "Library", "Application Support", "Windsurf", "User", "globalStorage");
+  } else {
+    gsPath = path.join(os.homedir(), ".config", "Windsurf", "User", "globalStorage");
+  }
+  return path.join(gsPath, WINDOW_STATE_FILE);
 }
 
 let _cachedWindowState = null; // 内存缓存，减少磁盘读取
@@ -511,6 +513,8 @@ function _readWindowState(forceRefresh = false) {
 function _writeWindowState(state) {
   try {
     const p = _getWindowStatePath();
+    const dir = path.dirname(p);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     // 原子写入: 写临时文件 → rename，防止并发写入导致JSON损坏
     const tmp = p + ".tmp." + process.pid;
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
