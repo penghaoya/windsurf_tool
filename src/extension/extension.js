@@ -59,6 +59,7 @@ const HOUR_WINDOW = 3600000; // 1小时滑动窗口
 const TIER_MSG_CAP_ESTIMATE = 25; // Trial账号预估小时消息上限(保守)
 const TIER_CAP_WARN_RATIO = 0.7; // 达到上限70%即预防
 const TRIAL_GUARD_CONFIRM_WINDOW = 180000; // Trial Guard二次确认窗口 3min
+const TRIAL_GUARD_SINGLE_CONFIRM_DROP = 3; // 单次降幅≥3%才允许直接确认
 const TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC = 3600; // Trial Guard命中后单账号隔离 1h
 const GLOBAL_TRIAL_POOL_COOLDOWN_SEC = 1200; // Trial全局限流时，整组Trial候选冷却 20min
 let _tierRateLimitCount = 0; // 本会话Gate 4触发次数
@@ -1225,7 +1226,7 @@ function _recordTrialGuardDrop(prevQuota, curQuota) {
   const quotaDrop = prevQuota !== null && curQuota !== null ? prevQuota - curQuota : 0;
   const currentModel = _readCurrentModelUid();
   const confirmed =
-    quotaDrop >= 2 ||
+    quotaDrop >= TRIAL_GUARD_SINGLE_CONFIRM_DROP ||
     runtime.trialGuard.consecutiveDrops >= 2 ||
     _isNearTierCap() ||
     (_isOpusModel(currentModel) && _isNearOpusBudget(_activeIndex));
@@ -1526,17 +1527,41 @@ async function _poolTick(context) {
           `[TRIAL_GUARD] armed ${trialGuard.consecutiveDrops}/2: L5 NO_DATA + 额度下降(${prevQuota}→${curQuota})，等待二次确认避免误切`,
         );
       } else {
+        const currentModel = _readCurrentModelUid();
         _logWarn(
           'POOL',
-          `[TRIAL_GUARD] confirmed ${trialGuard.consecutiveDrops}/2: L5 NO_DATA + 额度下降(${prevQuota}→${curQuota}) → 隔离当前Trial账号并切换`,
+          `[TRIAL_GUARD] confirmed ${trialGuard.consecutiveDrops}/2: L5 NO_DATA + 额度下降(${prevQuota}→${curQuota}) → 进入Trial压力保护`,
         );
+        _armTrialPoolCooldown(currentModel, GLOBAL_TRIAL_POOL_COOLDOWN_SEC, 'trial_nodata_guard', {
+          trigger: 'trial_nodata_guard',
+          source: 'trial_guard',
+        });
+        _pushRateLimitEvent({
+          type: 'tier_cap',
+          trigger: 'trial_nodata_guard',
+          cooldown: TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC,
+          model: currentModel,
+          globalTrial: false,
+          trialPoolCooldown: GLOBAL_TRIAL_POOL_COOLDOWN_SEC,
+          quotaDrop: trialGuard.quotaDrop,
+        });
+        if (_isOpusModel(currentModel)) {
+          const downgraded = await _downgradeFromTrialPressure('[TRIAL_GUARD] Trial压力确认');
+          if (downgraded) {
+            _activateBoost();
+            _resetTrialGuard(_activeIndex);
+            _updatePoolBar();
+            _refreshPanel();
+            return;
+          }
+        }
         am.markRateLimited(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, {
           type: 'tier_cap',
           trigger: 'trial_nodata_guard',
           serverReset: false,
         });
         _setAccountQuarantine(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, 'trial_nodata_guard', {
-          model: _readCurrentModelUid(),
+          model: currentModel,
         });
         const trialSwitch = await _performSwitch(context, {
           threshold,
