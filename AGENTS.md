@@ -82,26 +82,54 @@ npm run install-ext     # 打包并安装到 IDE
 | L9 | 输出通道实时拦截 |
 | L10 | 多窗口协调 (账号隔离+心跳, 跨平台路径) |
 
-## 调度策略 (v12.0)
+## 调度策略 (v13.0)
 
-### 预防性切换三层结构
+### 调度架构
 
 ```
 _poolTick
  ├─ TRIAL_GUARD: L5 NO_DATA + 额度下降 → 立即切号 (每条消息后)
- ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
- ├─ Tier 2: 配额阈值
- │   ├─ T2-A: shouldSwitch (depleted/low/expired/rate_limited)
- │   ├─ T2-B: isRateLimited 直接检查
- │   ├─ T2-C: Opus 预算守卫
- │   └─ T2-D: UFEF 紧急切换 (含10min冷却, 唯一入口)
- └─ Tier 3: 启发式降级 (仅L5无效时)
-     ├─ L2 斜率 / L4 burst / L5-Tab / L6 速度
-     └─ L7 Gate4 小时消息 (Trial NO_DATA时 cap=15)
+ ├─ 响应式切换: 额度下降 → 切到快照中额度未变的"静止"账号
+ ├─ evaluateActiveAccount() → decision
+ │   ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
+ │   ├─ Tier 2: 配额阈值
+ │   │   ├─ T2-A: shouldSwitch (depleted/low/expired/rate_limited)
+ │   │   ├─ T2-B: isRateLimited 直接检查
+ │   │   ├─ T2-C: Opus 预算守卫
+ │   │   └─ T2-D: UFEF 紧急切换 (含10min冷却)
+ │   └─ Tier 3: 启发式降级 (仅L5无效时)
+ │       ├─ 斜率 / burst / Tab压力 / 速度
+ │       └─ Gate4 小时消息 (Trial NO_DATA时 cap=15)
+ └─ _performSwitch() → 有序候选遍历+预热验证+切换
 ```
 
-### 账号选择排序 (selectOptimal / findBestForModel)
+### Per-Account Runtime State
 
+- `schedulerState.accounts` Map (email 为 key)
+- 每个账号独立维护: `hourlyMsgLog`, `msgRateLog`, `quotaHistory`, `velocityLog`, `opusMsgLog`, `capacity`
+- 切号时 `_dropAccountRuntimeByEmail` (旧) + `_resetAccountRuntimeByEmail` (新)
+- 解决: 旧账号运行时数据污染新账号的预测/守卫
+
+### 统一切换入口 (_performSwitch)
+
+```
+_performSwitch(context, options)
+ ├─ _getOrderedCandidates() → 有序候选列表
+ ├─ 遍历候选: _validateSwitchCandidate() (5s预热)
+ │   ├─ 额度≤阈值 → 跳过, 尝试下一个
+ │   └─ 超时 → 跳过, 尝试下一个
+ └─ _seamlessSwitch() → 执行切换
+```
+
+支持参数: `targetPolicy` (same_strategy/quota_first/same_model), `panic`, `refreshPool`, `allowThresholdFallback`, `candidates`
+
+### 账号选择排序 (selectOptimal)
+
+- 返回**有序数组** (非单个对象), `findBestForModel` 委托给 `selectOptimal`
+- **Mode-Aware 分组排序**: quota/credits/unknown 三类分别排序后合并
+- 支持 `excludeEmails` (多窗口隔离), `preferredMode`, `modelUid` 过滤
+
+Quota 模式排序:
 1. **过期紧急度** — urgent(≤3d) > soon(≤7d) > safe(>7d)
 2. **周重置浪费预防** — 额度相近(≤20)且>50时, 优先周重置更近的
 3. **Round-Robin 均匀消耗** — 额度差≤10%时, 优先最久未用的账号
@@ -116,12 +144,13 @@ _poolTick
 | UFEF 冷却 | 10min 冷却防止 safe↔urgent 频繁抖动 |
 | Round-Robin | 同紧急度+额度差≤10%时轮转, 均匀消耗 |
 | 指数退避 | 限流冷却 base×2^(n-1), 上限3600s, 恢复后归零 |
-| 预热验证 | 切换前刷新目标账号(5s超时), 额度≤15%取消切换 |
+| 预热验证 | _validateSwitchCandidate: 5s超时, 逐个遍历候选 |
 | 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
 | Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
 | NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
 | TRIAL_GUARD | L5 NO_DATA + 额度下降 → 每条消息后立即切号(mark 3600s) |
-| 切号重置 | 切换时清除目标账号Opus计数+小时消息+速度日志 |
+| 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
+| 可配置阈值 | `wam.preemptiveThreshold` (默认15, 0-100) |
 
 ## 数据流
 
@@ -142,7 +171,7 @@ _pushState() ──── postMessage ────→ useVscode.state (reactive)
   - Linux: `~/.config/Windsurf/User/globalStorage/`
   - Windows: `%APPDATA%/Windsurf/User/globalStorage/`
 - 原子写入: tmp文件 → rename, 失败降级直写
-- 心跳 30s, 死亡 90s, 账号隔离
+- 心跳 30s, 死亡 90s, **Email 隔离** (非 index, 避免顺序变化失效)
 
 ## 开发规则
 

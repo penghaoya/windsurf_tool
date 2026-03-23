@@ -78,22 +78,9 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 | L9 | 输出通道拦截 | 实时监控 Windsurf 输出通道，拦截 rate limit 错误信息 |
 | L10 | 多窗口协调 | 共享状态文件 + 心跳机制，多窗口间账号隔离 (跨平台路径) |
 
-### 3.1 调度策略 (v12.0)
+### 3.1 调度策略 (v13.0)
 
-号池引擎采用三层预防性切换结构 + Trial 保护:
-
-| 机制 | 说明 |
-|------|------|
-| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 每条消息后立即切号 (mark 3600s) |
-| UFEF 冷却 | 10min 冷却防止 safe↔urgent 账号频繁抖动 |
-| Round-Robin | 同紧急度 + 额度差≤10% 时轮转，均匀消耗 |
-| 指数退避 | 限流冷却 base×2^(n-1)，上限 3600s，恢复后归零 |
-| 预热验证 | 切换前刷新目标账号 (5s 超时)，额度≤15% 取消切换 |
-| 切号重置 | 切换时清除目标账号 Opus 计数 + 小时消息 + 速度日志 |
-
-### 3.1 调度策略 (v12.0)
-
-号池引擎采用三层预防性切换结构 + Trial 保护:
+号池引擎采用 Per-Account Runtime State + 统一切换入口:
 
 | 机制 | 说明 |
 |------|------|
@@ -101,8 +88,11 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 | UFEF 冷却 | 10min 冷却防止 safe↔urgent 账号频繁抖动 |
 | Round-Robin | 同紧急度 + 额度差≤10% 时轮转，均匀消耗 |
 | 指数退避 | 限流冷却 base×2^(n-1)，上限 3600s，恢复后归零 |
-| 预热验证 | 切换前刷新目标账号 (5s 超时)，额度≤15% 取消切换 |
-| 切号重置 | 切换时清除目标账号 Opus 计数 + 小时消息 + 速度日志 |
+| 预热验证 | _validateSwitchCandidate: 5s 超时，逐个遍历候选 |
+| 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
+| 可配置阈值 | `wam.preemptiveThreshold` (默认 15, 0-100) |
+| Mode-Aware | selectOptimal 返回有序数组，quota/credits/unknown 分组排序 |
+| Email 隔离 | 多窗口协调使用 Email 而非 index，避免顺序变化失效 |
 
 ### 4. 设备指纹热重置
 

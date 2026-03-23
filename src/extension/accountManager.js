@@ -371,6 +371,70 @@ class AccountManager {
     return dr || wr || null;
   }
 
+  /** Get normalized scheduling mode for account selection */
+  getSelectionMode(index) {
+    const a = this.get(index);
+    if (!a) return 'unknown';
+    const usage = a.usage || {};
+    if (
+      usage.billingStrategy === 'quota' ||
+      usage.mode === 'quota' ||
+      usage.daily ||
+      usage.weekly
+    ) {
+      return 'quota';
+    }
+    if (
+      usage.billingStrategy === 'credits' ||
+      usage.mode === 'credits' ||
+      a.credits !== undefined
+    ) {
+      return 'credits';
+    }
+    return 'unknown';
+  }
+
+  _sortQuotaCandidates(a, b) {
+    const aUrg = a.urgency < 0 ? 2 : a.urgency;
+    const bUrg = b.urgency < 0 ? 2 : b.urgency;
+    if (aUrg !== bUrg) return aUrg - bUrg;
+    if (a.remaining > 50 && b.remaining > 50 && Math.abs(a.remaining - b.remaining) <= 20) {
+      const wDiff = a.weeklyResetProximity - b.weeklyResetProximity;
+      if (Math.abs(wDiff) > 43200000) return wDiff < 0 ? -1 : 1;
+    }
+    const maxRem = Math.max(a.remaining, b.remaining);
+    if (maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.1) {
+      if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+    }
+    if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+    const aDays = a.planDays ?? 999;
+    const bDays = b.planDays ?? 999;
+    if (aDays !== bDays) return aDays - bDays;
+    return a.resetProximity - b.resetProximity;
+  }
+
+  _sortCreditsCandidates(a, b) {
+    if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+    if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+    const aDays = a.planDays ?? 999;
+    const bDays = b.planDays ?? 999;
+    return aDays - bDays;
+  }
+
+  _sortUnknownCandidates(a, b) {
+    const aDays = a.planDays ?? 999;
+    const bDays = b.planDays ?? 999;
+    if (aDays !== bDays) return aDays - bDays;
+    return a.lastUsed - b.lastUsed;
+  }
+
+  _sortCandidatesByMode(candidates, mode) {
+    const arr = [...candidates];
+    if (mode === 'quota') return arr.sort((a, b) => this._sortQuotaCandidates(a, b));
+    if (mode === 'credits') return arr.sort((a, b) => this._sortCreditsCandidates(a, b));
+    return arr.sort((a, b) => this._sortUnknownCandidates(a, b));
+  }
+
   /** Find best account for quota-aware rotation (highest effective remaining) */
   findBestForQuota(excludeIndex = -1, threshold = 0) {
     let best = -1, bestVal = -1;
@@ -767,38 +831,13 @@ class AccountManager {
     return null; // all variants limited on this account
   }
 
-  /** Find best account that is NOT model-rate-limited for a specific modelUid
-   *  v12.0: 统一UFEF排序 — 复用selectOptimal的排序逻辑，额外过滤model限流 */
-  findBestForModel(modelUid, excludeIndex = -1, threshold = 0) {
-    const excluded = new Set();
-    if (excludeIndex >= 0) excluded.add(excludeIndex);
-    const candidates = [];
-    for (let i = 0; i < this._accounts.length; i++) {
-      if (excluded.has(i)) continue;
-      if (this.isRateLimited(i)) continue;
-      if (this.isModelRateLimited(i, modelUid)) continue;
-      if (this.isExpired(i)) continue;
-      const rem = this.effectiveRemaining(i);
-      if (rem !== null && rem > threshold) {
-        const planDays = this.getPlanDaysRemaining(i);
-        const urgency = this.getExpiryUrgency(i);
-        const lastUsed = this.getLastUsedTs(i);
-        candidates.push({ index: i, remaining: rem, planDays, urgency, lastUsed });
-      }
-    }
-    candidates.sort((a, b) => {
-      const aUrg = a.urgency < 0 ? 2 : a.urgency;
-      const bUrg = b.urgency < 0 ? 2 : b.urgency;
-      if (aUrg !== bUrg) return aUrg - bUrg;
-      const maxRem = Math.max(a.remaining, b.remaining);
-      if (maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.1) {
-        if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
-      }
-      if (b.remaining !== a.remaining) return b.remaining - a.remaining;
-      const aDays = a.planDays ?? 999, bDays = b.planDays ?? 999;
-      return aDays - bDays;
+  /** Find ordered candidates for a specific modelUid while preserving pool strategy */
+  findBestForModel(modelUid, excludeIndex = -1, threshold = 0, excludeEmails = [], options = {}) {
+    return this.selectOptimal(excludeIndex, threshold, excludeEmails, {
+      ...options,
+      modelUid,
+      preferredMode: options.preferredMode ?? (excludeIndex >= 0 ? this.getSelectionMode(excludeIndex) : null),
     });
-    return candidates.length > 0 ? candidates[0] : null;
   }
 
   /** Get all model rate limit entries (for diagnostics) */
@@ -1058,69 +1097,83 @@ class AccountManager {
     return `${d}d${h % 24 > 0 ? (h % 24) + 'h' : ''}`;
   }
 
-  /** Select optimal account for seamless rotation (v7.4: UFEF — Use-First-Expire-First)
-   *  Core philosophy: accounts expiring soon should be used first to avoid waste.
-   *  Priority: 1) Expiry urgency (urgent→soon→safe)
-   *           2) Highest remaining quota within urgency tier
-   *           3) Fewest plan days (use expiring soonest within tier)
-   *           4) Soonest reset (will replenish first) */
-  selectOptimal(excludeIndex = -1, threshold = 5, excludeIndices = []) {
-    const excluded = new Set(excludeIndices);
+  /** Select ordered candidates for seamless rotation with mixed-pool safety */
+  selectOptimal(excludeIndex = -1, threshold = 5, excludeEmails = [], options = {}) {
+    const excluded = new Set();
     if (excludeIndex >= 0) excluded.add(excludeIndex);
+    const excludedEmailsSet = new Set((excludeEmails || []).map((email) => String(email || '').toLowerCase()).filter(Boolean));
+    const preferredMode = options.preferredMode || null;
+    const modelUid = options.modelUid || null;
+
     const candidates = [];
     for (let i = 0; i < this._accounts.length; i++) {
       if (excluded.has(i)) continue;
+      const account = this._accounts[i];
+      if (!account) continue;
+      if (excludedEmailsSet.has(String(account.email || '').toLowerCase())) continue;
       if (this.isRateLimited(i)) continue;
       if (this.isExpired(i)) continue;
+      if (modelUid && this.isModelRateLimited(i, modelUid)) continue;
       const rem = this.effectiveRemaining(i);
       if (rem !== null && rem !== undefined && rem > threshold) {
         const planDays = this.getPlanDaysRemaining(i);
         const urgency = this.getExpiryUrgency(i);
         const resetTs = this.effectiveResetTime(i);
         const resetProximity = resetTs ? Math.max(0, resetTs - Date.now()) : Infinity;
-        // Weekly reset proximity for waste prevention (use before weekly resets)
-        const weeklyResetMs = this._accounts[i].usage?.weeklyReset || 0;
+        const weeklyResetMs = account.usage?.weeklyReset || 0;
         const weeklyResetProximity = weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
         const lastUsed = this.getLastUsedTs(i);
-        candidates.push({ index: i, remaining: rem, planDays, urgency, resetProximity, weeklyResetProximity, lastUsed });
+        candidates.push({
+          index: i,
+          email: account.email,
+          remaining: rem,
+          planDays,
+          urgency,
+          resetProximity,
+          weeklyResetProximity,
+          lastUsed,
+          mode: this.getSelectionMode(i),
+        });
       }
     }
-    // UFEF Sort: use expiring accounts first to avoid wasting quota
-    // v12.0: +Round-Robin均匀消耗 — 同紧急度+额度差≤10%时，优先最久未用
-    candidates.sort((a, b) => {
-      // Tier 1: Expiry urgency — lower value = more urgent = use first
-      const aUrg = a.urgency < 0 ? 2 : a.urgency; // unknown treated as safe
-      const bUrg = b.urgency < 0 ? 2 : b.urgency;
-      if (aUrg !== bUrg) return aUrg - bUrg;
-      // Tier 2: Waste prevention — when both have substantial & similar remaining,
-      // prefer the one whose weekly resets sooner (use before quota is "wasted" at reset)
-      if (a.remaining > 50 && b.remaining > 50 && Math.abs(a.remaining - b.remaining) <= 20) {
-        const wDiff = a.weeklyResetProximity - b.weeklyResetProximity;
-        if (Math.abs(wDiff) > 43200000) return wDiff < 0 ? -1 : 1; // >12h difference → prefer sooner
-      }
-      // Tier 3: Round-Robin均匀消耗 — 额度差≤10%时，优先最久未用的账号
-      const maxRem = Math.max(a.remaining, b.remaining);
-      if (maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.1) {
-        if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed; // 最久未用优先
-      }
-      // Tier 4: Highest remaining quota
-      if (b.remaining !== a.remaining) return b.remaining - a.remaining;
-      // Tier 5: Fewest plan days (use the one expiring soonest)
-      const aDays = a.planDays ?? 999, bDays = b.planDays ?? 999;
-      if (aDays !== bDays) return aDays - bDays;
-      // Tier 6: Soonest reset (will replenish first)
-      return a.resetProximity - b.resetProximity;
-    });
-    if (candidates.length > 0) return candidates[0];
-    // Fallback: unknown remaining (might be fresh), excluding expired
+
+    const byMode = {
+      quota: this._sortCandidatesByMode(candidates.filter(c => c.mode === 'quota'), 'quota'),
+      credits: this._sortCandidatesByMode(candidates.filter(c => c.mode === 'credits'), 'credits'),
+      unknown: this._sortCandidatesByMode(candidates.filter(c => c.mode === 'unknown'), 'unknown'),
+    };
+
+    let modeOrder = ['quota', 'credits', 'unknown'];
+    if (preferredMode === 'credits') modeOrder = ['credits', 'quota', 'unknown'];
+    else if (preferredMode === 'quota') modeOrder = ['quota', 'credits', 'unknown'];
+
+    const ordered = [];
+    for (const mode of modeOrder) ordered.push(...byMode[mode]);
+    if (ordered.length > 0) return ordered;
+
+    const unknownCandidates = [];
     for (let i = 0; i < this._accounts.length; i++) {
       if (excluded.has(i)) continue;
+      const account = this._accounts[i];
+      if (!account) continue;
+      if (excludedEmailsSet.has(String(account.email || '').toLowerCase())) continue;
       if (this.isRateLimited(i)) continue;
       if (this.isExpired(i)) continue;
+      if (modelUid && this.isModelRateLimited(i, modelUid)) continue;
       const rem = this.effectiveRemaining(i);
-      if (rem === null || rem === undefined) return { index: i, remaining: null };
+      if (rem === null || rem === undefined) {
+        unknownCandidates.push({
+          index: i,
+          email: account.email,
+          remaining: null,
+          planDays: this.getPlanDaysRemaining(i),
+          urgency: this.getExpiryUrgency(i),
+          lastUsed: this.getLastUsedTs(i),
+          mode: this.getSelectionMode(i),
+        });
+      }
     }
-    return null;
+    return this._sortCandidatesByMode(unknownCandidates, 'unknown');
   }
 
   /** Get switch recommendation with reason (v7.4: + expiry urgency awareness) */

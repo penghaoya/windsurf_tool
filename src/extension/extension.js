@@ -58,7 +58,6 @@ const GLOBAL_TRIAL_RL_RE = /(?:all\s*)?(?:API\s*)?providers?\s*(?:are\s*)?over\s
 const HOUR_WINDOW = 3600000; // 1小时滑动窗口
 const TIER_MSG_CAP_ESTIMATE = 25; // Trial账号预估小时消息上限(保守)
 const TIER_CAP_WARN_RATIO = 0.7; // 达到上限70%即预防
-let _hourlyMsgLog = []; // [{ts}] 每小时消息追踪(用于Gate 4预测)
 let _tierRateLimitCount = 0; // 本会话Gate 4触发次数
 
 // ═══ Watchdog: 最后防线 — 所有检测层失效时的兜底切换 ═══
@@ -66,7 +65,6 @@ let _tierRateLimitCount = 0; // 本会话Gate 4触发次数
 // 看门狗: 追踪最后一次成功容量确认时间,超过阈值→预防性切号
 const WATCHDOG_TIMEOUT = 90000; // 90s无成功探测→触发看门狗
 const WATCHDOG_CHECK_INTERVAL = 20000; // 20s检查
-let _lastSuccessfulProbe = Date.now(); // 上次成功容量确认时间
 let _watchdogSwitchCount = 0; // 看门狗触发切号次数
 
 // ═══ 多窗口协调 (v6.3 P0) ═══
@@ -80,10 +78,9 @@ const POLL_NORMAL = 45000; // 正常轮询 45s
 const POLL_BOOST = 8000; // 加速轮询 8s (v6.2: 从12s降至8s)
 const POLL_BURST = 3000; // 并发burst轮询 3s (v6.4: 多Tab场景)
 const BOOST_DURATION = 300000; // 加速持续 5min (v6.2: 从3min延至5min)
-const PREEMPTIVE_THRESHOLD = 15; // 预防性切换底线: daily%≤15即切(硬编码，不受用户配置影响)
+const DEFAULT_PREEMPTIVE_THRESHOLD = 15;
 const SLOPE_WINDOW = 5; // 斜率预测窗口(样本数)
 const SLOPE_HORIZON = 300000; // 预测视野5min(ms)
-let _quotaHistory = []; // [{ts, remaining}] 用于斜率预测
 
 // ═══ 并发Tab感知 (v6.4 P0: 解决单窗口多Tab并发消息速率限流的核心矛盾) ═══
 // 根因: 5个Cascade Tab共享1个账号session，并发请求形成burst → 触发消息速率限制(非配额耗尽)
@@ -94,7 +91,6 @@ const MSG_RATE_WINDOW = 60000; // 消息速率统计窗口 60s
 const MSG_RATE_LIMIT = 12; // 预估消息速率上限(条/分钟, 保守估计)
 const BURST_DETECT_THRESHOLD = 0.7; // 速率达到上限的70%即触发预防
 let _cascadeTabCount = 0; // 当前检测到的Cascade Tab数
-let _msgRateLog = []; // [{ts}] 消息速率追踪(每次quota变化≈1次消息)
 let _lastTabCheck = 0; // 上次Tab检测时间
 const TAB_CHECK_INTERVAL = 10000; // Tab检测间隔 10s
 let _burstMode = false; // 是否处于burst防护模式
@@ -122,7 +118,6 @@ let _hotResetVerified = 0; // 本会话热重置已验证次数
 // 积分速度追踪器 (v7.0: 检测高速消耗 → 主动触发热重置+切号)
 const VELOCITY_WINDOW = 120000; // 速度计算窗口 120s
 const VELOCITY_THRESHOLD = 10; // 速度阈值: 120s内降>10% = 高速消耗
-let _velocityLog = []; // [{ts, remaining}] 速度追踪样本
 
 // ═══ Per-Model Rate Limit Breakthrough Engine (Opus Guard) ═══
 // 根因: 服务端对每个(apiKey, modelUid)维护独立滑动窗口消息速率桶
@@ -158,8 +153,77 @@ const OPUS_BUDGET_WINDOW = 1200000; // 20分钟滑动窗口(ms) — 匹配实测
 const OPUS_PREEMPT_RATIO = 1.0;    // 达到预算100%即切(分级预算已足够保守)
 const OPUS_COOLDOWN_DEFAULT = 1500; // Opus per-model默认冷却1500s(25min) — 匹配实测
 const CAPACITY_CHECK_THINKING = 3000; // Thinking模型L5探测间隔3s(更快检测hasCapacity=false)
-let _opusMsgLog = new Map(); // accountIndex → [{ts}] per-account Opus消息记录
 let _opusGuardSwitchCount = 0; // 本会话Opus守卫主动切号次数
+
+const schedulerState = {
+  accounts: new Map(),
+};
+
+function _createAccountRuntime() {
+  return {
+    hourlyMsgLog: [],
+    msgRateLog: [],
+    quotaHistory: [],
+    velocityLog: [],
+    opusMsgLog: [],
+    capacity: {
+      lastCheck: 0,
+      lastResult: null,
+      failCount: 0,
+      lastSuccessfulProbe: Date.now(),
+      realMaxMessages: -1,
+    },
+  };
+}
+
+function _normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function _getAccountEmail(index = _activeIndex) {
+  if (!am || index < 0) return '';
+  return _normalizeEmail(am.get(index)?.email);
+}
+
+function _getAccountRuntimeByEmail(email, create = true) {
+  const key = _normalizeEmail(email);
+  if (!key) return null;
+  if (!schedulerState.accounts.has(key) && create) {
+    schedulerState.accounts.set(key, _createAccountRuntime());
+  }
+  return schedulerState.accounts.get(key) || null;
+}
+
+function _getAccountRuntime(index = _activeIndex, create = true) {
+  return _getAccountRuntimeByEmail(_getAccountEmail(index), create);
+}
+
+function _getCapacityState(index = _activeIndex, create = true) {
+  return _getAccountRuntime(index, create)?.capacity || null;
+}
+
+function _resetAccountRuntimeByEmail(email) {
+  const key = _normalizeEmail(email);
+  if (!key) return;
+  schedulerState.accounts.set(key, _createAccountRuntime());
+}
+
+function _dropAccountRuntimeByEmail(email) {
+  const key = _normalizeEmail(email);
+  if (!key) return;
+  schedulerState.accounts.delete(key);
+}
+
+function _getPreemptiveThreshold() {
+  const raw = vscode.workspace.getConfiguration('wam').get('preemptiveThreshold', DEFAULT_PREEMPTIVE_THRESHOLD);
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return DEFAULT_PREEMPTIVE_THRESHOLD;
+  return Math.max(0, Math.min(100, Math.round(num)));
+}
+
+function _getActiveSelectionMode() {
+  return am && _activeIndex >= 0 && am.getSelectionMode ? am.getSelectionMode(_activeIndex) : null;
+}
 
 /** 读取当前活跃模型UID (从state.vscdb windsurfConfigurations/codeium.windsurf) */
 function _readCurrentModelUid() {
@@ -205,21 +269,26 @@ function _getModelBudget(uid) {
   return OPUS_REGULAR_BUDGET;                                   // 3条后切
 }
 
+function _getModelVariants(uid) {
+  if (_isOpusModel(uid)) return OPUS_VARIANTS;
+  return uid ? [uid] : [];
+}
+
 /** v8.0: 追踪Opus消息 — 在quota%下降且当前模型=Opus时调用 */
 function _trackOpusMsg(accountIndex) {
-  if (accountIndex < 0) return;
-  if (!_opusMsgLog.has(accountIndex)) _opusMsgLog.set(accountIndex, []);
-  _opusMsgLog.get(accountIndex).push({ ts: Date.now() });
-  // 清理过期记录
+  const runtime = _getAccountRuntime(accountIndex);
+  if (!runtime) return;
+  runtime.opusMsgLog.push({ ts: Date.now() });
   const cutoff = Date.now() - OPUS_BUDGET_WINDOW;
-  _opusMsgLog.set(accountIndex, _opusMsgLog.get(accountIndex).filter(m => m.ts > cutoff));
+  runtime.opusMsgLog = runtime.opusMsgLog.filter((m) => m.ts > cutoff);
 }
 
 /** v8.0: 获取当前账号在窗口内的Opus消息数 */
 function _getOpusMsgCount(accountIndex) {
-  if (accountIndex < 0 || !_opusMsgLog.has(accountIndex)) return 0;
+  const runtime = _getAccountRuntime(accountIndex, false);
+  if (!runtime) return 0;
   const cutoff = Date.now() - OPUS_BUDGET_WINDOW;
-  const valid = _opusMsgLog.get(accountIndex).filter(m => m.ts > cutoff);
+  const valid = runtime.opusMsgLog.filter((m) => m.ts > cutoff);
   return valid.length;
 }
 
@@ -233,7 +302,8 @@ function _isNearOpusBudget(accountIndex) {
 
 /** v8.0: 切号后重置该账号的Opus消息计数 */
 function _resetOpusMsgLog(accountIndex) {
-  _opusMsgLog.delete(accountIndex);
+  const runtime = _getAccountRuntime(accountIndex);
+  if (runtime) runtime.opusMsgLog = [];
 }
 
 // ═══ Layer 5: Active Rate Limit Capacity Probe ═══
@@ -248,12 +318,8 @@ const CAPACITY_PREEMPT_REMAINING = 2; // 剩余≤2条消息时提前切号
 let _cachedApiKey = null; // 缓存当前session apiKey
 let _cachedApiKeyTs = 0; // apiKey缓存时间戳
 const APIKEY_CACHE_TTL = 120000; // apiKey缓存2min(注入后刷新)
-let _lastCapacityCheck = 0; // 上次容量检查时间戳
-let _lastCapacityResult = null; // 上次容量检查结果
 let _capacityProbeCount = 0; // 本会话容量探测次数
-let _capacityProbeFailCount = 0; // 连续失败次数(用于backoff)
 let _capacitySwitchCount = 0; // 本会话因容量不足触发的切号次数
-let _realMaxMessages = -1; // 服务端返回的真实消息上限(替代TIER_MSG_CAP_ESTIMATE)
 
 // ═══ v7.5 Gate 4: Account-Tier Rate Limit Engine ═══
 
@@ -300,23 +366,29 @@ function _classifyRateLimit(errorText, contextKey) {
 
 /** 追踪每小时消息数(用于Gate 4预测) */
 function _trackHourlyMsg() {
-  _hourlyMsgLog.push({ ts: Date.now() });
+  const runtime = _getAccountRuntime();
+  if (!runtime) return;
+  runtime.hourlyMsgLog.push({ ts: Date.now() });
   const cutoff = Date.now() - HOUR_WINDOW;
-  _hourlyMsgLog = _hourlyMsgLog.filter(m => m.ts > cutoff);
+  runtime.hourlyMsgLog = runtime.hourlyMsgLog.filter((m) => m.ts > cutoff);
 }
 
 /** 获取当前小时消息数 */
 function _getHourlyMsgCount() {
+  const runtime = _getAccountRuntime(_activeIndex, false);
+  if (!runtime) return 0;
   const cutoff = Date.now() - HOUR_WINDOW;
-  return _hourlyMsgLog.filter(m => m.ts > cutoff).length;
+  return runtime.hourlyMsgLog.filter((m) => m.ts > cutoff).length;
 }
 
 /** 判断是否接近Gate 4层级上限
  *  v12.0: L5 NO_DATA时降低Trial预估上限(15→25), 更早触发预防切号 */
 function _isNearTierCap() {
-  // L5持续NO_DATA = Trial账号, 全局限流阈值更低
-  const isNoData = _lastCapacityResult && _lastCapacityResult.messagesRemaining < 0;
-  const effectiveCap = _realMaxMessages > 0 ? _realMaxMessages : (isNoData ? 15 : TIER_MSG_CAP_ESTIMATE);
+  const capacity = _getCapacityState(_activeIndex, false);
+  const lastResult = capacity?.lastResult;
+  const isNoData = lastResult && lastResult.messagesRemaining < 0;
+  const realMax = capacity?.realMaxMessages ?? -1;
+  const effectiveCap = realMax > 0 ? realMax : (isNoData ? 15 : TIER_MSG_CAP_ESTIMATE);
   return _getHourlyMsgCount() >= effectiveCap * TIER_CAP_WARN_RATIO;
 }
 
@@ -338,7 +410,8 @@ async function _handleTierRateLimit(context, resetSeconds) {
   _activateBoost();
   await _doPoolRotate(context, true);
   // 重置小时计数器(新账号从0开始)
-  _hourlyMsgLog = [];
+  const runtime = _getAccountRuntime();
+  if (runtime) runtime.hourlyMsgLog = [];
   return { action: 'tier_account_switch', cooldown };
 }
 
@@ -370,8 +443,10 @@ async function _handlePerModelRateLimit(context, modelUid, resetSeconds) {
   if (_isOpusModel(modelUid)) {
     _logInfo('MODEL_RL', `${logPrefix} [OPUS_FAST] 跳过L1变体轮转(共享桶) → 直接L2账号切换`);
   } else {
-    // === L1: 非Opus模型变体轮转(可能有效) ===
-    const availableVariant = am.findAvailableModelVariant(_activeIndex, OPUS_VARIANTS);
+    const modelVariants = _getModelVariants(modelUid);
+    const availableVariant = modelVariants.length > 1
+      ? am.findAvailableModelVariant(_activeIndex, modelVariants)
+      : null;
     if (availableVariant && availableVariant !== modelUid) {
       _logInfo('MODEL_RL', `${logPrefix} L1: 同账号切换变体 ${modelUid} → ${availableVariant}`);
       await _switchModelUid(availableVariant);
@@ -380,15 +455,29 @@ async function _handlePerModelRateLimit(context, modelUid, resetSeconds) {
   }
 
   // === L2: 换账号继续用同模型 (核心: 不同apiKey = 不同rate limit桶) ===
-  const bestForModel = am.findBestForModel(modelUid, _activeIndex, PREEMPTIVE_THRESHOLD);
-  if (bestForModel) {
-    _logInfo('MODEL_RL', `${logPrefix} L2: 切换到账号#${bestForModel.index + 1}继续用${modelUid} (rem=${bestForModel.remaining})`);
-    await _seamlessSwitch(context, bestForModel.index);
-    _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_guard_reactive', model: modelUid, cooldown: effectiveCooldown, switchTo: bestForModel.index + 1 });
-    return { action: 'account_switch', to: bestForModel.index, model: modelUid };
+  const threshold = _getPreemptiveThreshold();
+  const modelCandidates = am.findBestForModel(
+    modelUid,
+    _activeIndex,
+    threshold,
+    _getOtherWindowAccountEmails(),
+    { preferredMode: _getActiveSelectionMode() },
+  );
+  if (modelCandidates.length > 0) {
+    const switchResult = await _performSwitch(context, {
+      threshold,
+      targetPolicy: 'same_model',
+      modelUid,
+      candidates: modelCandidates,
+    });
+    if (switchResult.ok) {
+      _logInfo('MODEL_RL', `${logPrefix} L2: 切换到账号#${switchResult.index + 1}继续用${modelUid}`);
+      _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_guard_reactive', model: modelUid, cooldown: effectiveCooldown, switchTo: switchResult.index + 1 });
+      return { action: 'account_switch', to: switchResult.index, model: modelUid };
+    }
   }
-  _logInfo('MODEL_RL', `${logPrefix} L2: 所有账号的${modelUid}都已限流,尝试L3`);
-
+  _logInfo('MODEL_RL', `${logPrefix} L2: 所有账号的${modelUid}都不可用,尝试L3`);
+ 
   // === L3: 智能降级到Sonnet ===
   if (_isOpusModel(modelUid)) {
     _logWarn('MODEL_RL', `${logPrefix} L3: 所有账号Opus均已限流 → 降级到${SONNET_FALLBACK}`);
@@ -576,7 +665,7 @@ function _deregisterWindow() {
 }
 
 /** 获取其他活跃窗口占用的账号索引 */
-function _getOtherWindowAccounts() {
+function _getOtherWindowAccountEmails() {
   if (!_windowId) return [];
   const state = _readWindowState();
   const now = Date.now();
@@ -584,7 +673,7 @@ function _getOtherWindowAccounts() {
   for (const [id, w] of Object.entries(state.windows)) {
     if (id === _windowId) continue;
     if (now - w.lastHeartbeat > WINDOW_DEAD_MS) continue;
-    if (w.accountIndex >= 0) claimed.push(w.accountIndex);
+    if (w.accountEmail) claimed.push(_normalizeEmail(w.accountEmail));
   }
   return claimed;
 }
@@ -613,10 +702,10 @@ function _startWindowCoordinator(context) {
   const winCount = _getActiveWindowCount();
   _logInfo("WINDOW", `coordinator started — ${winCount} active window(s)`);
   if (winCount > 1) {
-    const others = _getOtherWindowAccounts();
+    const others = _getOtherWindowAccountEmails();
     _logInfo(
       "WINDOW",
-      `other windows claim accounts: [${others.map((i) => "#" + (i + 1)).join(", ")}]`,
+      `other windows claim accounts: [${others.join(", ")}]`,
     );
   }
 }
@@ -698,16 +787,19 @@ function _detectCascadeTabs() {
 
 /** 记录一次消息/请求事件(每次quota变化≈一次API消息) */
 function _trackMessageRate() {
-  _msgRateLog.push({ ts: Date.now() });
-  // 清理过期记录
+  const runtime = _getAccountRuntime();
+  if (!runtime) return;
+  runtime.msgRateLog.push({ ts: Date.now() });
   const cutoff = Date.now() - MSG_RATE_WINDOW;
-  _msgRateLog = _msgRateLog.filter((m) => m.ts > cutoff);
+  runtime.msgRateLog = runtime.msgRateLog.filter((m) => m.ts > cutoff);
 }
 
 /** 获取当前消息速率(条/分钟) */
 function _getCurrentMsgRate() {
+  const runtime = _getAccountRuntime(_activeIndex, false);
+  if (!runtime) return 0;
   const cutoff = Date.now() - MSG_RATE_WINDOW;
-  const recent = _msgRateLog.filter((m) => m.ts > cutoff);
+  const recent = runtime.msgRateLog.filter((m) => m.ts > cutoff);
   return recent.length; // 直接等于条/分钟(窗口是60s)
 }
 
@@ -973,10 +1065,188 @@ async function _refreshAll(progressFn) {
 
 // ========== 号池引擎 (v6.0 核心) ==========
 
+function _getOrderedCandidates({
+  excludeIndex = _activeIndex,
+  threshold = _getPreemptiveThreshold(),
+  targetPolicy = 'same_strategy',
+  modelUid = null,
+  excludeClaimed = true,
+} = {}) {
+  const preferredMode = targetPolicy === 'same_strategy' || targetPolicy === 'same_model'
+    ? _getActiveSelectionMode()
+    : null;
+  const excludedEmails = excludeClaimed ? _getOtherWindowAccountEmails() : [];
+  const options = { preferredMode, modelUid };
+  const primary = modelUid
+    ? am.findBestForModel(modelUid, excludeIndex, threshold, excludedEmails, options)
+    : am.selectOptimal(excludeIndex, threshold, excludedEmails, options);
+  if (primary.length > 0 || !excludeClaimed) return primary;
+  return modelUid
+    ? am.findBestForModel(modelUid, excludeIndex, threshold, [], options)
+    : am.selectOptimal(excludeIndex, threshold, [], options);
+}
+
+async function _validateSwitchCandidate(targetIndex, threshold) {
+  try {
+    await Promise.race([
+      _refreshOne(targetIndex),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), 5000)),
+    ]);
+    const remaining = am.effectiveRemaining(targetIndex);
+    if (remaining !== null && remaining <= threshold) {
+      return { ok: false, remaining, reason: 'insufficient_quota' };
+    }
+    return { ok: true, remaining };
+  } catch (e) {
+    return { ok: false, remaining: null, reason: e.message };
+  }
+}
+
+async function _performSwitch(context, {
+  excludeIndex = _activeIndex,
+  threshold = _getPreemptiveThreshold(),
+  targetPolicy = 'same_strategy',
+  panic = false,
+  refreshPool = false,
+  modelUid = null,
+  candidates = null,
+  allowThresholdFallback = false,
+} = {}) {
+  if (refreshPool) await _refreshAll();
+  let ordered = Array.isArray(candidates) && candidates.length > 0
+    ? candidates
+    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true });
+  if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
+    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false });
+  }
+  for (const candidate of ordered) {
+    const preheat = await _validateSwitchCandidate(candidate.index, threshold);
+    if (!preheat.ok) {
+      _logWarn('SWITCH', `预热跳过 #${candidate.index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
+      continue;
+    }
+    const switched = await _seamlessSwitch(context, candidate.index);
+    if (switched) return { ok: true, index: candidate.index, candidate };
+  }
+  if (!panic) _logWarn('SWITCH', '候选账号全部预热失败或不可切换');
+  return { ok: false, index: -1 };
+}
+
+function evaluateActiveAccount({ accounts, threshold, curQuota }) {
+  const decision = { action: 'none', reason: 'ok', cooldown: null, targetPolicy: 'same_strategy' };
+  const capacity = _getCapacityState(_activeIndex, false);
+  const lastCapacityResult = capacity?.lastResult || null;
+  const lastCapacityCheck = capacity?.lastCheck || 0;
+  const realMaxMessages = capacity?.realMaxMessages ?? -1;
+  const l5Valid = lastCapacityResult &&
+    lastCapacityResult.messagesRemaining >= 0 &&
+    (Date.now() - lastCapacityCheck < 120000);
+
+  if (l5Valid && !lastCapacityResult.hasCapacity) {
+    decision.action = 'switch_account';
+    decision.reason = `L5_no_capacity(remaining=${lastCapacityResult.messagesRemaining}/${lastCapacityResult.maxMessages},resets=${lastCapacityResult.resetsInSeconds}s)`;
+    return decision;
+  }
+
+  if (l5Valid && lastCapacityResult.hasCapacity) {
+    const capMax = lastCapacityResult.maxMessages > 0 ? lastCapacityResult.maxMessages : TIER_MSG_CAP_ESTIMATE;
+    const capRem = lastCapacityResult.messagesRemaining;
+    if (capRem <= CAPACITY_PREEMPT_REMAINING || (capMax > 0 && capRem <= capMax * 0.2)) {
+      decision.action = 'switch_account';
+      decision.reason = `L5_capacity_low(remaining=${capRem}/${capMax},resets=${lastCapacityResult.resetsInSeconds}s)`;
+      return decision;
+    }
+  }
+
+  const baseDecision = am.shouldSwitch(_activeIndex, threshold);
+  if (baseDecision.switch) {
+    decision.action = 'switch_account';
+    decision.reason = baseDecision.reason;
+    return decision;
+  }
+
+  if (am.isRateLimited(_activeIndex)) {
+    decision.action = 'switch_account';
+    decision.reason = 'rate_limited';
+    return decision;
+  }
+
+  if (curQuota !== null && curQuota > threshold) {
+    const currentModel = _readCurrentModelUid();
+    if (_isOpusModel(currentModel) && _isNearOpusBudget(_activeIndex)) {
+      const opusCount = _getOpusMsgCount(_activeIndex);
+      const tierBudget = _getModelBudget(currentModel);
+      decision.action = 'switch_account';
+      decision.reason = `opus_budget_guard(model=${currentModel},msgs=${opusCount}/${tierBudget},tier=${_isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R'})`;
+      return decision;
+    }
+  }
+
+  if (
+    curQuota !== null &&
+    curQuota > threshold &&
+    Date.now() - _lastUfefSwitchTs > UFEF_COOLDOWN
+  ) {
+    const activeUrg = am.getExpiryUrgency(_activeIndex);
+    if (activeUrg >= 2 || activeUrg < 0) {
+      for (let i = 0; i < accounts.length; i++) {
+        if (i === _activeIndex) continue;
+        if (am.isRateLimited(i) || am.isExpired(i)) continue;
+        const iUrg = am.getExpiryUrgency(i);
+        const iRem = am.effectiveRemaining(i);
+        if (iUrg === 0 && iRem !== null && iRem > threshold) {
+          decision.action = 'switch_account';
+          decision.reason = `ufef_urgent(active_urg=${activeUrg},#${i + 1}_urg=${iUrg},#${i + 1}_rem=${iRem},#${i + 1}_days=${am.getPlanDaysRemaining(i)})`;
+          decision.targetPolicy = 'quota_first';
+          return decision;
+        }
+      }
+    }
+  }
+
+  if (!l5Valid) {
+    if (curQuota !== null && curQuota > threshold) {
+      const predicted = _slopePredict();
+      if (predicted !== null && predicted <= threshold) {
+        decision.action = 'switch_account';
+        decision.reason = `fallback_slope(cur=${curQuota},pred=${predicted})`;
+        return decision;
+      }
+    }
+    if (_burstMode && _isNearMsgRateLimit()) {
+      decision.action = 'switch_account';
+      decision.reason = `fallback_burst(tabs=${_cascadeTabCount},rate=${_getCurrentMsgRate()}/${MSG_RATE_LIMIT})`;
+      return decision;
+    }
+    if (_cascadeTabCount > CONCURRENT_TAB_SAFE && curQuota !== null) {
+      const dynamicThreshold = threshold + (_cascadeTabCount - CONCURRENT_TAB_SAFE) * 5;
+      if (curQuota <= dynamicThreshold && curQuota > threshold) {
+        decision.action = 'switch_account';
+        decision.reason = `fallback_tab_pressure(tabs=${_cascadeTabCount},cur=${curQuota},dyn=${dynamicThreshold})`;
+        return decision;
+      }
+    }
+    if (_isHighVelocity() && curQuota !== null && curQuota > threshold) {
+      const vel = _getVelocity();
+      decision.action = 'switch_account';
+      decision.reason = `fallback_velocity(vel=${vel.toFixed(1)}%/min,cur=${curQuota})`;
+      return decision;
+    }
+    if (curQuota !== null && curQuota > threshold && _isNearTierCap()) {
+      const effectiveCap = realMaxMessages > 0 ? realMaxMessages : TIER_MSG_CAP_ESTIMATE;
+      decision.action = 'switch_account';
+      decision.reason = `fallback_tier_cap(hourly=${_getHourlyMsgCount()}/${effectiveCap})`;
+      return decision;
+    }
+  }
+
+  return decision;
+}
+
 /** 启动号池引擎 — 自适应轮询 + 自动选号 + 实时监控 + 并发Tab感知(v6.4) */
 function _startPoolEngine(context) {
   const scheduleNext = () => {
-    const ms = _getAdaptivePollMs(); // v6.4: 三级自适应(normal→boost→burst)
+    const ms = _getAdaptivePollMs();
     _poolTimer = setTimeout(async () => {
       try {
         await _poolTick(context);
@@ -986,98 +1256,77 @@ function _startPoolEngine(context) {
       scheduleNext();
     }, ms);
   };
-  // 首次启动延迟3s，等待代理探测完成
   setTimeout(async () => {
     await _poolTick(context);
     scheduleNext();
   }, 3000);
-  // 同时启动限流检测
   _startQuotaWatcher(context);
 }
 
-/** 号池心跳 — 每次tick检查活跃账号，必要时自动轮转
- *  v6.7: + 全池实时监控 + 响应式切换(额度变动即切) + 并发Tab感知 */
+/** 号池心跳 — 每次tick检查活跃账号，必要时自动轮转 */
 async function _poolTick(context) {
   const accounts = am.getAll();
   if (accounts.length === 0) return;
 
-  // v6.4: 每次tick探测并发Tab数
   _detectCascadeTabs();
 
-  const autoRotate = vscode.workspace
-    .getConfiguration("wam")
-    .get("autoRotate", true);
-  const threshold = PREEMPTIVE_THRESHOLD;
+  const autoRotate = vscode.workspace.getConfiguration("wam").get("autoRotate", true);
+  const threshold = _getPreemptiveThreshold();
 
-  // 无活跃账号 → 自动选择最优
   if (_activeIndex < 0 || _activeIndex >= accounts.length) {
-    let best = am.selectOptimal(-1, threshold, _getOtherWindowAccounts());
-    if (!best) best = am.selectOptimal(-1, threshold); // 降级: 忽略窗口隔离
-    if (best) {
-      _logInfo("POOL", `无活跃账号，自动选择 #${best.index + 1}`);
-      await _seamlessSwitch(context, best.index);
-    } else {
-      _logWarn("POOL", "无活跃账号且无可用账号");
-    }
+    const switchResult = await _performSwitch(context, {
+      excludeIndex: -1,
+      threshold,
+      targetPolicy: 'quota_first',
+    });
+    if (!switchResult.ok) _logWarn("POOL", "无活跃账号且无可用账号");
     return;
   }
 
-  // check expired active before wasting API call on refresh
   if (am.isExpired(_activeIndex)) {
     _logWarn("POOL", `活跃账号 #${_activeIndex + 1} 已过期 → 立即轮转`);
     if (autoRotate) {
-      let best = am.selectOptimal(_activeIndex, threshold, _getOtherWindowAccounts());
-      if (!best) best = am.selectOptimal(_activeIndex, threshold);
-      if (best) await _seamlessSwitch(context, best.index);
+      await _performSwitch(context, { threshold, targetPolicy: 'same_strategy' });
     }
     return;
   }
 
-  // 刷新活跃账号额度
   const prevQuota = _lastQuota;
-  const { credits, usageInfo } = await _refreshOne(_activeIndex);
+  await _refreshOne(_activeIndex);
   const curQuota = am.effectiveRemaining(_activeIndex);
   _lastQuota = curQuota;
   _lastCheckTs = Date.now();
 
-  // 记录斜率历史
-  if (curQuota !== null && curQuota !== undefined) {
-    _quotaHistory.push({ ts: Date.now(), remaining: curQuota });
-    if (_quotaHistory.length > SLOPE_WINDOW * 2)
-      _quotaHistory = _quotaHistory.slice(-SLOPE_WINDOW);
+  const runtime = _getAccountRuntime();
+  if (runtime && curQuota !== null && curQuota !== undefined) {
+    runtime.quotaHistory.push({ ts: Date.now(), remaining: curQuota });
+    if (runtime.quotaHistory.length > SLOPE_WINDOW * 2) {
+      runtime.quotaHistory = runtime.quotaHistory.slice(-SLOPE_WINDOW);
+    }
   }
 
-  // 额度变化检测 + 消息速率追踪(v6.4) + 速度追踪(v7.0) + 小时消息追踪(v7.5)
-  const quotaChanged =
-    prevQuota !== null && prevQuota !== undefined && curQuota !== prevQuota;
-  if (curQuota !== null) _trackVelocity(curQuota); // v7.0: 每次刷新都追踪速度
+  const quotaChanged = prevQuota !== null && prevQuota !== undefined && curQuota !== prevQuota;
+  if (curQuota !== null) _trackVelocity(curQuota);
   if (quotaChanged) {
-    _trackMessageRate(); // v6.4: 额度变化≈一次API消息
-    _trackHourlyMsg(); // v7.5: Gate 4 小时消息追踪
-    // v8.0: Opus消息预算追踪 — 额度下降+当前模型=Opus → 计为1条Opus消息
+    _trackMessageRate();
+    _trackHourlyMsg();
     if (curQuota < prevQuota) {
       const currentModel = _readCurrentModelUid();
       if (_isOpusModel(currentModel)) {
         _trackOpusMsg(_activeIndex);
         const opusCount = _getOpusMsgCount(_activeIndex);
-        const _tierBudget = _getModelBudget(currentModel);
-        _logInfo('OPUS_GUARD', `Opus追踪v10: #${_activeIndex+1} ${opusCount}/${_tierBudget}条 model=${currentModel} tier=${_isThinking1MModel(currentModel)?'T1M':_isThinkingModel(currentModel)?'T':'R'}${opusCount >= _tierBudget ? ' → WILL SWITCH!' : ''}`);
+        const tierBudget = _getModelBudget(currentModel);
+        _logInfo('OPUS_GUARD', `Opus追踪v10: #${_activeIndex + 1} ${opusCount}/${tierBudget}条 model=${currentModel} tier=${_isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R'}${opusCount >= tierBudget ? ' → WILL SWITCH!' : ''}`);
       }
     }
     const vel = _getVelocity();
-    _logInfo(
-      "POOL",
-      `额度变化: ${prevQuota} → ${curQuota} (rate=${_getCurrentMsgRate()}/min, tabs=${_cascadeTabCount}, velocity=${vel.toFixed(1)}%/min)`,
-    );
-    _activateBoost(); // 加速轮询
+    _logInfo("POOL", `额度变化: ${prevQuota} → ${curQuota} (rate=${_getCurrentMsgRate()}/min, tabs=${_cascadeTabCount}, velocity=${vel.toFixed(1)}%/min)`);
+    _activateBoost();
     _updatePoolBar();
     _refreshPanel();
 
-    // v12.0: L5 NO_DATA Trial 保护 — 每条消息后立即切号
-    // 根因: Trial账号L5返回-1/-1(capacity=true), 所有检测层全盲
-    // "global rate limit for trial users"可能1-2条消息后就触发, 且不设置任何context key
-    // 策略: 额度下降+L5持续NO_DATA → 视为Trial账号 → 发完消息立即预防性切号
-    const isNoData = _lastCapacityResult && _lastCapacityResult.messagesRemaining < 0;
+    const activeCapacity = _getCapacityState(_activeIndex, false);
+    const isNoData = activeCapacity?.lastResult && activeCapacity.lastResult.messagesRemaining < 0;
     if (curQuota < prevQuota && isNoData && autoRotate && accounts.length > 1) {
       _logWarn('POOL', `[TRIAL_GUARD] L5 NO_DATA + 额度下降(${prevQuota}→${curQuota}) → Trial账号每消息切号`);
       am.markRateLimited(_activeIndex, 3600, {
@@ -1085,21 +1334,15 @@ async function _poolTick(context) {
         trigger: 'trial_nodata_guard',
         serverReset: false,
       });
-      let trialBest = am.selectOptimal(_activeIndex, threshold, _getOtherWindowAccounts());
-      if (!trialBest) trialBest = am.selectOptimal(_activeIndex, threshold);
-      if (trialBest) {
-        await _seamlessSwitch(context, trialBest.index);
-        _updatePoolBar();
-        _refreshPanel();
-        return; // 已切号，跳过后续判断
-      }
+      const trialSwitch = await _performSwitch(context, {
+        threshold,
+        targetPolicy: 'same_strategy',
+      });
+      if (trialSwitch.ok) return;
     }
   }
 
-  // ═══ v6.7 P0: 响应式切换 — 活跃账号额度下降 → 立即切到"静止"账号 ═══
-  // 核心逻辑: 额度下降=正在被消耗 → 切到快照中额度未变的账号(未被使用)
-  const quotaDrop =
-    prevQuota !== null && curQuota !== null ? prevQuota - curQuota : 0;
+  const quotaDrop = prevQuota !== null && curQuota !== null ? prevQuota - curQuota : 0;
   if (
     quotaChanged &&
     curQuota < prevQuota &&
@@ -1107,53 +1350,44 @@ async function _poolTick(context) {
     autoRotate &&
     Date.now() - _lastReactiveSwitchTs > REACTIVE_SWITCH_CD
   ) {
+    const otherClaimed = new Set(_getOtherWindowAccountEmails());
     const stableCandidates = [];
     for (let i = 0; i < accounts.length; i++) {
       if (i === _activeIndex) continue;
-      if (am.isRateLimited(i)) continue;
-      if (am.isExpired(i)) continue; // 跳过已过期账号
+      const email = _normalizeEmail(accounts[i]?.email);
+      if (!email || otherClaimed.has(email)) continue;
+      if (am.isRateLimited(i) || am.isExpired(i)) continue;
       const rem = am.effectiveRemaining(i);
       if (rem === null || rem === undefined || rem <= threshold) continue;
-      // "静止" = 快照中额度与当前一致(未被其他窗口消耗)
       const snap = _allQuotaSnapshot.get(i);
-      if (snap && snap.remaining !== null && snap.remaining === rem) {
-        stableCandidates.push({ index: i, remaining: rem });
-      } else if (!snap) {
-        // 无快照 = 从未扫描过，也可作为候选(额度充足即可)
+      if ((snap && snap.remaining === rem) || !snap) {
         stableCandidates.push({ index: i, remaining: rem });
       }
     }
     if (stableCandidates.length > 0) {
-      // 排除其他窗口占用
-      const otherClaimed = new Set(_getOtherWindowAccounts());
-      const filtered = stableCandidates.filter(
-        (c) => !otherClaimed.has(c.index),
-      );
-      const pool = filtered.length > 0 ? filtered : stableCandidates; // 降级: 忽略窗口隔离
-      // UFEF-aware sort: 紧急过期账号优先使用
-      pool.sort((a, b) => {
-        const aU = am.getExpiryUrgency(a.index), bU = am.getExpiryUrgency(b.index);
-        const aUrg = aU < 0 ? 2 : aU, bUrg = bU < 0 ? 2 : bU;
-        if (aUrg !== bUrg) return aUrg - bUrg; // urgent first
-        return b.remaining - a.remaining; // then highest remaining
+      stableCandidates.sort((a, b) => {
+        const aUrg = am.getExpiryUrgency(a.index);
+        const bUrg = am.getExpiryUrgency(b.index);
+        const aTier = aUrg < 0 ? 2 : aUrg;
+        const bTier = bUrg < 0 ? 2 : bUrg;
+        if (aTier !== bTier) return aTier - bTier;
+        return b.remaining - a.remaining;
       });
       _lastReactiveSwitchTs = Date.now();
-      _logInfo(
-        "REACTIVE",
-        `活跃账号额度下降 ${prevQuota}→${curQuota}, 响应式切换到静止账号 #${pool[0].index + 1} (rem=${pool[0].remaining}, candidates=${pool.length})`,
-      );
-      await _seamlessSwitch(context, pool[0].index);
-      return; // 已切换，跳过后续预防性判断
+      const reactiveSwitch = await _performSwitch(context, {
+        threshold,
+        targetPolicy: 'quota_first',
+        candidates: stableCandidates,
+      });
+      if (reactiveSwitch.ok) return;
     }
   }
 
-  // ═══ v6.7 P1: 全池扫描 — 定期刷新所有账号额度，更新快照 ═══
-  const _fullScanInterval = _burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
-  if (Date.now() - _lastFullScanTs > _fullScanInterval) {
+  const fullScanInterval = _burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
+  if (Date.now() - _lastFullScanTs > fullScanInterval) {
     _lastFullScanTs = Date.now();
     _logInfo("SCAN", `全池扫描启动 (${accounts.length}账号)`);
     await _refreshAll();
-    // 更新全池快照
     for (let i = 0; i < accounts.length; i++) {
       const rem = am.effectiveRemaining(i);
       const prev = _allQuotaSnapshot.get(i);
@@ -1165,154 +1399,28 @@ async function _poolTick(context) {
     _refreshPanel();
   }
 
-  // ═══ 预防性切换判断 ═══
-  // 归宗: 三层结构 — 本(L5 gRPC)→辅(配额阈值)→备(启发式降级)
-  // L5 gRPC容量探测返回服务端真值(hasCapacity/messagesRemaining/maxMessages/resetsInSeconds)
-  // 当L5有效时，L2斜率/L4 burst/L5 Tab压力/L6速度/L7小时追踪皆为冗余启发式，跳过
   if (autoRotate) {
-    let shouldRotate = false;
-    let reason = "";
-    const _l5Valid = _lastCapacityResult && _lastCapacityResult.messagesRemaining >= 0
-      && (Date.now() - _lastCapacityCheck < 120000); // L5数据2min内有效
-
-    // ── 本(Tier 1): L5 gRPC容量探测 — 服务端真值，一个接口解决所有 ──
-
-    // L5-A: 容量耗尽 — hasCapacity=false → 用户下条消息必败 → 立即切
-    if (!shouldRotate && _l5Valid && !_lastCapacityResult.hasCapacity) {
-      shouldRotate = true;
-      reason = `L5_no_capacity(remaining=${_lastCapacityResult.messagesRemaining}/${_lastCapacityResult.maxMessages},resets=${_lastCapacityResult.resetsInSeconds}s)`;
-      _logWarn('POOL', `L5容量耗尽: 0容量 → 立即切号`);
-      _invalidateApiKeyCache();
-    }
-
-    // L5-B: 容量预警 — 剩余≤3条或≤20%上限 → 提前切
-    if (!shouldRotate && _l5Valid && _lastCapacityResult.hasCapacity) {
-      const capMax = _lastCapacityResult.maxMessages > 0 ? _lastCapacityResult.maxMessages : TIER_MSG_CAP_ESTIMATE;
-      const capRem = _lastCapacityResult.messagesRemaining;
-      if (capRem <= CAPACITY_PREEMPT_REMAINING || (capMax > 0 && capRem <= capMax * 0.2)) {
-        shouldRotate = true;
-        reason = `L5_capacity_low(remaining=${capRem}/${capMax},resets=${_lastCapacityResult.resetsInSeconds}s)`;
-        _logWarn('POOL', `L5容量预警: 剩余${capRem}/${capMax}条 → 提前切号`);
-        _hourlyMsgLog = [];
-        _invalidateApiKeyCache();
-      }
-    }
-
-    // ── 辅(Tier 2): 配额阈值 — 独立于消息速率的日/周配额维度 ──
-
-    // T2-A: 直接阈值判断 (effectiveRemaining ≤ 预防线15%)
-    if (!shouldRotate) {
-      const decision = am.shouldSwitch(_activeIndex, threshold);
-      if (decision.switch) {
-        shouldRotate = true;
-        reason = decision.reason;
-      }
-    }
-
-    // T2-B: rate limited状态(已标记的账号直接跳过)
-    if (!shouldRotate && am.isRateLimited(_activeIndex)) {
-      shouldRotate = true;
-      reason = "rate_limited";
-    }
-
-    // T2-C: L8 Opus消息预算守卫 — per-model维度,L5可能未区分模型
-    if (!shouldRotate && curQuota !== null && curQuota > threshold) {
-      const currentModel = _readCurrentModelUid();
-      if (_isOpusModel(currentModel) && _isNearOpusBudget(_activeIndex)) {
+    const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
+    if (decision.action === 'switch_account') {
+      if (decision.reason.startsWith('ufef_urgent')) _lastUfefSwitchTs = Date.now();
+      if (decision.reason.startsWith('opus_budget_guard')) {
+        const currentModel = _readCurrentModelUid();
         const opusCount = _getOpusMsgCount(_activeIndex);
-        shouldRotate = true;
         const tierBudget = _getModelBudget(currentModel);
-        reason = `opus_budget_guard(model=${currentModel},msgs=${opusCount}/${tierBudget},tier=${_isThinking1MModel(currentModel)?'T1M':_isThinkingModel(currentModel)?'T':'R'})`;
-        _logWarn('OPUS_GUARD', `Opus预算守卫v10: #${_activeIndex+1} 窗口内${opusCount}/${tierBudget}条 (tier=${_isThinking1MModel(currentModel)?'Thinking1M':'Thinking'}) → 主动切号`);
         _opusGuardSwitchCount++;
         for (const variant of OPUS_VARIANTS) {
           am.markModelRateLimited(_activeIndex, variant, OPUS_COOLDOWN_DEFAULT, { trigger: 'opus_budget_guard' });
         }
-        _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_budget_guard', model: currentModel, msgs: opusCount, budget: tierBudget, tier: _isThinking1MModel(currentModel)?'T1M':_isThinkingModel(currentModel)?'T':'R' });
+        _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_budget_guard', model: currentModel, msgs: opusCount, budget: tierBudget, tier: _isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R' });
       }
-    }
-
-    // T2-D: UFEF过期紧急 — 当前账号安全但有紧急账号额度充足 → 切到紧急账号避免浪费
-    // v12.0: +UFEF冷却(10min)，避免safe↔urgent频繁抖动
-    if (!shouldRotate && curQuota !== null && curQuota > threshold
-        && Date.now() - _lastUfefSwitchTs > UFEF_COOLDOWN) {
-      const activeUrg = am.getExpiryUrgency(_activeIndex);
-      if (activeUrg >= 2 || activeUrg < 0) {
-        for (let i = 0; i < accounts.length; i++) {
-          if (i === _activeIndex) continue;
-          if (am.isRateLimited(i) || am.isExpired(i)) continue;
-          const iUrg = am.getExpiryUrgency(i);
-          if (iUrg === 0) {
-            const iRem = am.effectiveRemaining(i);
-            if (iRem !== null && iRem > threshold) {
-              shouldRotate = true;
-              _lastUfefSwitchTs = Date.now();
-              reason = `ufef_urgent(active_urg=${activeUrg},#${i+1}_urg=${iUrg},#${i+1}_rem=${iRem},#${i+1}_days=${am.getPlanDaysRemaining(i)})`;
-              _logInfo('POOL', `UFEF: #${i+1}紧急(${am.getPlanDaysRemaining(i)}d) → 切到紧急账号避免浪费`);
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    // ── 备(Tier 3): 启发式降级 — 仅在L5 gRPC无效时启用 ──
-
-    if (!shouldRotate && !_l5Valid) {
-      // L2: 斜率预测 — 5分钟内跌穿预防线
-      if (curQuota !== null && curQuota > threshold) {
-        const predicted = _slopePredict();
-        if (predicted !== null && predicted <= threshold) {
-          shouldRotate = true;
-          reason = `fallback_slope(cur=${curQuota},pred=${predicted})`;
-        }
-      }
-
-      // L4: 并发burst预测
-      if (!shouldRotate && _burstMode && _isNearMsgRateLimit()) {
-        shouldRotate = true;
-        reason = `fallback_burst(tabs=${_cascadeTabCount},rate=${_getCurrentMsgRate()}/${MSG_RATE_LIMIT})`;
-      }
-
-      // L5-Tab: 并发Tab高压
-      if (!shouldRotate && _cascadeTabCount > CONCURRENT_TAB_SAFE && curQuota !== null) {
-        const dynamicThreshold = threshold + (_cascadeTabCount - CONCURRENT_TAB_SAFE) * 5;
-        if (curQuota <= dynamicThreshold && curQuota > threshold) {
-          shouldRotate = true;
-          reason = `fallback_tab_pressure(tabs=${_cascadeTabCount},cur=${curQuota},dyn=${dynamicThreshold})`;
-        }
-      }
-
-      // L6: 高速消耗检测
-      if (!shouldRotate && _isHighVelocity() && curQuota !== null && curQuota > threshold) {
-        const vel = _getVelocity();
-        shouldRotate = true;
-        reason = `fallback_velocity(vel=${vel.toFixed(1)}%/min,cur=${curQuota})`;
-        _logWarn('POOL', `高速消耗(降级): ${vel.toFixed(1)}%/min → 主动切号`);
-      }
-
-      // L7: Gate 4层级上限(小时消息追踪降级)
-      if (!shouldRotate && curQuota !== null && curQuota > threshold && _isNearTierCap()) {
-        const effectiveCap = _realMaxMessages > 0 ? _realMaxMessages : TIER_MSG_CAP_ESTIMATE;
-        shouldRotate = true;
-        reason = `fallback_tier_cap(hourly=${_getHourlyMsgCount()}/${effectiveCap})`;
-        _hourlyMsgLog = [];
-      }
-    }
-
-    if (shouldRotate) {
-      _logInfo("POOL", `预防性轮转: ${reason}`);
-      let best = am.selectOptimal(
-        _activeIndex,
+      _logInfo("POOL", `预防性轮转: ${decision.reason}`);
+      const switchResult = await _performSwitch(context, {
         threshold,
-        _getOtherWindowAccounts(),
-      );
-      if (!best) best = am.selectOptimal(_activeIndex, threshold); // 降级: 忽略窗口隔离
-      if (best) {
-        await _seamlessSwitch(context, best.index);
-      } else {
+        targetPolicy: decision.targetPolicy || 'same_strategy',
+      });
+      if (!switchResult.ok) {
         _updatePoolBar();
-        _logWarn("POOL", "预防性轮转失败: 所有账号额度不足");
+        _logWarn("POOL", "预防性轮转失败: 所有账号额度不足或预热失败");
       }
     }
   }
@@ -1544,9 +1652,11 @@ function _startQuotaWatcher(context) {
     // 自适应间隔 — Thinking模型3s(最快), boost/burst 5s, 正幅45s
     const modelUid = _currentModelUid || _readCurrentModelUid();
     const isThinking = _isOpusModel(modelUid) && _isThinkingModel(modelUid);
+    const capacityState = _getCapacityState();
+    if (!capacityState) return;
     const interval = isThinking ? CAPACITY_CHECK_THINKING
       : (_isBoost() || _burstMode) ? CAPACITY_CHECK_FAST : CAPACITY_CHECK_INTERVAL;
-    if (Date.now() - _lastCapacityCheck < interval) return;
+    if (Date.now() - capacityState.lastCheck < interval) return;
 
     try {
       const capacity = await _probeCapacity();
@@ -1624,10 +1734,12 @@ function _invalidateApiKeyCache() {
  *  返回: capacity result 或 null (失败时) */
 async function _probeCapacity() {
   if (!auth || _activeIndex < 0) return null;
+  const capacityState = _getCapacityState();
+  if (!capacityState) return null;
 
   // Reduced backoff: max 60s
-  if (_capacityProbeFailCount >= 5) {
-    if (Date.now() - _lastCapacityCheck < 60000) return _lastCapacityResult;
+  if (capacityState.failCount >= 5) {
+    if (Date.now() - capacityState.lastCheck < 60000) return capacityState.lastResult;
   }
 
   const apiKey = _getCachedApiKey();
@@ -1639,7 +1751,7 @@ async function _probeCapacity() {
   const modelUid = _readCurrentModelUid();
   if (!modelUid) return null;
 
-  _lastCapacityCheck = Date.now();
+  capacityState.lastCheck = Date.now();
   _capacityProbeCount++;
 
   try {
@@ -1648,19 +1760,18 @@ async function _probeCapacity() {
       // -1/-1 means server returned empty/useless data — don't count as success
       const hasUsefulData = result.messagesRemaining >= 0 || result.maxMessages >= 0 || !result.hasCapacity;
       if (hasUsefulData) {
-        _capacityProbeFailCount = 0; // 重置失败计数
-        _lastSuccessfulProbe = Date.now(); // 更新看门狗时间戳
+        capacityState.failCount = 0;
+        capacityState.lastSuccessfulProbe = Date.now();
       } else {
-        // Got response but no useful data — increment fail count for watchdog
-        _capacityProbeFailCount++;
+        capacityState.failCount++;
       }
-      _lastCapacityResult = result;
+      capacityState.lastResult = result;
 
       // 更新真实消息上限(服务端权威数据)
-      if (result.maxMessages > 0 && result.maxMessages !== _realMaxMessages) {
-        const old = _realMaxMessages;
-        _realMaxMessages = result.maxMessages;
-        _logInfo('CAPACITY', `服务端消息上限更新: ${old} → ${_realMaxMessages} (model=${modelUid})`);
+      if (result.maxMessages > 0 && result.maxMessages !== capacityState.realMaxMessages) {
+        const old = capacityState.realMaxMessages;
+        capacityState.realMaxMessages = result.maxMessages;
+        _logInfo('CAPACITY', `服务端消息上限更新: ${old} → ${capacityState.realMaxMessages} (model=${modelUid})`);
       }
 
       // Log capacity status (reduce noise: only log every 5th probe or on state change)
@@ -1671,11 +1782,11 @@ async function _probeCapacity() {
 
       return result;
     }
-    _capacityProbeFailCount++;
+    capacityState.failCount++;
     return null;
   } catch (e) {
-    _capacityProbeFailCount++;
-    _logWarn('CAPACITY', `探测失败 (#${_capacityProbeFailCount}): ${e.message}`);
+    capacityState.failCount++;
+    _logWarn('CAPACITY', `探测失败 (#${capacityState.failCount}): ${e.message}`);
     return null;
   }
 }
@@ -1717,7 +1828,8 @@ async function _handleCapacityExhausted(context, capacityResult) {
 
   // Gate 4 or unknown → 直接账号切换
   if (gateType === 'tier_cap' || gateType === 'unknown') {
-    _hourlyMsgLog = []; // 新账号从0开始
+    const runtime = _getAccountRuntime();
+    if (runtime) runtime.hourlyMsgLog = [];
     _invalidateApiKeyCache(); // 切号后apiKey变化
     _activateBoost();
     await _doPoolRotate(context, true);
@@ -1751,7 +1863,7 @@ function _pushRateLimitEvent(eventData) {
       cascadeTabs: _cascadeTabCount,
       burstMode: _burstMode,
       switchCount: _switchCount,
-      poolStats: am?.getPoolStats(PREEMPTIVE_THRESHOLD) || {},
+      poolStats: am?.getPoolStats(_getPreemptiveThreshold()) || {},
       ...eventData,
     });
     const req = http.request({
@@ -1785,17 +1897,19 @@ function _pushRateLimitEvent(eventData) {
 /** 追踪积分速度样本 */
 function _trackVelocity(remaining) {
   if (remaining === null || remaining === undefined) return;
-  _velocityLog.push({ ts: Date.now(), remaining });
-  // 只保留窗口内的样本
+  const runtime = _getAccountRuntime();
+  if (!runtime) return;
+  runtime.velocityLog.push({ ts: Date.now(), remaining });
   const cutoff = Date.now() - VELOCITY_WINDOW;
-  _velocityLog = _velocityLog.filter((s) => s.ts >= cutoff);
+  runtime.velocityLog = runtime.velocityLog.filter((s) => s.ts >= cutoff);
 }
 
 /** 计算当前积分消耗速度 (%/min), 正值=消耗中 */
 function _getVelocity() {
-  if (_velocityLog.length < 2) return 0;
-  const first = _velocityLog[0],
-    last = _velocityLog[_velocityLog.length - 1];
+  const runtime = _getAccountRuntime(_activeIndex, false);
+  if (!runtime || runtime.velocityLog.length < 2) return 0;
+  const first = runtime.velocityLog[0];
+  const last = runtime.velocityLog[runtime.velocityLog.length - 1];
   const dtMin = (last.ts - first.ts) / 60000;
   if (dtMin <= 0) return 0;
   const drop = first.remaining - last.remaining; // 正值=额度在降
@@ -1804,17 +1918,19 @@ function _getVelocity() {
 
 /** 检测是否处于高速消耗模式 (120s内降>VELOCITY_THRESHOLD%) */
 function _isHighVelocity() {
-  if (_velocityLog.length < 2) return false;
-  const first = _velocityLog[0],
-    last = _velocityLog[_velocityLog.length - 1];
+  const runtime = _getAccountRuntime(_activeIndex, false);
+  if (!runtime || runtime.velocityLog.length < 2) return false;
+  const first = runtime.velocityLog[0];
+  const last = runtime.velocityLog[runtime.velocityLog.length - 1];
   const drop = first.remaining - last.remaining;
   return drop >= VELOCITY_THRESHOLD;
 }
 
 /** 斜率预测: 基于最近N个quota样本，线性外推SLOPE_HORIZON后的剩余额度 */
 function _slopePredict() {
-  if (_quotaHistory.length < 2) return null;
-  const recent = _quotaHistory.slice(-SLOPE_WINDOW);
+  const runtime = _getAccountRuntime(_activeIndex, false);
+  if (!runtime || runtime.quotaHistory.length < 2) return null;
+  const recent = runtime.quotaHistory.slice(-SLOPE_WINDOW);
   if (recent.length < 2) return null;
   const first = recent[0],
     last = recent[recent.length - 1];
@@ -1829,6 +1945,11 @@ function _slopePredict() {
 function _updatePoolBar() {
   if (!statusBar || !am) return;
   const accounts = am.getAll();
+  const threshold = _getPreemptiveThreshold();
+  const capacityState = _getCapacityState(_activeIndex, false);
+  const lastCapacityResult = capacityState?.lastResult || null;
+  const probeFailCount = capacityState?.failCount || 0;
+  const lastSuccessfulProbe = capacityState?.lastSuccessfulProbe || Date.now();
   if (accounts.length === 0) {
     statusBar.text = "$(add) 添加账号";
     statusBar.color = new vscode.ThemeColor("disabledForeground");
@@ -1836,7 +1957,7 @@ function _updatePoolBar() {
     return;
   }
 
-  const pool = am.getPoolStats(PREEMPTIVE_THRESHOLD);
+  const pool = am.getPoolStats(threshold);
   const mode = auth ? auth.getProxyStatus().mode : "?";
   const modeIcon = mode === "relay" ? "☁" : "⚡";
 
@@ -1851,7 +1972,7 @@ function _updatePoolBar() {
     isLow = poolEffective <= 10;
   } else if (pool.avgCredits !== null) {
     quotaDisplay = `均${pool.avgCredits}分`;
-    isLow = pool.avgCredits <= PREEMPTIVE_THRESHOLD;
+    isLow = pool.avgCredits <= threshold;
   } else {
     quotaDisplay = `${pool.health}%`;
     isLow = pool.health <= 10;
@@ -1883,8 +2004,8 @@ function _updatePoolBar() {
   const vel = _getVelocity();
   const hourlyCount = _getHourlyMsgCount();
   const currentModel = _currentModelUid || _readCurrentModelUid();
-  const wdAge = Math.round((Date.now() - _lastSuccessfulProbe) / 1000);
-  const wdArmed = wdAge > WATCHDOG_TIMEOUT / 1000 && _capacityProbeFailCount >= 3;
+  const wdAge = Math.round((Date.now() - lastSuccessfulProbe) / 1000);
+  const wdArmed = wdAge > WATCHDOG_TIMEOUT / 1000 && probeFailCount >= 3;
 
   const md = new vscode.MarkdownString('', true);
   md.isTrusted = true;
@@ -1941,7 +2062,7 @@ function _updatePoolBar() {
 
   // ── Runtime & Defense (structured rows) ──
   const hasRuntime = vel > 0 || hourlyCount > 0 || _switchCount > 0 || slopeInfo !== null || winCount > 1 || _cascadeTabCount > 1 || _burstMode;
-  const hasDefense = (_isOpusModel(currentModel) && _activeIndex >= 0) || _lastCapacityResult || _capacityProbeFailCount > 0 || wdArmed;
+  const hasDefense = (_isOpusModel(currentModel) && _activeIndex >= 0) || lastCapacityResult || probeFailCount > 0 || wdArmed;
   if (hasRuntime) {
     L(`---`);
     L(`**实时监控**`);
@@ -1962,18 +2083,18 @@ function _updatePoolBar() {
       const tierLabel = _isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R';
       L(`Opus预算 &nbsp; **${opusCount}/${tierBudget}条** (${tierLabel})`);
     }
-    if (_lastCapacityResult) {
-      const cap = _lastCapacityResult;
+    if (lastCapacityResult) {
+      const cap = lastCapacityResult;
       const capIcon = cap.hasCapacity ? '✓' : '✗';
       const capRem = cap.messagesRemaining >= 0 ? cap.messagesRemaining : '?';
       const capMax = cap.maxMessages >= 0 ? cap.maxMessages : '?';
       L(`L5容量 &nbsp; ${capIcon} **${capRem}/${capMax}条** (第${_capacityProbeCount}次探测)`);
     }
-    if (_capacityProbeFailCount > 0) L(`探测失败 &nbsp; **${_capacityProbeFailCount}次**连续`);
+    if (probeFailCount > 0) L(`探测失败 &nbsp; **${probeFailCount}次**连续`);
     if (wdArmed) L(`看门狗 &nbsp; ⚠ **已待命** (${wdAge}s)`);
   }
   L(`---`);
-  L(`${mode} · 阈值${PREEMPTIVE_THRESHOLD}% · 10层防御`);
+  L(`${mode} · 阈值${threshold}% · 10层防御`);
   statusBar.tooltip = md;
 }
 
@@ -1981,47 +2102,32 @@ function _updatePoolBar() {
 
 /** 无感切换 — 用户无需任何操作 */
 async function _seamlessSwitch(context, targetIndex) {
-  if (_switching || targetIndex === _activeIndex) return;
+  if (_switching || targetIndex === _activeIndex) return false;
   _switching = true;
   const prevBar = statusBar.text;
   statusBar.text = "$(sync~spin) ...";
   const prevIndex = _activeIndex;
+  const prevEmail = _getAccountEmail(prevIndex);
 
   try {
-    // v12.0: 切换前预热验证 — 刷新目标账号额度，确认确实可用 (5s超时，失败不阻断)
-    try {
-      await Promise.race([
-        _refreshOne(targetIndex),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), 5000)),
-      ]);
-      const preCheck = am.effectiveRemaining(targetIndex);
-      if (preCheck !== null && preCheck <= PREEMPTIVE_THRESHOLD) {
-        _logWarn("SWITCH", `预热验证: #${targetIndex + 1} 额度不足(${preCheck}%≤${PREEMPTIVE_THRESHOLD}%), 跳过该账号`);
-        statusBar.text = prevBar;
-        _switching = false;
-        return;
-      }
-    } catch (e) {
-      _logWarn("SWITCH", `预热验证跳过(${e.message}), 继续切换`);
-    }
     _invalidateApiKeyCache(); // 切号后apiKey变化
     await _loginToAccount(context, targetIndex);
     _switchCount++;
     am.markUsed(targetIndex); // v12.0: Round-Robin均匀消耗追踪
-    // reset tracking state — old account's data corrupts new account's predictions
-    _quotaHistory = [];
-    _velocityLog = [];
     _lastQuota = null;
-    _resetOpusMsgLog(targetIndex); // v12.0: 清除目标账号旧Opus计数，防止切入即触发预算守卫
-    _hourlyMsgLog = []; // 新账号小时消息从0开始
+    _dropAccountRuntimeByEmail(prevEmail);
+    _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
+    _resetOpusMsgLog(targetIndex);
     _heartbeatWindow();
     _logInfo(
       "SWITCH",
       `无感切换 #${prevIndex + 1}→#${targetIndex + 1} (第${_switchCount}次, ${_getActiveWindowCount()}窗口)`,
     );
+    return true;
   } catch (e) {
     _logError("SWITCH", `切换失败 #${targetIndex + 1}`, e.message);
     statusBar.text = prevBar;
+    return false;
   } finally {
     _switching = false;
     _updatePoolBar();
@@ -2039,7 +2145,7 @@ async function _doPoolRotate(context, isPanic = false) {
     return;
   }
 
-  const threshold = PREEMPTIVE_THRESHOLD;
+  const threshold = _getPreemptiveThreshold();
 
   // ═══ 紧急切换(跳过全池刷新，用缓存数据直切) ═══
   // v11.0: 不再跳过注入验证(_urgentSwitch已废弃)，杜绝"Invalid argument"根源
@@ -2050,12 +2156,14 @@ async function _doPoolRotate(context, isPanic = false) {
     if (!am.isRateLimited(_activeIndex)) {
       am.markRateLimited(_activeIndex, 300, { model: "unknown", trigger: "panic_rotate" });
     }
-    let best = am.selectOptimal(_activeIndex, threshold, _getOtherWindowAccounts());
-    if (!best) best = am.selectOptimal(_activeIndex, threshold);
-    if (!best) best = am.selectOptimal(_activeIndex, 0);
-    if (best) {
-      await _seamlessSwitch(context, best.index);
-      _logInfo("ROTATE", `紧急切换完成: #${best.index + 1} (耗时${Date.now() - t0}ms)`);
+    const panicSwitch = await _performSwitch(context, {
+      threshold,
+      targetPolicy: 'same_strategy',
+      panic: true,
+      allowThresholdFallback: true,
+    });
+    if (panicSwitch.ok) {
+      _logInfo("ROTATE", `紧急切换完成: #${panicSwitch.index + 1} (耗时${Date.now() - t0}ms)`);
       _updatePoolBar();
       _refreshPanel();
       setTimeout(() => _refreshAll().then(() => { _updatePoolBar(); _refreshPanel(); }).catch(() => {}), 5000);
@@ -2078,16 +2186,15 @@ async function _doPoolRotate(context, isPanic = false) {
 
   // ═══ 非紧急模式: 完整刷新+选优 ═══
   statusBar.text = "$(sync~spin) 轮转中...";
-  await _refreshAll();
-
-  let best = am.selectOptimal(
-    _activeIndex,
+  const rotateResult = await _performSwitch(context, {
     threshold,
-    _getOtherWindowAccounts(),
-  );
-  if (!best) best = am.selectOptimal(_activeIndex, threshold);
-  if (best) {
-    await _seamlessSwitch(context, best.index);
+    targetPolicy: 'same_strategy',
+    refreshPool: true,
+  });
+  if (rotateResult.ok) {
+    _updatePoolBar();
+    _refreshPanel();
+    return;
   } else if (am.allDepleted(threshold)) {
     statusBar.text = "$(warning) 号池耗尽";
     statusBar.color = new vscode.ThemeColor("errorForeground");
@@ -2532,19 +2639,14 @@ async function _doRefreshPool(context) {
     statusBar.text = `$(sync~spin) ${i + 1}/${n}...`;
   });
   // 刷新后自动轮转
-  const threshold = PREEMPTIVE_THRESHOLD;
+  const threshold = _getPreemptiveThreshold();
   if (
     vscode.workspace.getConfiguration("wam").get("autoRotate", true) &&
     _activeIndex >= 0
   ) {
     const decision = am.shouldSwitch(_activeIndex, threshold);
     if (decision.switch) {
-      const best = am.selectOptimal(
-        _activeIndex,
-        threshold,
-        _getOtherWindowAccounts(),
-      );
-      if (best) await _seamlessSwitch(context, best.index);
+      await _performSwitch(context, { threshold, targetPolicy: 'same_strategy' });
     }
   }
   _updatePoolBar();
@@ -2567,12 +2669,19 @@ function _handleAction(context, action, arg) {
         _updatePoolBar();
         _refreshPanel();
       });
+    case "clearRateLimit":
+      if (arg !== undefined) {
+        am.clearRateLimit(arg);
+        _updatePoolBar();
+        _refreshPanel();
+      }
+      return;
     case "getCurrentIndex":
       return _activeIndex;
     case "getProxyStatus":
       return auth ? auth.getProxyStatus() : { mode: "?", port: 0 };
     case "getPoolStats":
-      return am.getPoolStats(PREEMPTIVE_THRESHOLD);
+      return am.getPoolStats(_getPreemptiveThreshold());
     case "getActiveQuota":
       return am.getActiveQuota(_activeIndex);
     case "getSwitchCount":
@@ -2623,6 +2732,19 @@ function _handleAction(context, action, arg) {
         vscode.workspace
           .getConfiguration("wam")
           .update("autoRotate", !!arg, true);
+      return;
+    case "setCreditThreshold":
+    case "setPreemptiveThreshold":
+      if (arg !== undefined) {
+        const next = Math.max(0, Math.min(100, Number(arg) || 0));
+        return vscode.workspace
+          .getConfiguration("wam")
+          .update("preemptiveThreshold", next, true)
+          .then(() => {
+            _updatePoolBar();
+            _refreshPanel();
+          });
+      }
       return;
   }
 }

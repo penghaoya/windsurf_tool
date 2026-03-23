@@ -38,6 +38,18 @@
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
         </button>
         <button
+          v-if="isRateLimited"
+          class="r-btn rl-clear"
+          @click="onClearRateLimit"
+          title="解除限流标记"
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 8l8 8"/>
+            <path d="M16 8l-8 8"/>
+            <path d="M6 3h12l3 5-9 13L3 8l3-5z"/>
+          </svg>
+        </button>
+        <button
           class="r-btn del"
           :id="`bx${index}`"
           @click="onRemove"
@@ -66,12 +78,15 @@
     </div>
 
     <!-- Rate Limited Badge -->
-    <div v-if="isRateLimited" class="ac-rl">⏳ 限流中</div>
+    <div v-if="isRateLimited" class="ac-rl">
+      <span>⏳ 限流中</span>
+      <span v-if="rateLimitLabel" class="ac-rl-time">{{ rateLimitLabel }}</span>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { postMessage, pwdResults } from '../composables/useVscode.js'
 import { dotClass, urgencyColor } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
@@ -86,13 +101,25 @@ const props = defineProps({
 const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
 const refreshing = ref(false)
+const now = ref(Date.now())
 let confirmTimer = null
 let copyTimer = null
+const rateLimitTimer = setInterval(() => {
+  now.value = Date.now()
+}, 1000)
 
-const isRateLimited = computed(() => {
-  const rl = props.account.rateLimit
-  return rl && rl.until > Date.now()
+const rateLimitUntil = computed(() =>
+  props.account.rateLimitInfo?.until ?? props.account.rateLimit?.until ?? null
+)
+
+const remainingCooldown = computed(() => {
+  if (!rateLimitUntil.value) return 0
+  return Math.max(0, Math.ceil((rateLimitUntil.value - now.value) / 1000))
 })
+
+const isRateLimited = computed(() => remainingCooldown.value > 0)
+
+const rateLimitLabel = computed(() => formatCooldown(remainingCooldown.value))
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
 
@@ -143,6 +170,10 @@ function onRefresh() {
   setTimeout(() => { refreshing.value = false }, 3000)
 }
 
+function onClearRateLimit() {
+  postMessage('clearRateLimit', { index: props.index })
+}
+
 function onRemove() {
   if (confirmRemove.value) {
     clearTimeout(confirmTimer)
@@ -153,6 +184,22 @@ function onRemove() {
     confirmTimer = setTimeout(() => { confirmRemove.value = false }, 2000)
   }
 }
+
+function formatCooldown(totalSeconds) {
+  if (!totalSeconds || totalSeconds <= 0) return ''
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+onBeforeUnmount(() => {
+  clearInterval(rateLimitTimer)
+  clearTimeout(confirmTimer)
+  clearTimeout(copyTimer)
+})
 </script>
 
 <style scoped>
@@ -178,10 +225,13 @@ function onRemove() {
 .r-btn.rfsh{color:var(--tx3)}
 .r-btn.rfsh:hover{background:var(--ac-bg);color:var(--ac)}
 .r-btn.rfsh.spinning svg{animation:spin .8s linear infinite}
+.r-btn.rl-clear{color:var(--yw)}
+.r-btn.rl-clear:hover{background:rgba(245,158,11,.12);color:var(--yw)}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .r-btn.del:hover{background:var(--rd-bg);color:var(--rd)}
 .r-btn.copy{color:var(--tx3)}
 .r-btn.copy:hover{background:var(--ac-bg);color:var(--ac)}
 .ac-meters{display:flex;flex-direction:column;gap:3px}
-.ac-rl{font-size:9px;color:var(--yw);margin-top:3px}
+.ac-rl{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--yw);margin-top:3px}
+.ac-rl-time{color:var(--tx2)}
 </style>

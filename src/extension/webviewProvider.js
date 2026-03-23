@@ -98,7 +98,7 @@ class AccountViewProvider {
     const accounts = this._am.getAll();
     const currentIndex = this._onAction ? this._onAction('getCurrentIndex') : -1;
     const cfg = vscode.workspace.getConfiguration('wam');
-    const threshold = cfg.get('creditThreshold', 5);
+    const threshold = cfg.get('preemptiveThreshold', 15);
     const pool = this._am.getPoolStats ? this._am.getPoolStats(threshold) : { total: accounts.length, available: 0, depleted: 0, rateLimited: 0, health: 0, avgDaily: null, avgWeekly: null };
     const activeQuota = this._am.getActiveQuota ? this._am.getActiveQuota(currentIndex) : null;
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
@@ -110,6 +110,7 @@ class AccountViewProvider {
       isExpired: this._am.isExpired ? this._am.isExpired(i) : false,
       planDays: this._am.getPlanDaysRemaining ? this._am.getPlanDaysRemaining(i) : null,
       urgency: this._am.getExpiryUrgency ? this._am.getExpiryUrgency(i) : -1,
+      rateLimitInfo: this._am.getRateLimitInfo ? this._am.getRateLimitInfo(i) : null,
     }));
 
     // 补充 activeQuota 的紧急度
@@ -211,7 +212,8 @@ class AccountViewProvider {
         this._pushState();
         break;
       case 'setCreditThreshold':
-        if (act) act('setCreditThreshold', msg.value);
+      case 'setPreemptiveThreshold':
+        if (act) act('setPreemptiveThreshold', msg.value);
         this._pushState();
         break;
       case 'exportAccounts':
@@ -226,6 +228,17 @@ class AccountViewProvider {
           await act('refreshOne', msg.index);
           this._setLoading(false);
           this._toast('刷新完成');
+          this._pushState();
+        }
+        break;
+      case 'clearRateLimit':
+        if (msg.index !== undefined) {
+          if (act) {
+            await act('clearRateLimit', msg.index);
+          } else {
+            this._am.clearRateLimit(msg.index);
+          }
+          this._toast('已解除限流标记');
           this._pushState();
         }
         break;

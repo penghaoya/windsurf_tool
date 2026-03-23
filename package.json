@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "1.0.23",
+  "version": "1.0.25",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -105,6 +105,13 @@
           "type": "boolean",
           "default": true,
           "description": "积分不足时自动切换到最高积分账号"
+        },
+        "wam.preemptiveThreshold": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "预防性切换阈值，达到该剩余额度时提前切换账号"
         },
         "wam.rotateFingerprint": {
           "type": "boolean",

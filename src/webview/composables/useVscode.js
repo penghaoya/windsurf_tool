@@ -19,7 +19,7 @@ export const state = reactive({
   currentIndex: -1,
   pool: { total: 0, available: 0, depleted: 0, rateLimited: 0, expired: 0, health: 0, avgDaily: null, avgWeekly: null, nextReset: null, weeklyReset: null, avgCredits: null },
   activeQuota: null,
-  threshold: 5,
+  threshold: 15,
   switchCount: 0,
 })
 
