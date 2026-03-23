@@ -143,6 +143,9 @@ const SONNET_FALLBACK = 'claude-sonnet-4-6-thinking-1m';
 let _currentModelUid = null; // 当前活跃模型UID (从windsurfConfigurations读取)
 let _modelRateLimitCount = 0; // 本会话per-model rate limit触发次数
 let _lastModelSwitch = 0; // 上次模型切换时间戳
+let _downgradeLockUntil = 0; // 降级锁: 防止DB读取覆盖降级后的模型状态
+let _lastTrialPoolCooldownFailTs = 0; // 上次Trial池冷却导致切换失败的时间戳
+const TRIAL_POOL_COOLDOWN_RETRY_CD = 60000; // Trial池冷却切换失败后重试间隔 60s
 
 // ═══ Layer 8: Opus消息预算守卫 (Thinking-Tier-Aware Prevention) ═══
 // 实测: Opus Thinking 1M桶容量≈3条/20min → Resets in: 20m3s (1203s)
@@ -328,8 +331,16 @@ function _getActiveSelectionMode() {
   return am && _activeIndex >= 0 && am.getSelectionMode ? am.getSelectionMode(_activeIndex) : null;
 }
 
-/** 读取当前活跃模型UID (从state.vscdb windsurfConfigurations/codeium.windsurf) */
+/** 读取当前活跃模型UID (从state.vscdb windsurfConfigurations/codeium.windsurf)
+ *  v13.1: 降级锁 — _downgradeFromTrialPressure后60s内不从DB读取,防止覆盖 */
 function _readCurrentModelUid() {
+  // v13.1: 降级锁生效期间,直接返回缓存的降级后模型,不读DB
+  if (_downgradeLockUntil > 0 && Date.now() < _downgradeLockUntil && _currentModelUid) {
+    return _currentModelUid;
+  }
+  if (_downgradeLockUntil > 0 && Date.now() >= _downgradeLockUntil) {
+    _downgradeLockUntil = 0; // 锁过期,恢复正常读取
+  }
   try {
     if (!auth) return _currentModelUid;
     const cw = auth.readCachedValue && auth.readCachedValue('codeium.windsurf');
@@ -1242,7 +1253,13 @@ async function _downgradeFromTrialPressure(reason) {
   if (!_isOpusModel(currentModel) || currentModel === SONNET_FALLBACK) return false;
   const switched = await _switchModelUid(SONNET_FALLBACK);
   if (switched) {
-    _logWarn('MODEL_RL', `${reason} → 降级到${SONNET_FALLBACK}，避免Trial账号互切`);
+    // v13.1: 降级成功后彻底清理Opus守卫状态,防止残留触发循环
+    _downgradeLockUntil = Date.now() + 120000; // 120s降级锁,防止DB读取覆盖回Opus
+    _resetOpusMsgLog(_activeIndex); // 清Opus消息计数
+    for (const variant of OPUS_VARIANTS) {
+      am.clearModelRateLimit && am.clearModelRateLimit(_activeIndex, variant);
+    }
+    _logWarn('MODEL_RL', `${reason} → 降级到${SONNET_FALLBACK}，避免Trial账号互切 (降级锁120s)`);
   }
   return switched;
 }
@@ -1365,7 +1382,8 @@ function evaluateActiveAccount({ accounts, threshold, curQuota }) {
 
   if (curQuota !== null && curQuota > threshold) {
     const currentModel = _readCurrentModelUid();
-    if (_isOpusModel(currentModel) && _isNearOpusBudget(_activeIndex)) {
+    // v13.1: 降级锁生效期间或当前模型已非Opus时,跳过Opus守卫
+    if (_isOpusModel(currentModel) && _downgradeLockUntil <= Date.now() && _isNearOpusBudget(_activeIndex)) {
       const opusCount = _getOpusMsgCount(_activeIndex);
       const tierBudget = _getModelBudget(currentModel);
       decision.action = 'switch_account';
@@ -1632,27 +1650,38 @@ async function _poolTick(context) {
   }
 
   if (autoRotate) {
-    const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
-    if (decision.action === 'switch_account') {
-      if (decision.reason.startsWith('ufef_urgent')) _lastUfefSwitchTs = Date.now();
-      if (decision.reason.startsWith('opus_budget_guard')) {
-        const currentModel = _readCurrentModelUid();
-        const opusCount = _getOpusMsgCount(_activeIndex);
-        const tierBudget = _getModelBudget(currentModel);
-        _opusGuardSwitchCount++;
-        for (const variant of OPUS_VARIANTS) {
-          am.markModelRateLimited(_activeIndex, variant, OPUS_COOLDOWN_DEFAULT, { trigger: 'opus_budget_guard' });
+    // v13.1: Trial池冷却+降级锁期间,跳过预防性轮转(避免无候选重试风暴)
+    const trialPoolActive = !!_getTrialPoolCooldown(_readCurrentModelUid());
+    const downgradeActive = _downgradeLockUntil > 0 && Date.now() < _downgradeLockUntil;
+    if (trialPoolActive && downgradeActive) {
+      // 静默模式: 当前已降级到Sonnet且Trial池冷却中,不再尝试账号轮转
+    } else if (trialPoolActive && Date.now() - _lastTrialPoolCooldownFailTs < TRIAL_POOL_COOLDOWN_RETRY_CD) {
+      // 防抖: Trial池冷却上次失败后60s内不重试
+    } else {
+      const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
+      if (decision.action === 'switch_account') {
+        if (decision.reason.startsWith('ufef_urgent')) _lastUfefSwitchTs = Date.now();
+        if (decision.reason.startsWith('opus_budget_guard')) {
+          const currentModel = _readCurrentModelUid();
+          const opusCount = _getOpusMsgCount(_activeIndex);
+          const tierBudget = _getModelBudget(currentModel);
+          _opusGuardSwitchCount++;
+          for (const variant of OPUS_VARIANTS) {
+            am.markModelRateLimited(_activeIndex, variant, OPUS_COOLDOWN_DEFAULT, { trigger: 'opus_budget_guard' });
+          }
+          _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_budget_guard', model: currentModel, msgs: opusCount, budget: tierBudget, tier: _isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R' });
         }
-        _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_budget_guard', model: currentModel, msgs: opusCount, budget: tierBudget, tier: _isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R' });
-      }
-      _logInfo("POOL", `预防性轮转: ${decision.reason}`);
-      const switchResult = await _performSwitch(context, {
-        threshold,
-        targetPolicy: decision.targetPolicy || 'same_strategy',
-      });
-      if (!switchResult.ok) {
-        _updatePoolBar();
-        _logWarn("POOL", "预防性轮转失败: 所有账号额度不足或预热失败");
+        _logInfo("POOL", `预防性轮转: ${decision.reason}`);
+        const switchResult = await _performSwitch(context, {
+          threshold,
+          targetPolicy: decision.targetPolicy || 'same_strategy',
+        });
+        if (!switchResult.ok) {
+          // v13.1: 记录Trial池冷却失败时间戳,用于防抖
+          if (trialPoolActive) _lastTrialPoolCooldownFailTs = Date.now();
+          _updatePoolBar();
+          _logWarn("POOL", "预防性轮转失败: 所有账号额度不足或预热失败");
+        }
       }
     }
   }
@@ -2419,7 +2448,13 @@ async function _doPoolRotate(context, isPanic = false) {
       let next = -1;
       for (let r = 1; r < accounts.length; r++) {
         const ci = (_activeIndex + r) % accounts.length;
-        if (!am.isRateLimited(ci) && !am.isExpired(ci)) { next = ci; break; }
+        // v13.1: round-robin fallback也需检查隔离+冷却
+        if (!am.isRateLimited(ci) && !am.isExpired(ci) && !_isAccountQuarantined(ci)) {
+          const trialCd = _getTrialPoolCooldown(_readCurrentModelUid());
+          if (trialCd && _isTrialLikeAccount(ci)) continue;
+          next = ci;
+          break;
+        }
       }
       if (next < 0) next = (_activeIndex + 1) % accounts.length;
       await _seamlessSwitch(context, next);
@@ -2919,6 +2954,10 @@ function _handleAction(context, action, arg) {
       if (arg !== undefined) {
         am.clearRateLimit(arg);
         _clearAccountQuarantine(arg);
+        // v13.1: 清限流时也清Trial池冷却+降级锁,允许恢复Opus
+        schedulerState.poolCooldowns.clear();
+        _downgradeLockUntil = 0;
+        _lastTrialPoolCooldownFailTs = 0;
         _updatePoolBar();
         _refreshPanel();
       }

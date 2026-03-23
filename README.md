@@ -78,7 +78,7 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 | L9 | 输出通道拦截 | 实时监控 Windsurf 输出通道，拦截 rate limit 错误信息 |
 | L10 | 多窗口协调 | 共享状态文件 + 心跳机制，多窗口间账号隔离 (跨平台路径) |
 
-### 3.1 调度策略 (v13.0)
+### 3.1 调度策略 (v13.1)
 
 号池引擎采用 Per-Account Runtime State + 统一切换入口:
 
@@ -88,6 +88,10 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 | 账号隔离 | 命中 Trial 限流的账号隔离 1h，候选过滤+预热拒绝 |
 | Trial池冷却 | 全局 Trial 限流时按模型族冷却整组 Trial 候选 (20min) |
 | 模型降级 | Trial 池冷却无候选时自动从 Opus 降级到 Sonnet |
+| 降级锁 | 降级后 120s 内 _readCurrentModelUid() 不读 DB，防止覆盖回 Opus |
+| 降级清理 | 降级成功后清 Opus 消息计数 + per-model 限流标记 |
+| 静默模式 | Trial 池冷却 + 降级锁生效时跳过预防性轮转 (避免重试风暴) |
+| 失败防抖 | Trial 池冷却切换失败后 60s 内不重试 |
 | UFEF 冷却 | 10min 冷却防止 safe↔urgent 账号频繁抖动 |
 | Round-Robin | 同紧急度 + 额度差≤10% 时轮转，均匀消耗 |
 | 指数退避 | 限流冷却 base×2^(n-1)，上限 3600s，恢复后归零 |

@@ -82,7 +82,7 @@ npm run install-ext     # 打包并安装到 IDE
 | L9 | 输出通道实时拦截 |
 | L10 | 多窗口协调 (账号隔离+心跳, 跨平台路径) |
 
-## 调度策略 (v13.0)
+## 调度策略 (v13.1)
 
 ### 调度架构
 
@@ -95,11 +95,13 @@ _poolTick
  │   ├─ Tier 2: 配额阈值
  │   │   ├─ T2-A: shouldSwitch (depleted/low/expired/rate_limited)
  │   │   ├─ T2-B: isRateLimited 直接检查
- │   │   ├─ T2-C: Opus 预算守卫
+ │   │   ├─ T2-C: Opus 预算守卫 (降级锁期间跳过)
  │   │   └─ T2-D: UFEF 紧急切换 (含10min冷却)
  │   └─ Tier 3: 启发式降级 (仅L5无效时)
  │       ├─ 斜率 / burst / Tab压力 / 速度
  │       └─ Gate4 小时消息 (Trial NO_DATA时 cap=15)
+ ├─ 静默模式: Trial池冷却+降级锁生效时跳过预防性轮转 (避免重试风暴)
+ ├─ 防抖: Trial池冷却失败后60s内不重试
  └─ _performSwitch() → 过滤隔离账号+有序候选遍历+预热验证+切换
      └─ Trial池冷却时无候选 → 自动降级到Sonnet
 ```
@@ -156,7 +158,11 @@ Quota 模式排序:
 | TRIAL_GUARD | L5 NO_DATA + 额度下降 → 二次确认(3min窗口内≥2次或降≥2)后隔离+切号 |
 | 账号隔离 | 命中Trial限流的账号隔离1h, 候选过滤+预热拒绝 |
 | Trial池冷却 | 全局Trial限流时按模型族冷却整组Trial候选(20min) |
-| 模型降级 | Trial池冷却无候选时自动从oopus降级到Sonnet |
+| 模型降级 | Trial池冷却无候选时自动从Opus降级到Sonnet |
+| 降级锁 | 降级后120s内_readCurrentModelUid()不读DB, 防止覆盖回Opus |
+| 降级清理 | 降级成功后清Opus消息计数+per-model限流标记 |
+| 静默模式 | Trial池冷却+降级锁生效时跳过预防性轮转 |
+| 失败防抖 | Trial池冷却切换失败后60s内不重试 |
 | 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
 | 可配置阈值 | `wam.preemptiveThreshold` (默认15, 0-100) |
 

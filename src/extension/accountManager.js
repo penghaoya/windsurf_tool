@@ -822,6 +822,14 @@ class AccountManager {
     return true;
   }
 
+  /** Clear model rate limit for a specific account+model (v13.1: 降级后清理) */
+  clearModelRateLimit(index, modelUid) {
+    const a = this.get(index);
+    if (!a || !modelUid) return;
+    const key = `${a.email}|${modelUid}`;
+    this._modelRateLimits.delete(key);
+  }
+
   /** Find first non-rate-limited model variant for an account from a list of UIDs */
   findAvailableModelVariant(index, modelUids) {
     if (!Array.isArray(modelUids) || modelUids.length === 0) return null;
