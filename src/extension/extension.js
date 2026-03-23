@@ -54,6 +54,7 @@ const UPGRADE_PRO_RE = /upgrade\s*to\s*a?\s*pro/i;
 const ABOUT_HOUR_RE = /try\s*again\s*in\s*about\s*an?\s*hour/i;
 const MODEL_UNREACHABLE_RE = /model\s*provider\s*unreachable/i;
 const PROVIDER_ERROR_RE = /provider.*(?:error|unavailable|unreachable)|(?:error|unavailable|unreachable).*provider/i;
+const GLOBAL_TRIAL_RL_RE = /(?:all\s*)?(?:API\s*)?providers?\s*(?:are\s*)?over\s*(?:their\s*)?(?:global\s*)?rate\s*limit\s*for\s*trial/i;
 const HOUR_WINDOW = 3600000; // 1小时滑动窗口
 const TIER_MSG_CAP_ESTIMATE = 25; // Trial账号预估小时消息上限(保守)
 const TIER_CAP_WARN_RATIO = 0.7; // 达到上限70%即预防
@@ -268,6 +269,10 @@ function _classifyRateLimit(errorText, contextKey) {
   if (MODEL_UNREACHABLE_RE.test(text) || PROVIDER_ERROR_RE.test(text)) {
     return 'tier_cap'; // 当作tier_cap处理：直接换号
   }
+  // v12.0: "all API providers are over their global rate limit for trial users" → 全局Trial限流
+  if (GLOBAL_TRIAL_RL_RE.test(text)) {
+    return 'tier_cap';
+  }
   // Gate 4 特征: "no credits were used" + "upgrade to Pro" 或 "about an hour"
   if (TIER_RL_RE.test(text) || (UPGRADE_PRO_RE.test(text) && /rate\s*limit/i.test(text))) {
     return 'tier_cap';
@@ -306,9 +311,13 @@ function _getHourlyMsgCount() {
   return _hourlyMsgLog.filter(m => m.ts > cutoff).length;
 }
 
-/** 判断是否接近Gate 4层级上限 */
+/** 判断是否接近Gate 4层级上限
+ *  v12.0: L5 NO_DATA时降低Trial预估上限(15→25), 更早触发预防切号 */
 function _isNearTierCap() {
-  return _getHourlyMsgCount() >= TIER_MSG_CAP_ESTIMATE * TIER_CAP_WARN_RATIO;
+  // L5持续NO_DATA = Trial账号, 全局限流阈值更低
+  const isNoData = _lastCapacityResult && _lastCapacityResult.messagesRemaining < 0;
+  const effectiveCap = _realMaxMessages > 0 ? _realMaxMessages : (isNoData ? 15 : TIER_MSG_CAP_ESTIMATE);
+  return _getHourlyMsgCount() >= effectiveCap * TIER_CAP_WARN_RATIO;
 }
 
 /** v7.5 Gate 4: 账号层级硬限处理 — 跳过模型轮转, 直接账号切换

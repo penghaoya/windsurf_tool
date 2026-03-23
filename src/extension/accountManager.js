@@ -1132,21 +1132,7 @@ class AccountManager {
     if (rem <= 0) return { switch: true, reason: 'depleted' };
     if (rem <= threshold) return { switch: true, reason: 'low' };
     if (this.isRateLimited(activeIndex)) return { switch: true, reason: 'rate_limited' };
-    // v7.4 UFEF: if active is safe(>7d) but urgent accounts(≤3d) exist with good quota → switch
-    const activeUrg = this.getExpiryUrgency(activeIndex);
-    if (activeUrg >= 2 || activeUrg < 0) {
-      for (let i = 0; i < this._accounts.length; i++) {
-        if (i === activeIndex) continue;
-        if (this.isRateLimited(i) || this.isExpired(i)) continue;
-        const iUrg = this.getExpiryUrgency(i);
-        if (iUrg === 0) {
-          const iRem = this.effectiveRemaining(i);
-          if (iRem !== null && iRem > threshold) {
-            return { switch: true, reason: 'ufef_urgent', urgentIndex: i, urgentRemaining: iRem };
-          }
-        }
-      }
-    }
+    // v12.0: UFEF逻辑移至extension.js T2-D统一管控(含10min冷却)，避免shouldSwitch每tick触发抖动
     return { switch: false, reason: 'ok', remaining: rem };
   }
 
