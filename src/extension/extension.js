@@ -102,9 +102,13 @@ let _burstMode = false; // 是否处于burst防护模式
 let _allQuotaSnapshot = new Map(); // index → {remaining, checkedAt} 全池额度快照
 let _lastFullScanTs = 0; // 上次全池扫描时间戳
 let _lastReactiveSwitchTs = 0; // 上次响应式切换时间戳
-const FULL_SCAN_INTERVAL = 300000; // 全池扫描间隔 300s (v6.8: 从90s放宽，减少API压力)
+const FULL_SCAN_INTERVAL_NORMAL = 300000; // 全池扫描间隔 300s (正常模式)
+const FULL_SCAN_INTERVAL_BOOST = 120000; // 全池扫描间隔 120s (加速模式)
+const FULL_SCAN_INTERVAL_BURST = 60000; // 全池扫描间隔 60s (burst模式)
 const REACTIVE_SWITCH_CD = 10000; // 响应式切换冷却 10s (v7.4: 从30s收紧，加速响应)
 const REACTIVE_DROP_MIN = 5; // 响应式切换最小降幅阈值 (额度降>5%才触发，避免微波动)
+const UFEF_COOLDOWN = 600000; // UFEF切换冷却 10min，避免safe↔urgent频繁抖动
+let _lastUfefSwitchTs = 0; // 上次UFEF触发切换的时间戳
 
 // ═══ v7.0 热重置引擎 (Hot Reset Engine) ═══
 // 核心洞察: provideAuthTokenToAuthProvider → LS重启 → LS在启动时读取机器码
@@ -1109,7 +1113,8 @@ async function _poolTick(context) {
   }
 
   // ═══ v6.7 P1: 全池扫描 — 定期刷新所有账号额度，更新快照 ═══
-  if (Date.now() - _lastFullScanTs > FULL_SCAN_INTERVAL) {
+  const _fullScanInterval = _burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
+  if (Date.now() - _lastFullScanTs > _fullScanInterval) {
     _lastFullScanTs = Date.now();
     _logInfo("SCAN", `全池扫描启动 (${accounts.length}账号)`);
     await _refreshAll();
@@ -1193,7 +1198,9 @@ async function _poolTick(context) {
     }
 
     // T2-D: UFEF过期紧急 — 当前账号安全但有紧急账号额度充足 → 切到紧急账号避免浪费
-    if (!shouldRotate && curQuota !== null && curQuota > threshold) {
+    // v12.0: +UFEF冷却(10min)，避免safe↔urgent频繁抖动
+    if (!shouldRotate && curQuota !== null && curQuota > threshold
+        && Date.now() - _lastUfefSwitchTs > UFEF_COOLDOWN) {
       const activeUrg = am.getExpiryUrgency(_activeIndex);
       if (activeUrg >= 2 || activeUrg < 0) {
         for (let i = 0; i < accounts.length; i++) {
@@ -1204,6 +1211,7 @@ async function _poolTick(context) {
             const iRem = am.effectiveRemaining(i);
             if (iRem !== null && iRem > threshold) {
               shouldRotate = true;
+              _lastUfefSwitchTs = Date.now();
               reason = `ufef_urgent(active_urg=${activeUrg},#${i+1}_urg=${iUrg},#${i+1}_rem=${iRem},#${i+1}_days=${am.getPlanDaysRemaining(i)})`;
               _logInfo('POOL', `UFEF: #${i+1}紧急(${am.getPlanDaysRemaining(i)}d) → 切到紧急账号避免浪费`);
               break;
@@ -1945,9 +1953,26 @@ async function _seamlessSwitch(context, targetIndex) {
   const prevIndex = _activeIndex;
 
   try {
+    // v12.0: 切换前预热验证 — 刷新目标账号额度，确认确实可用 (5s超时，失败不阻断)
+    try {
+      await Promise.race([
+        _refreshOne(targetIndex),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), 5000)),
+      ]);
+      const preCheck = am.effectiveRemaining(targetIndex);
+      if (preCheck !== null && preCheck <= PREEMPTIVE_THRESHOLD) {
+        _logWarn("SWITCH", `预热验证: #${targetIndex + 1} 额度不足(${preCheck}%≤${PREEMPTIVE_THRESHOLD}%), 跳过该账号`);
+        statusBar.text = prevBar;
+        _switching = false;
+        return;
+      }
+    } catch (e) {
+      _logWarn("SWITCH", `预热验证跳过(${e.message}), 继续切换`);
+    }
     _invalidateApiKeyCache(); // 切号后apiKey变化
     await _loginToAccount(context, targetIndex);
     _switchCount++;
+    am.markUsed(targetIndex); // v12.0: Round-Robin均匀消耗追踪
     // reset tracking state — old account's data corrupts new account's predictions
     _quotaHistory = [];
     _velocityLog = [];

@@ -16,6 +16,8 @@ class AccountManager {
     this._listeners = [];
     this._rateLimits = new Map(); // email -> { until: timestamp, model, resetsIn, maxMessages, messagesRemaining }
     this._modelRateLimits = new Map(); // "email|modelUid" -> { until, resetsIn, hitAt } — per-(account,model) bucket
+    this._lastUsedTs = new Map(); // index → timestamp, 均匀消耗追踪
+    this._rateLimitHitCount = new Map(); // email → consecutive hit count, 指数退避
     this._discoveredPaths = []; // Auto-discovered paths (also written to on save to prevent stale merges)
     this._isolated = !!(options && options.isolated); // test isolation — skip persistent paths + discovery
     this._init(storagePath);
@@ -596,6 +598,18 @@ class AccountManager {
     return { added, updated, unchanged, total: this._accounts.length };
   }
 
+  // ========== 均匀消耗追踪 (v12.0: Round-Robin) ==========
+
+  /** 标记账号被使用(切换到该账号时调用) */
+  markUsed(index) {
+    this._lastUsedTs.set(index, Date.now());
+  }
+
+  /** 获取账号上次使用时间 (未使用过返回0) */
+  getLastUsedTs(index) {
+    return this._lastUsedTs.get(index) || 0;
+  }
+
   // ========== Rate Limit State Tracking (v6.4: 动态冷却 + 提前恢复) ==========
 
   /** Mark an account as rate-limited with cooldown
@@ -606,16 +620,25 @@ class AccountManager {
   markRateLimited(index, resetsInSeconds = 3600, info = {}) {
     const a = this.get(index);
     if (!a) return;
-    const until = Date.now() + (resetsInSeconds * 1000);
+    // v12.0: 指数退避 — 无服务端精确reset时间时，连续命中递增冷却
+    // 有服务端时间(info.serverReset)直接用; 否则 base * 2^(hitCount-1), 上限3600s
+    const hitCount = (this._rateLimitHitCount.get(a.email) || 0) + 1;
+    this._rateLimitHitCount.set(a.email, hitCount);
+    let effectiveCooldown = resetsInSeconds;
+    if (!info.serverReset && hitCount > 1) {
+      effectiveCooldown = Math.min(3600, resetsInSeconds * Math.pow(2, hitCount - 1));
+    }
+    const until = Date.now() + (effectiveCooldown * 1000);
     this._rateLimits.set(a.email, {
       until,
-      resetsIn: resetsInSeconds,
+      resetsIn: effectiveCooldown,
       type: info.type || 'unknown',
       model: info.model || null,
       trigger: info.trigger || null,
       maxMessages: info.maxMessages || null,
       messagesRemaining: info.messagesRemaining || 0,
       hitAt: Date.now(),
+      hitCount,
     });
     // Also store in account for persistence
     if (index >= 0 && index < this._accounts.length) {
@@ -697,6 +720,7 @@ class AccountManager {
     const a = this.get(index);
     if (!a) return;
     this._rateLimits.delete(a.email);
+    this._rateLimitHitCount.delete(a.email); // v12.0: 恢复后重置退避计数
     if (index >= 0 && index < this._accounts.length) {
       delete this._accounts[index].rateLimit;
       this._save();
@@ -743,21 +767,38 @@ class AccountManager {
     return null; // all variants limited on this account
   }
 
-  /** Find best account that is NOT model-rate-limited for a specific modelUid */
+  /** Find best account that is NOT model-rate-limited for a specific modelUid
+   *  v12.0: 统一UFEF排序 — 复用selectOptimal的排序逻辑，额外过滤model限流 */
   findBestForModel(modelUid, excludeIndex = -1, threshold = 0) {
-    let best = -1, bestVal = -1;
+    const excluded = new Set();
+    if (excludeIndex >= 0) excluded.add(excludeIndex);
+    const candidates = [];
     for (let i = 0; i < this._accounts.length; i++) {
-      if (i === excludeIndex) continue;
+      if (excluded.has(i)) continue;
       if (this.isRateLimited(i)) continue;
       if (this.isModelRateLimited(i, modelUid)) continue;
-      if (this.isExpired && this.isExpired(i)) continue;
+      if (this.isExpired(i)) continue;
       const rem = this.effectiveRemaining(i);
-      if (rem !== null && rem > bestVal && rem > threshold) {
-        bestVal = rem;
-        best = i;
+      if (rem !== null && rem > threshold) {
+        const planDays = this.getPlanDaysRemaining(i);
+        const urgency = this.getExpiryUrgency(i);
+        const lastUsed = this.getLastUsedTs(i);
+        candidates.push({ index: i, remaining: rem, planDays, urgency, lastUsed });
       }
     }
-    return best >= 0 ? { index: best, remaining: bestVal } : null;
+    candidates.sort((a, b) => {
+      const aUrg = a.urgency < 0 ? 2 : a.urgency;
+      const bUrg = b.urgency < 0 ? 2 : b.urgency;
+      if (aUrg !== bUrg) return aUrg - bUrg;
+      const maxRem = Math.max(a.remaining, b.remaining);
+      if (maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.1) {
+        if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+      }
+      if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+      const aDays = a.planDays ?? 999, bDays = b.planDays ?? 999;
+      return aDays - bDays;
+    });
+    return candidates.length > 0 ? candidates[0] : null;
   }
 
   /** Get all model rate limit entries (for diagnostics) */
@@ -1040,27 +1081,34 @@ class AccountManager {
         // Weekly reset proximity for waste prevention (use before weekly resets)
         const weeklyResetMs = this._accounts[i].usage?.weeklyReset || 0;
         const weeklyResetProximity = weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
-        candidates.push({ index: i, remaining: rem, planDays, urgency, resetProximity, weeklyResetProximity });
+        const lastUsed = this.getLastUsedTs(i);
+        candidates.push({ index: i, remaining: rem, planDays, urgency, resetProximity, weeklyResetProximity, lastUsed });
       }
     }
     // UFEF Sort: use expiring accounts first to avoid wasting quota
+    // v12.0: +Round-Robin均匀消耗 — 同紧急度+额度差≤10%时，优先最久未用
     candidates.sort((a, b) => {
       // Tier 1: Expiry urgency — lower value = more urgent = use first
       const aUrg = a.urgency < 0 ? 2 : a.urgency; // unknown treated as safe
       const bUrg = b.urgency < 0 ? 2 : b.urgency;
       if (aUrg !== bUrg) return aUrg - bUrg;
-      // Tier 2: Highest remaining quota within same urgency
-      // Waste prevention — when both have substantial & similar remaining,
+      // Tier 2: Waste prevention — when both have substantial & similar remaining,
       // prefer the one whose weekly resets sooner (use before quota is "wasted" at reset)
       if (a.remaining > 50 && b.remaining > 50 && Math.abs(a.remaining - b.remaining) <= 20) {
         const wDiff = a.weeklyResetProximity - b.weeklyResetProximity;
         if (Math.abs(wDiff) > 43200000) return wDiff < 0 ? -1 : 1; // >12h difference → prefer sooner
       }
+      // Tier 3: Round-Robin均匀消耗 — 额度差≤10%时，优先最久未用的账号
+      const maxRem = Math.max(a.remaining, b.remaining);
+      if (maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.1) {
+        if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed; // 最久未用优先
+      }
+      // Tier 4: Highest remaining quota
       if (b.remaining !== a.remaining) return b.remaining - a.remaining;
-      // Tier 3: Fewest plan days (use the one expiring soonest)
+      // Tier 5: Fewest plan days (use the one expiring soonest)
       const aDays = a.planDays ?? 999, bDays = b.planDays ?? 999;
       if (aDays !== bDays) return aDays - bDays;
-      // Tier 4: Soonest reset (will replenish first)
+      // Tier 6: Soonest reset (will replenish first)
       return a.resetProximity - b.resetProximity;
     });
     if (candidates.length > 0) return candidates[0];
