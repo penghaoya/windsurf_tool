@@ -40,8 +40,8 @@ class AccountManager {
       const homePath = this._getUserHomePath();
       if (homePath) this._persistentPaths.push(homePath);
     }
-    console.log(`WAM: [STORAGE] primary=${this._filePath}${this._isolated ? ' [ISOLATED]' : ''}`);
-    if (!this._isolated) console.log(`WAM: [STORAGE] persistent=${this._persistentPaths.join(' | ')}`);
+    console.log(`WAM: [存储] 主路径=${this._filePath}${this._isolated ? ' [隔离模式]' : ''}`);
+    if (!this._isolated) console.log(`WAM: [存储] 持久化路径=${this._persistentPaths.join(' | ')}`);
 
     // Multi-source merge: load from ALL known locations, keep union of all accounts
     this._loadAndMergeAll();
@@ -103,7 +103,7 @@ class AccountManager {
         if (fs.existsSync(candidate) && candidate !== this._filePath && !this._persistentPaths.includes(candidate)) {
           const data = this._loadFrom(candidate);
           if (data.length > 0) {
-            console.log(`WAM: [DISCOVERY] found ${data.length} accounts in ${entry.name}`);
+            console.log(`WAM: [发现] 在${entry.name}中找到${data.length}个账号`);
             results.push(...data);
           }
           // Track discovered path so _save() can keep it in sync
@@ -167,19 +167,14 @@ class AccountManager {
       return true;
     });
     const deduped = before - this._accounts.length;
-    if (deduped > 0) console.log(`WAM: [DEDUP] removed ${deduped} duplicate accounts`);
+    if (deduped > 0) console.log(`WAM: [去重] 已移除${deduped}个重复账号`);
 
     if (merged > 0 || deduped > 0) {
-      console.log(`WAM: [MERGE] recovered ${merged} accounts from persistent storage! Total: ${this._accounts.length}`);
+      console.log(`WAM: [合并] 从持久化存储恢复${merged}个账号! 总计: ${this._accounts.length}`);
       this._save(); // Persist the merged result to all locations
     } else {
-      console.log(`WAM: [LOAD] ${this._accounts.length} accounts loaded`);
+      console.log(`WAM: [加载] 已加载${this._accounts.length}个账号`);
     }
-  }
-
-  _load() {
-    // Legacy compat — just load primary file
-    this._accounts = this._loadFrom(this._filePath);
   }
 
   _save() {
@@ -219,7 +214,7 @@ class AccountManager {
       this._watcher = fs.watch(this._filePath, { persistent: false }, (eventType) => {
         if (eventType === 'change' && !this._writing) {
           setTimeout(() => {
-            this._load();
+            this._loadAndMergeAll();
             this._notify();
           }, 150);
         }
@@ -435,31 +430,6 @@ class AccountManager {
     return arr.sort((a, b) => this._sortUnknownCandidates(a, b));
   }
 
-  /** Find best account for quota-aware rotation (highest effective remaining) */
-  findBestForQuota(excludeIndex = -1, threshold = 0) {
-    let best = -1, bestVal = -1;
-    for (let i = 0; i < this._accounts.length; i++) {
-      if (i === excludeIndex) continue;
-      const rem = this.effectiveRemaining(i);
-      if (rem !== null && rem > bestVal && rem > threshold) {
-        bestVal = rem;
-        best = i;
-      }
-    }
-    return best >= 0 ? { index: best, remaining: bestVal } : null;
-  }
-
-  /** Check if all accounts are depleted (quota-aware) */
-  allDepletedQuota(threshold = 0) {
-    if (this._accounts.length === 0) return true;
-    return this._accounts.every(a => {
-      const rem = a.usage && a.usage.mode === 'quota' && a.usage.daily
-        ? a.usage.daily.remaining
-        : a.credits;
-      return rem !== undefined && rem !== null && rem <= threshold;
-    });
-  }
-
   /** Get detected usage mode across all accounts ('quota'|'credits'|'mixed'|'unknown') */
   getDetectedMode() {
     const modes = this._accounts
@@ -474,20 +444,6 @@ class AccountManager {
     if (index < 0 || index >= this._accounts.length) return;
     this._accounts[index].loginCount = (this._accounts[index].loginCount || 0) + 1;
     this._save();
-  }
-
-  /** Find the account with most credits, excluding current index */
-  findHighest(excludeIndex = -1) {
-    let best = -1, bestCredits = -1;
-    for (let i = 0; i < this._accounts.length; i++) {
-      if (i === excludeIndex) continue;
-      const c = this._accounts[i].credits;
-      if (c !== undefined && c > bestCredits) {
-        bestCredits = c;
-        best = i;
-      }
-    }
-    return best >= 0 ? { index: best, credits: bestCredits } : null;
   }
 
   /** Smart batch add — auto-detect ANY seller format
@@ -709,7 +665,7 @@ class AccountManager {
       this._accounts[index].rateLimit = { until, resetsIn: resetsInSeconds, type: info.type || 'unknown', model: info.model || null };
       this._save();
     }
-    console.log(`WAM: [RL] #${index+1} ${a.email.split('@')[0]} rate-limited ${resetsInSeconds}s (type=${info.type || '?'}, trigger=${info.trigger || '?'})`);
+    console.log(`WAM: [限流] #${index+1} ${a.email.split('@')[0]} 已标记限流 ${resetsInSeconds}s (类型=${info.type || '?'}, 触发=${info.trigger || '?'})`);
   }
 
   /** Check if an account is currently rate-limited
@@ -762,7 +718,7 @@ class AccountManager {
             delete this._accounts[index].rateLimit;
             this._save();
           }
-          console.log(`WAM: [RL] #${index+1} early recovery from message_rate limit (elapsed=${Math.round(elapsed/1000)}s/${Math.round(totalCooldown/1000)}s, remaining=${rem})`);
+          console.log(`WAM: [限流] #${index+1} 提前恢复(已过${Math.round(elapsed/1000)}s/${Math.round(totalCooldown/1000)}s, 剩余=${rem})`);
           return false;
         }
       }
@@ -805,7 +761,7 @@ class AccountManager {
       modelUid,
       trigger: info.trigger || null,
     });
-    console.log(`WAM: [MODEL_RL] #${index+1} ${a.email.split('@')[0]} model ${modelUid} rate-limited ${resetsInSeconds}s`);
+    console.log(`WAM: [模型限流] #${index+1} ${a.email.split('@')[0]} 模型${modelUid} 已标记限流 ${resetsInSeconds}s`);
   }
 
   /** Check if a specific model is rate-limited on a specific account */
@@ -857,21 +813,6 @@ class AccountManager {
       }
     }
     return result;
-  }
-
-  /** Find best account avoiding rate-limited ones (credits + rate limit aware) */
-  findBestAvailable(excludeIndex = -1, threshold = 0) {
-    let best = -1, bestVal = -1;
-    for (let i = 0; i < this._accounts.length; i++) {
-      if (i === excludeIndex) continue;
-      if (this.isRateLimited(i)) continue;
-      const rem = this.effectiveRemaining(i);
-      if (rem !== null && rem > bestVal && rem > threshold) {
-        bestVal = rem;
-        best = i;
-      }
-    }
-    return best >= 0 ? { index: best, remaining: bestVal } : null;
   }
 
   /** Get count of currently rate-limited accounts */
