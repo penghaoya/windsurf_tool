@@ -58,10 +58,12 @@ const HOUR_WINDOW = 3600000; // 1小时滑动窗口
 const TIER_MSG_CAP_ESTIMATE = 25; // Trial账号预估小时消息上限(保守)
 const TIER_CAP_WARN_RATIO = 0.7; // 达到上限70%即预防
 const TRIAL_GUARD_CONFIRM_WINDOW = 180000; // Trial Guard二次确认窗口 3min
-const TRIAL_GUARD_SINGLE_CONFIRM_DROP = 3; // 单次降幅≥3%才允许直接确认
+const TRIAL_GUARD_SINGLE_CONFIRM_DROP = 5; // 单次降幅≥5%才允许直接确认 (Sonnet Thinking单条可消耗3%)
 const TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC = 3600; // Trial Guard命中后单账号隔离 1h
 const GLOBAL_TRIAL_POOL_COOLDOWN_SEC = 1200; // Trial全局限流时，整组Trial候选冷却 20min
+const TRIAL_GUARD_COOLDOWN_MS = 300000; // Trial Guard触发后冷却5min，避免重复触发噪音
 let _tierRateLimitCount = 0; // 本会话Gate 4触发次数
+let _lastTrialGuardActionTs = 0; // Trial Guard上次触发动作的时间戳
 
 
 // ═══ 多窗口协调 (v6.3 P0) ═══
@@ -966,7 +968,7 @@ function _activate(context) {
   vscode.commands.executeCommand('setContext', 'windsurf-tools.active', true);
 
   // ═══ 结构化日志通道 (v6.2 P1: 用户可见) ═══
-  _outputChannel = vscode.window.createOutputChannel("WAM 号池引擎");
+  _outputChannel = vscode.window.createOutputChannel("Fuck 小助手");
   context.subscriptions.push(_outputChannel);
   _logInfo(
     "启动",
@@ -1524,55 +1526,76 @@ async function _poolTick(context) {
 
     const activeCapacity = _getCapacityState(_activeIndex, false);
     const isNoData = activeCapacity?.lastResult && activeCapacity.lastResult.messagesRemaining < 0;
+    const currentModel = _readCurrentModelUid();
+    const downgradeLockActive = _downgradeLockUntil > 0 && Date.now() < _downgradeLockUntil;
+    const isOnSonnet = !_isOpusModel(currentModel);
+    const trialGuardInCooldown = Date.now() - _lastTrialGuardActionTs < TRIAL_GUARD_COOLDOWN_MS;
+
+    // v14.0: TRIAL_GUARD 跳过条件:
+    //   1. 降级锁生效中 — 已降级到Sonnet,正常Sonnet消耗不应触发
+    //   2. 当前已在Sonnet — Sonnet消耗是预期行为
+    //   3. TRIAL_GUARD冷却中 — 避免5min内重复触发噪音
     if (curQuota < prevQuota && isNoData && autoRotate && accounts.length > 1) {
-      const trialGuard = _recordTrialGuardDrop(prevQuota, curQuota);
-      if (!trialGuard.confirmed) {
-        _logInfo(
-          'Trial防御',
-          `⚙️ 第${trialGuard.consecutiveDrops}次下降(需≥2次确认): 额度${prevQuota}%→${curQuota}% 且L5无精确数据 → 等待二次确认避免误切`,
-        );
+      if (downgradeLockActive || isOnSonnet) {
+        // 已降级到Sonnet,额度下降是正常Sonnet消耗,静默跳过
+      } else if (trialGuardInCooldown) {
+        // TRIAL_GUARD冷却中,跳过避免重复触发
       } else {
-        const currentModel = _readCurrentModelUid();
-        _logWarn(
-          'Trial防御',
-          `⚠️ 确认Trial限流! 连续${trialGuard.consecutiveDrops}次额度下降(${prevQuota}%→${curQuota}%) + L5无精确数据 → 启动Trial池冷却+账号隔离`,
-        );
-        _armTrialPoolCooldown(currentModel, GLOBAL_TRIAL_POOL_COOLDOWN_SEC, 'trial_nodata_guard', {
-          trigger: 'trial_nodata_guard',
-          source: 'trial_guard',
-        });
-        _pushRateLimitEvent({
-          type: 'tier_cap',
-          trigger: 'trial_nodata_guard',
-          cooldown: TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC,
-          model: currentModel,
-          globalTrial: false,
-          trialPoolCooldown: GLOBAL_TRIAL_POOL_COOLDOWN_SEC,
-          quotaDrop: trialGuard.quotaDrop,
-        });
-        if (_isOpusModel(currentModel)) {
-          const downgraded = await _downgradeFromTrialPressure('[TRIAL_GUARD] Trial压力确认');
-          if (downgraded) {
-            _activateBoost();
-            _resetTrialGuard(_activeIndex);
-            _updatePoolBar();
-            _refreshPanel();
-            return;
+        const trialGuard = _recordTrialGuardDrop(prevQuota, curQuota);
+        if (!trialGuard.confirmed) {
+          _logInfo(
+            'Trial防御',
+            `⚙️ 第${trialGuard.consecutiveDrops}次下降(需≥2次确认): 额度${prevQuota}%→${curQuota}% 且L5无精确数据 → 等待二次确认避免误切`,
+          );
+        } else {
+          _lastTrialGuardActionTs = Date.now(); // 设置冷却,防止5min内重复触发
+          _logWarn(
+            'Trial防御',
+            `⚠️ 确认Trial限流! 连续${trialGuard.consecutiveDrops}次额度下降(${prevQuota}%→${curQuota}%) + L5无精确数据 → 启动Trial池冷却+账号隔离`,
+          );
+          // v14.0: 仅在池冷却未激活时才arm,避免重复重置冷却计时器
+          if (!_getTrialPoolCooldown(currentModel)) {
+            _armTrialPoolCooldown(currentModel, GLOBAL_TRIAL_POOL_COOLDOWN_SEC, 'trial_nodata_guard', {
+              trigger: 'trial_nodata_guard',
+              source: 'trial_guard',
+            });
           }
+          _pushRateLimitEvent({
+            type: 'tier_cap',
+            trigger: 'trial_nodata_guard',
+            cooldown: TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC,
+            model: currentModel,
+            globalTrial: false,
+            trialPoolCooldown: GLOBAL_TRIAL_POOL_COOLDOWN_SEC,
+            quotaDrop: trialGuard.quotaDrop,
+          });
+          if (_isOpusModel(currentModel)) {
+            const downgraded = await _downgradeFromTrialPressure('[TRIAL_GUARD] Trial压力确认');
+            if (downgraded) {
+              _activateBoost();
+              _resetTrialGuard(_activeIndex);
+              _updatePoolBar();
+              _refreshPanel();
+              return;
+            }
+          }
+          // v14.0: 仅在未隔离时才标记,避免重复重置隔离计时器
+          if (!_isAccountQuarantined(_activeIndex)) {
+            am.markRateLimited(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, {
+              type: 'tier_cap',
+              trigger: 'trial_nodata_guard',
+              serverReset: false,
+            });
+            _setAccountQuarantine(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, 'trial_nodata_guard', {
+              model: currentModel,
+            });
+          }
+          const trialSwitch = await _performSwitch(context, {
+            threshold,
+            targetPolicy: 'same_strategy',
+          });
+          if (trialSwitch.ok) return;
         }
-        am.markRateLimited(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, {
-          type: 'tier_cap',
-          trigger: 'trial_nodata_guard',
-          serverReset: false,
-        });
-        _setAccountQuarantine(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, 'trial_nodata_guard', {
-          model: currentModel,
-        });
-        const trialSwitch = await _performSwitch(context, {
-          threshold,
-          targetPolicy: 'same_strategy',
-        });
-        if (trialSwitch.ok) return;
       }
     } else if (!isNoData) {
       _resetTrialGuard(_activeIndex);
