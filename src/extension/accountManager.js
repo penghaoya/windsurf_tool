@@ -389,31 +389,77 @@ class AccountManager {
     return 'unknown';
   }
 
+  // ═══ v14.0 废料最小化排序 — 先用完即将浪费的账号 ═══
+  //
+  // 核心原则: 优先消耗"不用就浪费"的账号
+  //   - 快过期的账号 → 不用额度就作废
+  //   - 剩余少的账号 → 先用完避免碎片化
+  //   - 周额度少的账号 → 周重置前用完避免浪费
+  //
+  // 排序优先级 (Quota模式):
+  //   T1: 过期紧急度 (urgent≤3d > soon≤7d > safe>7d)
+  //   T2: 剩余额度少优先 (差>15%时生效, 避免频繁切换)
+  //   T3: 周额度少优先 (差>15%时生效)
+  //   T4: 周重置更近优先 (>1h差异时生效)
+  //   T5: 过期更近优先 (天数少的先用)
+  //   T6: Round-Robin均匀消耗 (最久未用优先)
+  //   T7: 日重置更近优先 (最终兜底)
   _sortQuotaCandidates(a, b) {
+    // === T1: 过期紧急度 (urgent先用, 避免到期浪费) ===
     const aUrg = a.urgency < 0 ? 2 : a.urgency;
     const bUrg = b.urgency < 0 ? 2 : b.urgency;
     if (aUrg !== bUrg) return aUrg - bUrg;
-    if (a.remaining > 50 && b.remaining > 50 && Math.abs(a.remaining - b.remaining) <= 20) {
-      const wDiff = a.weeklyResetProximity - b.weeklyResetProximity;
-      if (Math.abs(wDiff) > 43200000) return wDiff < 0 ? -1 : 1;
-    }
+
+    // === T2: 剩余额度少的优先 (先用完快耗尽的, 减少碎片浪费) ===
     const maxRem = Math.max(a.remaining, b.remaining);
-    if (maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.1) {
-      if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+    const remSimilar = maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.15;
+    if (!remSimilar && a.remaining !== b.remaining) {
+      return a.remaining - b.remaining; // lower remaining first
     }
-    if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+
+    // === T3: 周额度少的优先 (周重置前用完, 避免重置浪费) ===
+    const aWeekly = a.weeklyRemaining ?? a.remaining;
+    const bWeekly = b.weeklyRemaining ?? b.remaining;
+    if (aWeekly !== bWeekly) {
+      const weeklyMax = Math.max(aWeekly, bWeekly);
+      const weeklySimilar = weeklyMax > 0 && Math.abs(aWeekly - bWeekly) <= weeklyMax * 0.15;
+      if (!weeklySimilar) return aWeekly - bWeekly; // lower weekly first
+    }
+
+    // === T4: 周重置更近的优先 (即将重置的先用) ===
+    if (a.weeklyResetProximity !== b.weeklyResetProximity) {
+      const wDiff = a.weeklyResetProximity - b.weeklyResetProximity;
+      if (Math.abs(wDiff) > 3600000) return wDiff < 0 ? -1 : 1; // >1h差异
+    }
+
+    // === T5: 过期更近的优先 ===
     const aDays = a.planDays ?? 999;
     const bDays = b.planDays ?? 999;
     if (aDays !== bDays) return aDays - bDays;
+
+    // === T6: Round-Robin均匀消耗 ===
+    if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+
+    // === T7: 日重置更近优先 ===
     return a.resetProximity - b.resetProximity;
   }
 
+  // Credits模式: 剩余少优先 → 过期近优先 → Round-Robin
   _sortCreditsCandidates(a, b) {
-    if (b.remaining !== a.remaining) return b.remaining - a.remaining;
-    if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+    // T1: 过期紧急度
+    const aUrg = a.urgency < 0 ? 2 : a.urgency;
+    const bUrg = b.urgency < 0 ? 2 : b.urgency;
+    if (aUrg !== bUrg) return aUrg - bUrg;
+    // T2: 剩余少优先 (先用完快耗尽的)
+    if (a.remaining !== null && b.remaining !== null && a.remaining !== b.remaining) {
+      return a.remaining - b.remaining; // lower first
+    }
+    // T3: 过期更近优先
     const aDays = a.planDays ?? 999;
     const bDays = b.planDays ?? 999;
-    return aDays - bDays;
+    if (aDays !== bDays) return aDays - bDays;
+    // T4: Round-Robin
+    return a.lastUsed - b.lastUsed;
   }
 
   _sortUnknownCandidates(a, b) {
@@ -1072,10 +1118,14 @@ class AccountManager {
         const weeklyResetMs = account.usage?.weeklyReset || 0;
         const weeklyResetProximity = weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
         const lastUsed = this.getLastUsedTs(i);
+        const dailyRemaining = account.usage?.daily?.remaining ?? null;
+        const weeklyRemaining = account.usage?.weekly?.remaining ?? null;
         candidates.push({
           index: i,
           email: account.email,
           remaining: rem,
+          dailyRemaining,
+          weeklyRemaining,
           planDays,
           urgency,
           resetProximity,

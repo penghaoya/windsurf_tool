@@ -82,7 +82,7 @@ npm run install-ext     # 打包并安装到 IDE
 | L9 | 输出通道实时拦截 |
 | L10 | 多窗口协调 (账号隔离+心跳, 跨平台路径) |
 
-## 调度策略 (v13.1)
+## 调度策略 (v14.0)
 
 ### 调度架构
 
@@ -130,19 +130,29 @@ _performSwitch(context, options)
 
 支持参数: `targetPolicy` (same_strategy/quota_first/same_model), `panic`, `refreshPool`, `allowThresholdFallback`, `candidates`
 
-### 账号选择排序 (selectOptimal)
+### 账号选择排序 (selectOptimal) — v14.0 废料最小化
 
 - 返回**有序数组** (非单个对象), `findBestForModel` 委托给 `selectOptimal`
 - **Mode-Aware 分组排序**: quota/credits/unknown 三类分别排序后合并
 - 支持 `excludeEmails` (多窗口隔离), `preferredMode`, `modelUid` 过滤
+- 候选数据含 `dailyRemaining`, `weeklyRemaining` 独立字段 (v14.0)
 
-Quota 模式排序:
-1. **过期紧急度** — urgent(≤3d) > soon(≤7d) > safe(>7d)
-2. **周重置浪费预防** — 额度相近(≤20)且>50时, 优先周重置更近的
-3. **Round-Robin 均匀消耗** — 额度差≤10%时, 优先最久未用的账号
-4. **最高剩余额度**
-5. **最快过期** — 先用完快到期的
-6. **最近重置**
+**核心原则: 废料最小化** — 优先消耗"不用就浪费"的账号
+
+Quota 模式排序 (7级):
+1. **T1 过期紧急度** — urgent(≤3d) > soon(≤7d) > safe(>7d)
+2. **T2 剩余少优先** — 先用完快耗尽的, 减少碎片浪费 (差>15%时生效)
+3. **T3 周额度少优先** — 周重置前用完, 避免重置浪费 (差>15%时生效)
+4. **T4 周重置更近优先** — 即将重置的先用 (>1h差异时生效)
+5. **T5 过期更近优先** — 天数少的先用
+6. **T6 Round-Robin** — 最久未用优先, 均匀消耗
+7. **T7 日重置更近优先** — 最终兜底
+
+Credits 模式排序 (4级):
+1. **T1 过期紧急度**
+2. **T2 剩余少优先**
+3. **T3 过期更近优先**
+4. **T4 Round-Robin**
 
 ### 调度优化机制
 
