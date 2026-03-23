@@ -88,6 +88,7 @@ npm run install-ext     # 打包并安装到 IDE
 
 ```
 _poolTick
+ ├─ TRIAL_GUARD: L5 NO_DATA + 额度下降 → 立即切号 (每条消息后)
  ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
  ├─ Tier 2: 配额阈值
  │   ├─ T2-A: shouldSwitch (depleted/low/expired/rate_limited)
@@ -119,6 +120,8 @@ _poolTick
 | 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
 | Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
 | NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
+| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 每条消息后立即切号(mark 3600s) |
+| 切号重置 | 切换时清除目标账号Opus计数+小时消息+速度日志 |
 
 ## 数据流
 

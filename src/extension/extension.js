@@ -1072,6 +1072,28 @@ async function _poolTick(context) {
     _activateBoost(); // 加速轮询
     _updatePoolBar();
     _refreshPanel();
+
+    // v12.0: L5 NO_DATA Trial 保护 — 每条消息后立即切号
+    // 根因: Trial账号L5返回-1/-1(capacity=true), 所有检测层全盲
+    // "global rate limit for trial users"可能1-2条消息后就触发, 且不设置任何context key
+    // 策略: 额度下降+L5持续NO_DATA → 视为Trial账号 → 发完消息立即预防性切号
+    const isNoData = _lastCapacityResult && _lastCapacityResult.messagesRemaining < 0;
+    if (curQuota < prevQuota && isNoData && autoRotate && accounts.length > 1) {
+      _logWarn('POOL', `[TRIAL_GUARD] L5 NO_DATA + 额度下降(${prevQuota}→${curQuota}) → Trial账号每消息切号`);
+      am.markRateLimited(_activeIndex, 3600, {
+        type: 'tier_cap',
+        trigger: 'trial_nodata_guard',
+        serverReset: false,
+      });
+      let trialBest = am.selectOptimal(_activeIndex, threshold, _getOtherWindowAccounts());
+      if (!trialBest) trialBest = am.selectOptimal(_activeIndex, threshold);
+      if (trialBest) {
+        await _seamlessSwitch(context, trialBest.index);
+        _updatePoolBar();
+        _refreshPanel();
+        return; // 已切号，跳过后续判断
+      }
+    }
   }
 
   // ═══ v6.7 P0: 响应式切换 — 活跃账号额度下降 → 立即切到"静止"账号 ═══
