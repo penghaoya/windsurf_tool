@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "1.0.12",
+  "version": "1.0.14",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -122,9 +122,9 @@
     "install-ext": "npm run package && code --install-extension output/windsurf-tools-$(node -p \"require('./package.json').version\").vsix --force"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.4",
+    "@vitejs/plugin-vue": "^6.0.5",
     "@vscode/vsce": "^3.7.1",
-    "vite": "^6.4.1",
+    "vite": "^8.0.1",
     "vue": "^3.5.30"
   }
 }

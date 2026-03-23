@@ -220,6 +220,15 @@ class AccountViewProvider {
       case 'importAccounts':
         if (act) { await act('importAccounts'); this._pushState(); }
         break;
+      case 'refreshOne':
+        if (msg.index !== undefined && act) {
+          this._setLoading(true);
+          await act('refreshOne', msg.index);
+          this._setLoading(false);
+          this._toast('刷新完成');
+          this._pushState();
+        }
+        break;
       case 'copyPwd':
         if (msg.index !== undefined) {
           const account = this._am.get(msg.index);

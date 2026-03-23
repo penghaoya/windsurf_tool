@@ -30,6 +30,14 @@
           <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         </button>
         <button
+          class="r-btn rfsh"
+          :class="{ spinning: refreshing }"
+          @click="onRefresh"
+          title="刷新额度"
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
+        </button>
+        <button
           class="r-btn del"
           :id="`bx${index}`"
           @click="onRemove"
@@ -77,6 +85,7 @@ const props = defineProps({
 
 const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
+const refreshing = ref(false)
 let confirmTimer = null
 let copyTimer = null
 
@@ -127,6 +136,13 @@ watch(() => pwdResults[props.index], (result) => {
   }
 })
 
+function onRefresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  postMessage('refreshOne', { index: props.index })
+  setTimeout(() => { refreshing.value = false }, 3000)
+}
+
 function onRemove() {
   if (confirmRemove.value) {
     clearTimeout(confirmTimer)
@@ -159,6 +175,10 @@ function onRemove() {
 .r-btn.login:hover{background:var(--ac-bg);color:var(--ac)}
 .r-btn.login.active{color:var(--gn)}
 .r-btn.login.active:hover{background:var(--gn-bg)}
+.r-btn.rfsh{color:var(--tx3)}
+.r-btn.rfsh:hover{background:var(--ac-bg);color:var(--ac)}
+.r-btn.rfsh.spinning svg{animation:spin .8s linear infinite}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .r-btn.del:hover{background:var(--rd-bg);color:var(--rd)}
 .r-btn.copy{color:var(--tx3)}
 .r-btn.copy:hover{background:var(--ac-bg);color:var(--ac)}

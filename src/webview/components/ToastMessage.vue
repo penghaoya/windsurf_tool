@@ -20,8 +20,8 @@ defineProps({
 </script>
 
 <style scoped>
-.toast-container{position:fixed;top:10px;left:10px;right:10px;z-index:99;display:flex;flex-direction:column;gap:4px;pointer-events:none}
-.toast{padding:8px 14px;border-radius:var(--R);font-size:11px;font-weight:500;backdrop-filter:blur(8px);pointer-events:auto}
+.toast-container{position:fixed;top:10px;left:0;right:0;z-index:99;display:flex;flex-direction:column;align-items:center;gap:4px;pointer-events:none}
+.toast{display:inline-flex;padding:6px 18px;border-radius:var(--R);font-size:11px;font-weight:500;backdrop-filter:blur(8px);pointer-events:auto;text-align:center;white-space:nowrap}
 .tok{background:rgba(94,218,158,.9);color:#111}
 .terr{background:rgba(240,96,96,.9);color:#fff}
 .toast-enter-active{animation:toast-in .25s ease}
