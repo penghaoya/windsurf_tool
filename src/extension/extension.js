@@ -712,6 +712,11 @@ function _getAdaptivePollMs() {
 }
 
 function activate(context) {
+  // 仅在 Windsurf 中激活，VS Code 等其他宿主静默跳过
+  const appName = (vscode.env.appName || '').toLowerCase();
+  if (!appName.includes('windsurf')) {
+    return;
+  }
   try {
     _activate(context);
   } catch (e) {
@@ -720,6 +725,9 @@ function activate(context) {
 }
 
 function _activate(context) {
+  // 设置上下文键，让 package.json 的 when 条件生效（侧边栏/命令仅 Windsurf 可见）
+  vscode.commands.executeCommand('setContext', 'windsurf-tools.active', true);
+
   // ═══ 结构化日志通道 (v6.2 P1: 用户可见) ═══
   _outputChannel = vscode.window.createOutputChannel("WAM 号池引擎");
   context.subscriptions.push(_outputChannel);

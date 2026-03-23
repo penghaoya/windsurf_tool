@@ -8,4 +8,5 @@ package-lock.json
 **/*.map
 output/**
 dist/webview/index.html
+README.md
 
