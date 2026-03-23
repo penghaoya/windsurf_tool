@@ -12,7 +12,9 @@
 
 ## 插件效果
 
-![插件效果图](screenshots/plug-prew.png)
+<p align="center">
+  <img src="screenshots/plug-prew.png" alt="插件效果图" width="280" />
+</p>
 
 ---
 
