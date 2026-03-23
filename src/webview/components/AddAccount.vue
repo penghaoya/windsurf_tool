@@ -5,7 +5,7 @@
         ref="inputRef"
         id="bi"
         rows="1"
-        placeholder="粘贴账号 (email:password)"
+        placeholder="粘贴账号 (支持任意格式)"
         v-model="inputText"
         @input="onInput"
         @focus="onFocus"
