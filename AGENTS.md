@@ -88,7 +88,7 @@ npm run install-ext     # 打包并安装到 IDE
 
 ```
 _poolTick
- ├─ TRIAL_GUARD: L5 NO_DATA + 额度下降 → 立即切号 (每条消息后)
+ ├─ TRIAL_GUARD: L5 NO_DATA + 额度下降 → 二次确认后隔离+切号 (避免误切)
  ├─ 响应式切换: 额度下降 → 切到快照中额度未变的"静止"账号
  ├─ evaluateActiveAccount() → decision
  │   ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
@@ -100,24 +100,29 @@ _poolTick
  │   └─ Tier 3: 启发式降级 (仅L5无效时)
  │       ├─ 斜率 / burst / Tab压力 / 速度
  │       └─ Gate4 小时消息 (Trial NO_DATA时 cap=15)
- └─ _performSwitch() → 有序候选遍历+预热验证+切换
+ └─ _performSwitch() → 过滤隔离账号+有序候选遍历+预热验证+切换
+     └─ Trial池冷却时无候选 → 自动降级到Sonnet
 ```
 
 ### Per-Account Runtime State
 
 - `schedulerState.accounts` Map (email 为 key)
-- 每个账号独立维护: `hourlyMsgLog`, `msgRateLog`, `quotaHistory`, `velocityLog`, `opusMsgLog`, `capacity`
+- 每个账号独立维护: `hourlyMsgLog`, `msgRateLog`, `quotaHistory`, `velocityLog`, `opusMsgLog`, `capacity`, `trialGuard`
 - 切号时 `_dropAccountRuntimeByEmail` (旧) + `_resetAccountRuntimeByEmail` (新)
-- 解决: 旧账号运行时数据污染新账号的预测/守卫
+- `accountQuarantines` Map: 隔离命中Trial限流的账号 (email为key, 含过期时间)
+- `poolCooldowns` Map: Trial全局限流时按模型族冷却整组Trial候选
 
 ### 统一切换入口 (_performSwitch)
 
 ```
 _performSwitch(context, options)
  ├─ _getOrderedCandidates() → 有序候选列表
+ ├─ _filterRuntimeCandidates() → 过滤隔离账号+Trial池冷却账号
  ├─ 遍历候选: _validateSwitchCandidate() (5s预热)
- │   ├─ 额度≤阈值 → 跳过, 尝试下一个
+ │   ├─ 账号已隔离 / Trial池冷却中 → 跳过
+ │   ├─ 额度≤阈值 / 已限流 → 跳过
  │   └─ 超时 → 跳过, 尝试下一个
+ ├─ Trial池冷却时无候选 → _downgradeFromTrialPressure() → 降级到Sonnet
  └─ _seamlessSwitch() → 执行切换
 ```
 
@@ -148,7 +153,10 @@ Quota 模式排序:
 | 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
 | Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
 | NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
-| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 每条消息后立即切号(mark 3600s) |
+| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 二次确认(3min窗口内≥2次或降≥2)后隔离+切号 |
+| 账号隔离 | 命中Trial限流的账号隔离1h, 候选过滤+预热拒绝 |
+| Trial池冷却 | 全局Trial限流时按模型族冷却整组Trial候选(20min) |
+| 模型降级 | Trial池冷却无候选时自动从oopus降级到Sonnet |
 | 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
 | 可配置阈值 | `wam.preemptiveThreshold` (默认15, 0-100) |
 

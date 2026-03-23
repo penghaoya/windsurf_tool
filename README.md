@@ -84,7 +84,10 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 
 | 机制 | 说明 |
 |------|------|
-| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 每条消息后立即切号 (mark 3600s) |
+| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 二次确认后隔离+切号 (避免误切) |
+| 账号隔离 | 命中 Trial 限流的账号隔离 1h，候选过滤+预热拒绝 |
+| Trial池冷却 | 全局 Trial 限流时按模型族冷却整组 Trial 候选 (20min) |
+| 模型降级 | Trial 池冷却无候选时自动从 Opus 降级到 Sonnet |
 | UFEF 冷却 | 10min 冷却防止 safe↔urgent 账号频繁抖动 |
 | Round-Robin | 同紧急度 + 额度差≤10% 时轮转，均匀消耗 |
 | 指数退避 | 限流冷却 base×2^(n-1)，上限 3600s，恢复后归零 |

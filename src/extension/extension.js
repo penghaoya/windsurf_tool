@@ -58,6 +58,9 @@ const GLOBAL_TRIAL_RL_RE = /(?:all\s*)?(?:API\s*)?providers?\s*(?:are\s*)?over\s
 const HOUR_WINDOW = 3600000; // 1小时滑动窗口
 const TIER_MSG_CAP_ESTIMATE = 25; // Trial账号预估小时消息上限(保守)
 const TIER_CAP_WARN_RATIO = 0.7; // 达到上限70%即预防
+const TRIAL_GUARD_CONFIRM_WINDOW = 180000; // Trial Guard二次确认窗口 3min
+const TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC = 3600; // Trial Guard命中后单账号隔离 1h
+const GLOBAL_TRIAL_POOL_COOLDOWN_SEC = 1200; // Trial全局限流时，整组Trial候选冷却 20min
 let _tierRateLimitCount = 0; // 本会话Gate 4触发次数
 
 // ═══ Watchdog: 最后防线 — 所有检测层失效时的兜底切换 ═══
@@ -157,6 +160,8 @@ let _opusGuardSwitchCount = 0; // 本会话Opus守卫主动切号次数
 
 const schedulerState = {
   accounts: new Map(),
+  accountQuarantines: new Map(),
+  poolCooldowns: new Map(),
 };
 
 function _createAccountRuntime() {
@@ -172,6 +177,11 @@ function _createAccountRuntime() {
       failCount: 0,
       lastSuccessfulProbe: Date.now(),
       realMaxMessages: -1,
+    },
+    trialGuard: {
+      consecutiveDrops: 0,
+      lastDropTs: 0,
+      lastQuota: null,
     },
   };
 }
@@ -202,6 +212,88 @@ function _getCapacityState(index = _activeIndex, create = true) {
   return _getAccountRuntime(index, create)?.capacity || null;
 }
 
+function _clearExpiredEntries(store) {
+  const now = Date.now();
+  for (const [key, value] of store.entries()) {
+    if (!value?.until || value.until <= now) {
+      store.delete(key);
+    }
+  }
+}
+
+function _getModelFamily(uid) {
+  if (_isOpusModel(uid)) return 'opus';
+  const model = String(uid || '').toLowerCase();
+  if (model.includes('sonnet')) return 'sonnet';
+  return model || 'unknown';
+}
+
+function _getTrialPoolCooldownKey(modelUid = _currentModelUid || _readCurrentModelUid()) {
+  return `trial:${_getModelFamily(modelUid)}`;
+}
+
+function _getAccountQuarantineByEmail(email) {
+  _clearExpiredEntries(schedulerState.accountQuarantines);
+  return schedulerState.accountQuarantines.get(_normalizeEmail(email)) || null;
+}
+
+function _isAccountQuarantined(indexOrEmail) {
+  const email = typeof indexOrEmail === 'number'
+    ? _getAccountEmail(indexOrEmail)
+    : _normalizeEmail(indexOrEmail);
+  return !!_getAccountQuarantineByEmail(email);
+}
+
+function _setAccountQuarantine(indexOrEmail, seconds, reason, meta = {}) {
+  const email = typeof indexOrEmail === 'number'
+    ? _getAccountEmail(indexOrEmail)
+    : _normalizeEmail(indexOrEmail);
+  if (!email || !seconds) return;
+  const until = Date.now() + seconds * 1000;
+  const current = _getAccountQuarantineByEmail(email);
+  if (current && current.until >= until) return;
+  schedulerState.accountQuarantines.set(email, { until, reason, ...meta });
+}
+
+function _clearAccountQuarantine(indexOrEmail) {
+  const email = typeof indexOrEmail === 'number'
+    ? _getAccountEmail(indexOrEmail)
+    : _normalizeEmail(indexOrEmail);
+  if (!email) return;
+  schedulerState.accountQuarantines.delete(email);
+}
+
+function _getTrialPoolCooldown(modelUid = _currentModelUid || _readCurrentModelUid()) {
+  _clearExpiredEntries(schedulerState.poolCooldowns);
+  return schedulerState.poolCooldowns.get(_getTrialPoolCooldownKey(modelUid)) || null;
+}
+
+function _armTrialPoolCooldown(modelUid, seconds, reason, meta = {}) {
+  if (!seconds) return;
+  const key = _getTrialPoolCooldownKey(modelUid);
+  const until = Date.now() + seconds * 1000;
+  const current = _getTrialPoolCooldown(modelUid);
+  if (current && current.until >= until) return;
+  schedulerState.poolCooldowns.set(key, { until, reason, ...meta });
+}
+
+function _isTrialLikeAccount(index) {
+  if (!am || index < 0) return false;
+  const account = am.get(index);
+  if (!account) return false;
+  const plan = String(account.usage?.plan || '').toLowerCase();
+  return plan.includes('trial') || plan === 'free' || plan.startsWith('free ');
+}
+
+function _filterRuntimeCandidates(candidates, { modelUid = null } = {}) {
+  const trialPoolCooldown = _getTrialPoolCooldown(modelUid);
+  return candidates.filter((candidate) => {
+    if (_isAccountQuarantined(candidate.email || candidate.index)) return false;
+    if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
+    return true;
+  });
+}
+
 function _resetAccountRuntimeByEmail(email) {
   const key = _normalizeEmail(email);
   if (!key) return;
@@ -212,6 +304,16 @@ function _dropAccountRuntimeByEmail(email) {
   const key = _normalizeEmail(email);
   if (!key) return;
   schedulerState.accounts.delete(key);
+}
+
+function _resetTrialGuard(index = _activeIndex) {
+  const runtime = _getAccountRuntime(index);
+  if (!runtime) return;
+  runtime.trialGuard = {
+    consecutiveDrops: 0,
+    lastDropTs: 0,
+    lastQuota: null,
+  };
 }
 
 function _getPreemptiveThreshold() {
@@ -394,18 +496,38 @@ function _isNearTierCap() {
 
 /** v7.5 Gate 4: 账号层级硬限处理 — 跳过模型轮转, 直接账号切换
  *  与_handlePerModelRateLimit的关键区别: Gate 4是账号级, 换模型无效 */
-async function _handleTierRateLimit(context, resetSeconds) {
+async function _handleTierRateLimit(context, resetSeconds, details = {}) {
   _tierRateLimitCount++;
   const logPrefix = `[TIER_RL #${_tierRateLimitCount}]`;
   _logWarn('TIER_RL', `${logPrefix} Gate 4 账号层级硬限! hourly=${_getHourlyMsgCount()}, reset=${resetSeconds}s`);
   // 标记当前账号 — 3600s冷却("about an hour")
   const cooldown = resetSeconds || 3600;
+  const currentModel = _readCurrentModelUid();
+  const messageText = String(details.message || '');
+  const isGlobalTrial = GLOBAL_TRIAL_RL_RE.test(messageText);
   am.markRateLimited(_activeIndex, cooldown, {
     model: 'all',
-    trigger: 'tier_rate_limit',
+    trigger: details.trigger || 'tier_rate_limit',
     type: 'tier_cap',
   });
-  _pushRateLimitEvent({ type: 'tier_cap', trigger: 'tier_rate_limit', cooldown, hourlyMsgs: _getHourlyMsgCount() });
+  _setAccountQuarantine(_activeIndex, cooldown, isGlobalTrial ? 'global_trial_rate_limit' : 'tier_cap', {
+    trigger: details.trigger || 'tier_rate_limit',
+  });
+  if (isGlobalTrial) {
+    _armTrialPoolCooldown(currentModel, Math.min(cooldown, GLOBAL_TRIAL_POOL_COOLDOWN_SEC), 'global_trial_rate_limit', {
+      model: currentModel,
+    });
+    if (await _downgradeFromTrialPressure(`${logPrefix} Trial全局限流`)) {
+      return { action: 'fallback_model', cooldown, to: SONNET_FALLBACK };
+    }
+  }
+  _pushRateLimitEvent({
+    type: 'tier_cap',
+    trigger: details.trigger || 'tier_rate_limit',
+    cooldown,
+    hourlyMsgs: _getHourlyMsgCount(),
+    globalTrial: isGlobalTrial,
+  });
   // 直接账号轮转(跳过模型变体轮转 — 对Gate 4无效)
   _activateBoost();
   await _doPoolRotate(context, true);
@@ -1080,18 +1202,66 @@ function _getOrderedCandidates({
   const primary = modelUid
     ? am.findBestForModel(modelUid, excludeIndex, threshold, excludedEmails, options)
     : am.selectOptimal(excludeIndex, threshold, excludedEmails, options);
-  if (primary.length > 0 || !excludeClaimed) return primary;
-  return modelUid
+  const filteredPrimary = _filterRuntimeCandidates(primary, { modelUid });
+  if (filteredPrimary.length > 0 || !excludeClaimed) return filteredPrimary;
+  const fallback = modelUid
     ? am.findBestForModel(modelUid, excludeIndex, threshold, [], options)
     : am.selectOptimal(excludeIndex, threshold, [], options);
+  return _filterRuntimeCandidates(fallback, { modelUid });
+}
+
+function _recordTrialGuardDrop(prevQuota, curQuota) {
+  const runtime = _getAccountRuntime();
+  if (!runtime) {
+    return { confirmed: false, consecutiveDrops: 0, quotaDrop: 0 };
+  }
+  const now = Date.now();
+  if (now - runtime.trialGuard.lastDropTs > TRIAL_GUARD_CONFIRM_WINDOW) {
+    runtime.trialGuard.consecutiveDrops = 0;
+  }
+  runtime.trialGuard.consecutiveDrops += 1;
+  runtime.trialGuard.lastDropTs = now;
+  runtime.trialGuard.lastQuota = curQuota;
+  const quotaDrop = prevQuota !== null && curQuota !== null ? prevQuota - curQuota : 0;
+  const currentModel = _readCurrentModelUid();
+  const confirmed =
+    quotaDrop >= 2 ||
+    runtime.trialGuard.consecutiveDrops >= 2 ||
+    _isNearTierCap() ||
+    (_isOpusModel(currentModel) && _isNearOpusBudget(_activeIndex));
+  return {
+    confirmed,
+    consecutiveDrops: runtime.trialGuard.consecutiveDrops,
+    quotaDrop,
+  };
+}
+
+async function _downgradeFromTrialPressure(reason) {
+  const currentModel = _readCurrentModelUid();
+  if (!_isOpusModel(currentModel) || currentModel === SONNET_FALLBACK) return false;
+  const switched = await _switchModelUid(SONNET_FALLBACK);
+  if (switched) {
+    _logWarn('MODEL_RL', `${reason} → 降级到${SONNET_FALLBACK}，避免Trial账号互切`);
+  }
+  return switched;
 }
 
 async function _validateSwitchCandidate(targetIndex, threshold) {
+  if (_isAccountQuarantined(targetIndex)) {
+    return { ok: false, remaining: null, reason: 'account_quarantined' };
+  }
+  const trialPoolCooldown = _getTrialPoolCooldown(_readCurrentModelUid());
+  if (trialPoolCooldown && _isTrialLikeAccount(targetIndex)) {
+    return { ok: false, remaining: null, reason: 'trial_pool_cooldown' };
+  }
   try {
     await Promise.race([
       _refreshOne(targetIndex),
       new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), 5000)),
     ]);
+    if (am.isRateLimited(targetIndex)) {
+      return { ok: false, remaining: null, reason: 'rate_limited' };
+    }
     const remaining = am.effectiveRemaining(targetIndex);
     if (remaining !== null && remaining <= threshold) {
       return { ok: false, remaining, reason: 'insufficient_quota' };
@@ -1114,10 +1284,31 @@ async function _performSwitch(context, {
 } = {}) {
   if (refreshPool) await _refreshAll();
   let ordered = Array.isArray(candidates) && candidates.length > 0
-    ? candidates
+    ? _filterRuntimeCandidates(candidates, { modelUid })
     : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true });
   if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
     ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false });
+  }
+  if (ordered.length === 0 && !modelUid && _getTrialPoolCooldown(_readCurrentModelUid())) {
+    const downgraded = await _downgradeFromTrialPressure('Trial候选池冷却中');
+    if (downgraded) {
+      ordered = _getOrderedCandidates({
+        excludeIndex,
+        threshold,
+        targetPolicy,
+        modelUid: SONNET_FALLBACK,
+        excludeClaimed: true,
+      });
+      if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
+        ordered = _getOrderedCandidates({
+          excludeIndex,
+          threshold: 0,
+          targetPolicy,
+          modelUid: SONNET_FALLBACK,
+          excludeClaimed: false,
+        });
+      }
+    }
   }
   for (const candidate of ordered) {
     const preheat = await _validateSwitchCandidate(candidate.index, threshold);
@@ -1328,17 +1519,33 @@ async function _poolTick(context) {
     const activeCapacity = _getCapacityState(_activeIndex, false);
     const isNoData = activeCapacity?.lastResult && activeCapacity.lastResult.messagesRemaining < 0;
     if (curQuota < prevQuota && isNoData && autoRotate && accounts.length > 1) {
-      _logWarn('POOL', `[TRIAL_GUARD] L5 NO_DATA + 额度下降(${prevQuota}→${curQuota}) → Trial账号每消息切号`);
-      am.markRateLimited(_activeIndex, 3600, {
-        type: 'tier_cap',
-        trigger: 'trial_nodata_guard',
-        serverReset: false,
-      });
-      const trialSwitch = await _performSwitch(context, {
-        threshold,
-        targetPolicy: 'same_strategy',
-      });
-      if (trialSwitch.ok) return;
+      const trialGuard = _recordTrialGuardDrop(prevQuota, curQuota);
+      if (!trialGuard.confirmed) {
+        _logInfo(
+          'POOL',
+          `[TRIAL_GUARD] armed ${trialGuard.consecutiveDrops}/2: L5 NO_DATA + 额度下降(${prevQuota}→${curQuota})，等待二次确认避免误切`,
+        );
+      } else {
+        _logWarn(
+          'POOL',
+          `[TRIAL_GUARD] confirmed ${trialGuard.consecutiveDrops}/2: L5 NO_DATA + 额度下降(${prevQuota}→${curQuota}) → 隔离当前Trial账号并切换`,
+        );
+        am.markRateLimited(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, {
+          type: 'tier_cap',
+          trigger: 'trial_nodata_guard',
+          serverReset: false,
+        });
+        _setAccountQuarantine(_activeIndex, TRIAL_GUARD_ACCOUNT_QUARANTINE_SEC, 'trial_nodata_guard', {
+          model: _readCurrentModelUid(),
+        });
+        const trialSwitch = await _performSwitch(context, {
+          threshold,
+          targetPolicy: 'same_strategy',
+        });
+        if (trialSwitch.ok) return;
+      }
+    } else if (!isNoData) {
+      _resetTrialGuard(_activeIndex);
     }
   }
 
@@ -1524,7 +1731,7 @@ function _startQuotaWatcher(context) {
           // Gate 4: 账号层级硬限 → 跳过模型轮转, 直接账号切换
           if (gateType === 'tier_cap') {
             _logWarn('QUOTA', `[L1→TIER_RL] Gate 4 账号层级硬限 via context: ${ctx}`);
-            await _handleTierRateLimit(context, cooldown);
+            await _handleTierRateLimit(context, cooldown, { trigger: ctx, message: ctx });
             return;
           }
           // Gate 3: per-model rate limit → 模型变体轮转策略
@@ -1802,6 +2009,7 @@ async function _handleCapacityExhausted(context, capacityResult) {
 
   // 根据容量探测结果精确分类
   const gateType = _classifyRateLimit(capacityResult.message, null);
+  const isGlobalTrial = GLOBAL_TRIAL_RL_RE.test(String(capacityResult.message || ''));
 
   // 标记当前账号限流
   am.markRateLimited(_activeIndex, cooldown, {
@@ -1814,6 +2022,15 @@ async function _handleCapacityExhausted(context, capacityResult) {
       resets: capacityResult.resetsInSeconds,
     },
   });
+  _setAccountQuarantine(_activeIndex, cooldown, isGlobalTrial ? 'global_trial_rate_limit' : (gateType || 'tier_cap'), {
+    trigger: 'capacity_probe',
+    model,
+  });
+  if (isGlobalTrial) {
+    _armTrialPoolCooldown(model, Math.min(cooldown, GLOBAL_TRIAL_POOL_COOLDOWN_SEC), 'global_trial_rate_limit', {
+      model,
+    });
+  }
 
   _pushRateLimitEvent({
     type: gateType || 'tier_cap',
@@ -1824,12 +2041,16 @@ async function _handleCapacityExhausted(context, capacityResult) {
     maxMessages: capacityResult.maxMessages,
     resetsInSeconds: capacityResult.resetsInSeconds,
     message: capacityResult.message,
+    globalTrial: isGlobalTrial,
   });
 
   // Gate 4 or unknown → 直接账号切换
   if (gateType === 'tier_cap' || gateType === 'unknown') {
     const runtime = _getAccountRuntime();
     if (runtime) runtime.hourlyMsgLog = [];
+    if (isGlobalTrial && await _downgradeFromTrialPressure(`${logPrefix} Trial全局限流`)) {
+      return { action: 'fallback_model', cooldown, to: SONNET_FALLBACK };
+    }
     _invalidateApiKeyCache(); // 切号后apiKey变化
     _activateBoost();
     await _doPoolRotate(context, true);
@@ -2672,6 +2893,7 @@ function _handleAction(context, action, arg) {
     case "clearRateLimit":
       if (arg !== undefined) {
         am.clearRateLimit(arg);
+        _clearAccountQuarantine(arg);
         _updatePoolBar();
         _refreshPanel();
       }
