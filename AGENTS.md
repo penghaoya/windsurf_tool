@@ -80,7 +80,45 @@ npm run install-ext     # 打包并安装到 IDE
 | L7 | 速度检测器 (120s 突变) |
 | L8 | Opus 消息预算守卫 |
 | L9 | 输出通道实时拦截 |
-| L10 | 多窗口协调 (账号隔离+心跳) |
+| L10 | 多窗口协调 (账号隔离+心跳, 跨平台路径) |
+
+## 调度策略 (v12.0)
+
+### 预防性切换三层结构
+
+```
+_poolTick
+ ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
+ ├─ Tier 2: 配额阈值
+ │   ├─ T2-A: shouldSwitch (depleted/low/expired/rate_limited)
+ │   ├─ T2-B: isRateLimited 直接检查
+ │   ├─ T2-C: Opus 预算守卫
+ │   └─ T2-D: UFEF 紧急切换 (含10min冷却, 唯一入口)
+ └─ Tier 3: 启发式降级 (仅L5无效时)
+     ├─ L2 斜率 / L4 burst / L5-Tab / L6 速度
+     └─ L7 Gate4 小时消息 (Trial NO_DATA时 cap=15)
+```
+
+### 账号选择排序 (selectOptimal / findBestForModel)
+
+1. **过期紧急度** — urgent(≤3d) > soon(≤7d) > safe(>7d)
+2. **周重置浪费预防** — 额度相近(≤20)且>50时, 优先周重置更近的
+3. **Round-Robin 均匀消耗** — 额度差≤10%时, 优先最久未用的账号
+4. **最高剩余额度**
+5. **最快过期** — 先用完快到期的
+6. **最近重置**
+
+### 调度优化机制
+
+| 机制 | 说明 |
+|------|------|
+| UFEF 冷却 | 10min 冷却防止 safe↔urgent 频繁抖动 |
+| Round-Robin | 同紧急度+额度差≤10%时轮转, 均匀消耗 |
+| 指数退避 | 限流冷却 base×2^(n-1), 上限3600s, 恢复后归零 |
+| 预热验证 | 切换前刷新目标账号(5s超时), 额度≤15%取消切换 |
+| 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
+| Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
+| NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
 
 ## 数据流
 
@@ -93,6 +131,15 @@ _pushState() ──── postMessage ────→ useVscode.state (reactive)
               ◄── postMessage ──── postMessage('refresh')
               ◄── postMessage ──── postMessage('remove', {index})
 ```
+
+## 多窗口协调
+
+- 共享状态文件: `wam-window-state.json` (跨平台路径)
+  - macOS: `~/Library/Application Support/Windsurf/User/globalStorage/`
+  - Linux: `~/.config/Windsurf/User/globalStorage/`
+  - Windows: `%APPDATA%/Windsurf/User/globalStorage/`
+- 原子写入: tmp文件 → rename, 失败降级直写
+- 心跳 30s, 死亡 90s, 账号隔离
 
 ## 开发规则
 
