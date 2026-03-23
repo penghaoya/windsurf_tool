@@ -2527,18 +2527,7 @@ function _resetDiscoveredCommands() {
 // 是Windsurf内部自动完成的。旧版错误地重启TypeScript LS(无关)和清理.vscode-server(远程开发)。
 // 真正需要的只是等待Windsurf内部的auth handler完成会话切换。
 
-/**
- * 等待Windsurf内部会话过渡完成
- * provideAuthTokenToAuthProvider触发的内部链: handleAuthToken → registerUser → new session
- * 我们只需等待这个过程完成，不需要重启任何LS
- */
-async function _waitForSessionTransition() {
-  _logInfo("会话", "等待Windsurf会话过渡...");
-  // Windsurf内部registerUser + session创建需要1-3秒
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  _logInfo("会话", "会话过渡等待完成");
-  return true;
-}
+// v14.0: _waitForSessionTransition 已移除,由 _waitForApiKeyChange 自适应轮询替代
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2593,8 +2582,8 @@ async function injectAuth(context, index) {
     _rotateFingerprintForSwitch();
     _hotResetCount++;
     _logInfo("热重置", `指纹已轮转 (第${_hotResetCount}次)`);
-    // 等待指纹写入磁盘完成(Windsurf注入后内部重启LS时会读取新指纹)
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // v14.0: 指纹writeFileSync是同步的,200ms足够OS刷新缓冲区(原1000ms过保守)
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
   let injected = false;
@@ -2605,7 +2594,9 @@ async function injectAuth(context, index) {
   // PROVIDE_AUTH_TOKEN_TO_AUTH_PROVIDER accepts firebase idToken,
   // internally calls registerUser(idToken) → {apiKey, name} → session
   try {
-    const idToken = await auth.getFreshIdToken(account.email, account.password);
+    // v14.0: 优先使用缓存token(预热阶段已刷新,50min TTL内有效,省1-2s网络延迟)
+    const loginResult = await auth.login(account.email, account.password, false);
+    const idToken = loginResult?.ok ? loginResult.idToken : await auth.getFreshIdToken(account.email, account.password);
     if (idToken) {
       // Try well-known command name first
       try {
@@ -2761,8 +2752,8 @@ async function injectAuth(context, index) {
   return { ok: injected, injected, method };
 }
 
-/** Login to account: check credits → inject auth → verify
- *  v11.0: 始终验证会话建立，不跳过(杜绝"Invalid argument"错误的根源) */
+/** Login to account: inject auth → adaptive verify
+ *  v14.0: 消除冗余Firebase登录(预热已验证) + 自适应apiKey变化检测 */
 async function _loginToAccount(context, index) {
   const account = am.get(index);
   if (!account) return;
@@ -2771,42 +2762,34 @@ async function _loginToAccount(context, index) {
   _activeIndex = index;
   context.globalState.update("wam-current-index", index);
 
-  // 快速路径: 只做Firebase登录验证(不调GetPlanStatus，省1-2s)
-  // 确保账号凭据有效，避免注入无效token
-  try {
-    const idToken = await auth.getFreshIdToken(account.email, account.password);
-    if (!idToken) {
-      _logWarn("登录", `#${index + 1} Firebase登录失败，跳过`);
-      return;
-    }
-  } catch (e) {
-    _logWarn("登录", `#${index + 1} 凭据验证失败: ${e.message}`);
-    return;
-  }
+  // v14.0: 移除冗余Firebase登录 — 预热阶段(_validateSwitchCandidate)已验证凭据有效
+  // 直接进入注入流程,节省1-2s网络延迟
 
   const apiKeyBefore = _readAuthApiKeyPrefix();
   const injectResult = await injectAuth(context, index);
 
   if (injectResult.injected) {
-    // v11.0: 始终等待会话过渡并验证apiKey变化
-    await _waitForSessionTransition();
-    const apiKeyAfter = _readAuthApiKeyPrefix();
-    const changed = apiKeyBefore !== apiKeyAfter;
+    // v14.0: 自适应apiKey变化检测 — 替代固定等待,快则200ms慢则2s
+    const changed = await _waitForApiKeyChange(apiKeyBefore, 2000);
     _logInfo(
       "登录",
       `✅ ${injectResult.method} → #${index + 1} | apiKey ${changed ? "已更新" : "未变"}`,
     );
-    // 如果apiKey未变，额外等待(Windsurf内部链可能较慢)
-    if (!changed) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        await new Promise((r) => setTimeout(r, 1500));
-        if (_readAuthApiKeyPrefix() !== apiKeyBefore) break;
-      }
-    }
   }
 
   am.incrementLoginCount(index);
   _updatePoolBar();
+}
+
+/** v14.0: 自适应等待apiKey变化 — 替代固定sleep,检测到变化立即返回 */
+async function _waitForApiKeyChange(oldPrefix, maxWaitMs = 2000) {
+  const interval = 200;
+  const maxAttempts = Math.ceil(maxWaitMs / interval);
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, interval));
+    if (_readAuthApiKeyPrefix() !== oldPrefix) return true;
+  }
+  return false;
 }
 
 // ========== Auth File Compatibility (v4.0) ==========
@@ -3088,30 +3071,21 @@ function _refreshPanel() {
 
 async function _postInjectionRefresh() {
   try {
-    // ═══ v11.0: 统一刷新链 — 始终await，杜绝"Invalid argument"根源 ═══
-    // 根因: 旧版urgent模式fire-and-forget → 新session未建立 → 下条消息用旧apiKey → 报错
+    // ═══ v14.0: 精简刷新链 — 并行化+缩短等待,总耗时从~3.5s降至~1s ═══
 
     // Step 1: 清除旧的cachedPlanInfo(防止Windsurf继续用旧账号数据)
     _clearCachedPlanInfo();
 
-    // Step 2: 强制Windsurf重新获取PlanInfo
-    try {
-      await vscode.commands.executeCommand("windsurf.updatePlanInfo");
-      _logInfo("注入后刷新", "已强制刷新PlanInfo");
-    } catch (e) {
-      _logWarn("注入后刷新", "PlanInfo刷新跳过", e.message);
-    }
+    // Step 2+3: 并行执行PlanInfo刷新和认证会话刷新(互不依赖)
+    const refreshTasks = [
+      vscode.commands.executeCommand("windsurf.updatePlanInfo").catch(() => {}),
+      vscode.commands.executeCommand("windsurf.refreshAuthenticationSession").catch(() => {}),
+    ];
+    await Promise.allSettled(refreshTasks);
+    _logInfo("注入后刷新", "已并行刷新PlanInfo+认证会话");
 
-    // Step 3: 等待Windsurf内部刷新完成
-    await new Promise((r) => setTimeout(r, 1500));
-
-    // Step 4: 强制刷新auth session(触发re-authentication)
-    try {
-      await vscode.commands.executeCommand("windsurf.refreshAuthenticationSession");
-      _logInfo("注入后刷新", "已强制刷新认证会话");
-    } catch {
-      // Command may not exist in all versions — non-critical
-    }
+    // Step 4: 短暂等待Windsurf内部状态同步(v14.0: 500ms足够,会话过渡由apiKey轮询保障)
+    await new Promise((r) => setTimeout(r, 500));
 
     // Step 5: 验证apiKey已更新
     const newApiKey = _readAuthApiKeyPrefix();
