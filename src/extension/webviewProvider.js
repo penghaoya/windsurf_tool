@@ -112,6 +112,7 @@ class AccountViewProvider {
       planEnd: a.usage?.planEnd || null,
       urgency: this._am.getExpiryUrgency ? this._am.getExpiryUrgency(i) : -1,
       rateLimitInfo: this._am.getRateLimitInfo ? this._am.getRateLimitInfo(i) : null,
+      schedulerBlocked: this._onAction ? this._onAction('getAccountBlocked', i) : null,
     }));
 
     // 补充 activeQuota 的紧急度

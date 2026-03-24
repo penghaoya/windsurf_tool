@@ -1,7 +1,7 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked }"
     :id="`row${index}`"
   >
     <!-- Row 1: Tags left + Actions right -->
@@ -37,10 +37,10 @@
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
         </button>
         <button
-          v-if="isRateLimited"
+          v-if="isRateLimited || isBlocked"
           class="r-btn rl-clear"
           @click="onClearRateLimit"
-          title="解除限流标记"
+          title="解除限流/隔离"
         >
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 8l8 8"/>
@@ -87,6 +87,15 @@
       <span>⏳ 限流中</span>
       <span v-if="rateLimitLabel" class="ac-rl-time">{{ rateLimitLabel }}</span>
     </div>
+    <!-- Scheduler Blocked Badges (quarantine / pool cooldown) -->
+    <div v-if="quarantineLabel" class="ac-rl ac-qr">
+      <span>🔒 隔离中</span>
+      <span class="ac-rl-time">{{ quarantineLabel }}</span>
+    </div>
+    <div v-if="poolCoolLabel" class="ac-rl ac-pc">
+      <span>❄ 池冷却</span>
+      <span class="ac-rl-time">{{ poolCoolLabel }}</span>
+    </div>
   </div>
 </template>
 
@@ -125,6 +134,23 @@ const remainingCooldown = computed(() => {
 const isRateLimited = computed(() => remainingCooldown.value > 0)
 
 const rateLimitLabel = computed(() => formatCooldown(remainingCooldown.value))
+
+// Scheduler blocked states (quarantine / pool cooldown)
+const quarantineUntil = computed(() => props.account.schedulerBlocked?.quarantined?.until ?? null)
+const poolCoolUntil = computed(() => props.account.schedulerBlocked?.poolCooled?.until ?? null)
+
+const quarantineRemaining = computed(() => {
+  if (!quarantineUntil.value) return 0
+  return Math.max(0, Math.ceil((quarantineUntil.value - now.value) / 1000))
+})
+const poolCoolRemaining = computed(() => {
+  if (!poolCoolUntil.value) return 0
+  return Math.max(0, Math.ceil((poolCoolUntil.value - now.value) / 1000))
+})
+
+const quarantineLabel = computed(() => formatCooldown(quarantineRemaining.value))
+const poolCoolLabel = computed(() => formatCooldown(poolCoolRemaining.value))
+const isBlocked = computed(() => quarantineRemaining.value > 0 || poolCoolRemaining.value > 0)
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
 
@@ -212,6 +238,7 @@ onBeforeUnmount(() => {
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:rgba(94,218,158,.25);background:rgba(94,218,158,.04)}
 .ac.rl{opacity:.45}
+.ac.blk:not(.rl){opacity:.55}
 .ac.exp{opacity:.3}
 .ac-head{display:flex;align-items:center;gap:5px;margin-bottom:3px}
 .dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
@@ -241,4 +268,6 @@ onBeforeUnmount(() => {
 .ac-meters{display:flex;flex-direction:column;gap:3px}
 .ac-rl{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--yw);margin-top:3px}
 .ac-rl-time{color:var(--tx2)}
+.ac-qr{color:var(--rd)}
+.ac-pc{color:var(--ac)}
 </style>

@@ -712,6 +712,7 @@ class AccountManager {
       this._save();
     }
     console.log(`WAM: [限流] #${index+1} ${a.email.split('@')[0]} 已标记限流 ${resetsInSeconds}s (类型=${info.type || '?'}, 触发=${info.trigger || '?'})`);
+    this._notify();
   }
 
   /** Check if an account is currently rate-limited

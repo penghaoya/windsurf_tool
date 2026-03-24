@@ -2958,6 +2958,17 @@ function _handleAction(context, action, arg) {
       return am.getActiveQuota(_activeIndex);
     case "getSwitchCount":
       return _switchCount;
+    case "getAccountBlocked": {
+      if (arg === undefined || arg === null) return null;
+      const quarantine = _getAccountQuarantineByEmail(_getAccountEmail(arg));
+      const modelUid = _currentModelUid || _readCurrentModelUid();
+      const poolCd = _isTrialLikeAccount(arg) ? _getTrialPoolCooldown(modelUid) : null;
+      if (!quarantine && !poolCd) return null;
+      return {
+        quarantined: quarantine ? { until: quarantine.until, reason: quarantine.reason || null } : null,
+        poolCooled: poolCd ? { until: poolCd.until, reason: poolCd.reason || null } : null,
+      };
+    }
     case "setMode":
       if (auth && arg) {
         auth.setMode(arg);
