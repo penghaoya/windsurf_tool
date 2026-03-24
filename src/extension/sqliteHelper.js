@@ -7,6 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+let _tmpCounter = 0; // 原子计数器,避免同毫秒临时文件名碰撞
+
 /** 获取当前平台的 state.vscdb 路径 */
 export function getStateDbPath() {
   const p = process.platform;
@@ -21,7 +23,7 @@ export function getStateDbPath() {
 
 /** 读取单个 key (使用临时副本避免锁冲突) */
 export function dbReadKey(dbPath, key) {
-  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}.db`);
+  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}_${++_tmpCounter}.db`);
   try {
     fs.copyFileSync(dbPath, tmpDb);
     const db = new DatabaseSync(tmpDb, { readOnly: true });
@@ -36,7 +38,7 @@ export function dbReadKey(dbPath, key) {
 
 /** 读取多个 key (使用临时副本) */
 export function dbReadKeys(dbPath, keys) {
-  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}.db`);
+  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}_${++_tmpCounter}.db`);
   try {
     fs.copyFileSync(dbPath, tmpDb);
     const db = new DatabaseSync(tmpDb, { readOnly: true });
@@ -55,7 +57,7 @@ export function dbReadKeys(dbPath, keys) {
 
 /** 读取 LIKE 匹配的 key (使用临时副本) */
 export function dbReadKeysLike(dbPath, patterns) {
-  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}.db`);
+  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}_${++_tmpCounter}.db`);
   try {
     fs.copyFileSync(dbPath, tmpDb);
     const db = new DatabaseSync(tmpDb, { readOnly: true });
@@ -97,7 +99,7 @@ export function dbDeleteKey(dbPath, key) {
   } catch { return false; }
 }
 
-/** UPDATE 多个 key */
+/** UPDATE 多个 key (事务包裹,保证原子性) */
 export function dbUpdateKeys(dbPath, pairs) {
   if (!pairs || pairs.length === 0) return false;
   try {
@@ -105,15 +107,23 @@ export function dbUpdateKeys(dbPath, pairs) {
     try {
       db.exec('PRAGMA busy_timeout = 5000');
       const stmt = db.prepare('UPDATE ItemTable SET value=? WHERE key=?');
-      for (const { key, value } of pairs) {
-        stmt.run(value, key);
+      db.exec('BEGIN');
+      try {
+        for (const { key, value } of pairs) {
+          stmt.run(value, key);
+        }
+        db.exec('COMMIT');
+        return true;
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw e;
       }
-      return true;
     } finally { db.close(); }
   } catch { return false; }
 }
 
-/** 批量操作 (事务): [{type:'write'|'update'|'delete', key, value?}] */
+/** 批量操作 (真事务): [{type:'write'|'update'|'delete', key, value?}]
+ *  BEGIN/COMMIT 包裹,失败时 ROLLBACK 保证原子性 */
 export function dbTransaction(dbPath, operations) {
   if (!operations || operations.length === 0) return false;
   try {
@@ -123,12 +133,19 @@ export function dbTransaction(dbPath, operations) {
       const writeStmt = db.prepare('INSERT OR REPLACE INTO ItemTable(key,value) VALUES(?,?)');
       const updateStmt = db.prepare('UPDATE ItemTable SET value=? WHERE key=?');
       const deleteStmt = db.prepare('DELETE FROM ItemTable WHERE key=?');
-      for (const op of operations) {
-        if (op.type === 'write') writeStmt.run(op.key, op.value);
-        else if (op.type === 'update') updateStmt.run(op.value, op.key);
-        else if (op.type === 'delete') deleteStmt.run(op.key);
+      db.exec('BEGIN');
+      try {
+        for (const op of operations) {
+          if (op.type === 'write') writeStmt.run(op.key, op.value);
+          else if (op.type === 'update') updateStmt.run(op.value, op.key);
+          else if (op.type === 'delete') deleteStmt.run(op.key);
+        }
+        db.exec('COMMIT');
+        return true;
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw e;
       }
-      return true;
     } finally { db.close(); }
   } catch { return false; }
 }

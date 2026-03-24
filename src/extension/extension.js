@@ -226,8 +226,8 @@ function _getModelFamily(uid) {
   return model || 'unknown';
 }
 
-function _getTrialPoolCooldownKey(modelUid = _currentModelUid || _readCurrentModelUid()) {
-  return `trial:${_getModelFamily(modelUid)}`;
+function _getTrialPoolCooldownKey(modelUid) {
+  return `trial:${_getModelFamily(modelUid || _currentModelUid || _readCurrentModelUid())}`;
 }
 
 function _getAccountQuarantineByEmail(email) {
@@ -261,7 +261,7 @@ function _clearAccountQuarantine(indexOrEmail) {
   schedulerState.accountQuarantines.delete(email);
 }
 
-function _getTrialPoolCooldown(modelUid = _currentModelUid || _readCurrentModelUid()) {
+function _getTrialPoolCooldown(modelUid) {
   _clearExpiredEntries(schedulerState.poolCooldowns);
   return schedulerState.poolCooldowns.get(_getTrialPoolCooldownKey(modelUid)) || null;
 }
@@ -288,21 +288,24 @@ function _filterRuntimeCandidates(candidates, { modelUid = null, opusBudgetFilte
   return candidates.filter((candidate) => {
     if (_isAccountQuarantined(candidate.email || candidate.index)) return false;
     if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
-    // v14.2: Opus预算过滤 — 跳过Opus消息已达预算的Trial候选(避免切到也耗尽的账号)
+    // v14.2: Opus预算过滤 — 跳过Opus消息已达preemptAt的Trial候选(与_isNearOpusBudget一致,避免切到立即再触发)
     if (opusBudgetFilter && _isTrialLikeAccount(candidate.index)) {
       const opusCount = _getOpusMsgCount(candidate.index);
-      const budget = _getModelBudget(modelUid || _readCurrentModelUid());
-      if (opusCount >= budget) return false;
+      const preemptAt = _getPreemptAt(modelUid || _readCurrentModelUid());
+      if (opusCount >= preemptAt) return false;
     }
     return true;
   });
 }
 
-/** v14.2: 统计号池中Opus预算仍有余量的Trial账号数 */
+/** v14.2: 统计号池中Opus预算仍有余量的Trial账号数 (使用preemptAt与_isNearOpusBudget一致)
+ *  v14.3: 增加池冷却检查 — 池冷却激活时Trial全部不可用,直接返回0触发主动降级 */
 function _countOpusAvailableTrials(excludeIndex = -1) {
   const accounts = am.getAll();
   const modelUid = _currentModelUid || _readCurrentModelUid();
-  const budget = _getModelBudget(modelUid);
+  // 池冷却激活时,所有Trial账号都被阻断,无需逐个检查
+  if (_getTrialPoolCooldown(modelUid)) return 0;
+  const preemptAt = _getPreemptAt(modelUid);
   let available = 0;
   for (let i = 0; i < accounts.length; i++) {
     if (i === excludeIndex) continue;
@@ -310,7 +313,7 @@ function _countOpusAvailableTrials(excludeIndex = -1) {
     if (am.isRateLimited(i) || am.isExpired(i)) continue;
     if (_isAccountQuarantined(i)) continue;
     const opusCount = _getOpusMsgCount(i);
-    if (opusCount < budget) available++;
+    if (opusCount < preemptAt) available++;
   }
   return available;
 }
@@ -423,14 +426,18 @@ function _getOpusMsgCount(accountIndex) {
   return valid.length;
 }
 
+/** v14.2: 获取提前切号阈值 — budget>1时提前1条,留buffer完成切号 */
+function _getPreemptAt(modelUid) {
+  const budget = _getModelBudget(modelUid);
+  return budget > 1 ? budget - 1 : budget;
+}
+
 /** 判断是否达到Opus消息预算 — 分级预算, budget>1时提前1条preempt留buffer
  *  v14.2: Thinking 1M(budget=1) → 1条即切; Thinking(budget=2) → 1条即切; Regular(budget=3) → 2条即切 */
 function _isNearOpusBudget(accountIndex) {
   const modelUid = _currentModelUid || _readCurrentModelUid();
-  const budget = _getModelBudget(modelUid);
   const count = _getOpusMsgCount(accountIndex);
-  const preemptAt = budget > 1 ? budget - 1 : budget; // 提前1条,留buffer完成切号
-  return count >= preemptAt;
+  return count >= _getPreemptAt(modelUid);
 }
 
 /** v14.2: 获取动态Opus冷却时间 — L5实际值优先,固定值兜底 */
