@@ -246,13 +246,31 @@ class AccountManager {
     return idx >= 0 ? { index: idx, account: { ...this._accounts[idx] } } : null;
   }
 
-  add(email, password) {
+  add(email, password, group = '') {
     if (!email || !password || !email.includes('@')) return false;
     if (this.findByEmail(email)) return false;
-    this._accounts.push({ email, password, credits: undefined, loginCount: 0, addedAt: Date.now() });
+    this._accounts.push({ email, password, credits: undefined, loginCount: 0, addedAt: Date.now(), group: group || '' });
     this._save();
     this._notify();
     return true;
+  }
+
+  /** 设置账号分组标签 */
+  setGroup(index, group) {
+    if (index < 0 || index >= this._accounts.length) return false;
+    this._accounts[index].group = group || '';
+    this._save();
+    this._notify();
+    return true;
+  }
+
+  /** 获取所有唯一分组名 */
+  getGroups() {
+    const groups = new Set();
+    for (const a of this._accounts) {
+      if (a.group) groups.add(a.group);
+    }
+    return [...groups].sort();
   }
 
   remove(index) {

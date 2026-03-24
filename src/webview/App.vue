@@ -10,12 +10,19 @@
       />
       <Toolbar />
       <AddAccount />
+      <GroupTabs
+        :groups="state.groups"
+        :accounts="state.accounts"
+        v-model="selectedGroup"
+      />
     </div>
     <div class="app-scroll">
       <AccountList
         :accounts="state.accounts"
         :currentIndex="state.currentIndex"
         :threshold="state.threshold"
+        :selectedGroup="selectedGroup"
+        :groups="state.groups"
       />
     </div>
   </div>
@@ -24,10 +31,11 @@
 
 <script setup>
 import { onMounted } from 'vue'
-import { state, toasts, isLoading, initMessageListener } from './composables/useVscode.js'
+import { state, toasts, isLoading, selectedGroup, initMessageListener } from './composables/useVscode.js'
 import PoolOverview from './components/PoolOverview.vue'
 import Toolbar from './components/Toolbar.vue'
 import AddAccount from './components/AddAccount.vue'
+import GroupTabs from './components/GroupTabs.vue'
 import AccountList from './components/AccountList.vue'
 import ToastMessage from './components/ToastMessage.vue'
 

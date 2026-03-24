@@ -9,6 +9,30 @@
       <span class="dot" :class="statusClass"></span>
       <span v-if="account.usage?.plan" class="a-plan">{{ account.usage.plan }}</span>
       <span v-if="daysTag" class="a-days" :style="{ color: daysColor }">{{ daysTag }}</span>
+      <span
+        v-if="!editingGroup"
+        class="a-grp"
+        :class="{ empty: !account.group }"
+        @click.stop="startEditGroup"
+        :title="account.group ? '点击修改分组' : '点击设置分组'"
+      >
+        <span v-if="account.group" class="grp-dot" :style="{ background: tagColor(account.group) }"></span>
+        {{ account.group || '+组' }}
+      </span>
+      <input
+        v-else
+        ref="groupInput"
+        class="a-grp-input"
+        v-model="groupDraft"
+        @blur="commitGroup"
+        @keydown.enter="commitGroup"
+        @keydown.escape="editingGroup = false"
+        placeholder="分组名"
+        list="grp-suggestions"
+      />
+      <datalist id="grp-suggestions">
+        <option v-for="g in groups" :key="g" :value="g" />
+      </datalist>
       <div class="ac-acts">
         <button
           class="r-btn login"
@@ -100,7 +124,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import { postMessage, pwdResults } from '../composables/useVscode.js'
 import { dotClass, urgencyColor } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
@@ -110,12 +134,16 @@ const props = defineProps({
   index: { type: Number, required: true },
   isCurrent: { type: Boolean, default: false },
   threshold: { type: Number, default: 5 },
+  groups: { type: Array, default: () => [] },
 })
 
 const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
 const refreshing = ref(false)
 const now = ref(Date.now())
+const editingGroup = ref(false)
+const groupDraft = ref('')
+const groupInput = ref(null)
 let confirmTimer = null
 let copyTimer = null
 const rateLimitTimer = setInterval(() => {
@@ -173,6 +201,30 @@ const daysColor = computed(() => {
   const urgency = props.account.urgency ?? -1
   return urgencyColor(urgency)
 })
+
+const COLORS = [
+  '#5edaa0', '#60a5fa', '#f59e0b', '#ef4444', '#a78bfa',
+  '#f472b6', '#34d399', '#fb923c', '#38bdf8', '#c084fc',
+]
+function tagColor(g) {
+  let hash = 0
+  for (let i = 0; i < g.length; i++) hash = ((hash << 5) - hash) + g.charCodeAt(i)
+  return COLORS[Math.abs(hash) % COLORS.length]
+}
+
+function startEditGroup() {
+  groupDraft.value = props.account.group || ''
+  editingGroup.value = true
+  nextTick(() => groupInput.value?.focus())
+}
+
+function commitGroup() {
+  editingGroup.value = false
+  const val = groupDraft.value.trim()
+  if (val !== (props.account.group || '')) {
+    postMessage('setGroup', { index: props.index, group: val })
+  }
+}
 
 function onCopy() {
   postMessage('copyPwd', { index: props.index })
@@ -248,6 +300,12 @@ onBeforeUnmount(() => {
 .ac-name{font-weight:600;color:var(--tx);font-size:11px;word-break:break-all;line-height:1.3}
 .a-plan{font-size:8px;font-weight:600;padding:0 4px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
 .a-days{font-size:9px;font-weight:500;flex-shrink:0}
+.a-grp{display:inline-flex;align-items:center;gap:2px;font-size:8px;padding:0 4px;border-radius:3px;border:1px dashed var(--bd2);color:var(--tx2);cursor:pointer;transition:all .12s;flex-shrink:0;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.6}
+.a-grp:hover{border-color:var(--ac);color:var(--ac);background:var(--ac-bg)}
+.a-grp.empty{color:var(--tx3);border-style:dashed;opacity:.6}
+.a-grp.empty:hover{opacity:1}
+.a-grp .grp-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.a-grp-input{font-size:8px;width:56px;padding:0 3px;border:1px solid var(--ac);border-radius:3px;background:var(--sf);color:var(--tx);outline:none;line-height:1.6}
 .ac-acts{display:flex;gap:1px;flex-shrink:0;margin-left:auto}
 .r-btn{width:20px;height:20px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:all .12s ease}
 .r-btn:hover{background:var(--bg2);color:var(--tx)}
