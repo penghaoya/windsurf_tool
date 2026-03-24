@@ -2037,8 +2037,21 @@ function _startQuotaWatcher(context) {
   // 当 hasCapacity=false 或 messagesRemaining<=2 → 立即切号，在用户消息失败前
   const checkCapacityProbe = async () => {
     if (_activeIndex < 0 || _switching || !auth) return;
-    // 自适应间隔 — Thinking模型3s(最快), boost/burst 5s, 正幅45s
+
+    // v14.3: 跨窗口池冷却快速检测 — 在L5探测循环中合并共享状态,检测其他窗口arm的池冷却
+    _mergeSchedulerFromShared();
     const modelUid = _currentModelUid || _readCurrentModelUid();
+    if (_isOpusModel(modelUid) && _isTrialLikeAccount(_activeIndex) && _getTrialPoolCooldown(modelUid)) {
+      if (!_switching && Date.now() > _downgradeLockUntil) {
+        _logWarn('L5探测', '❄ 检测到跨窗口Trial池冷却 → 主动降级Sonnet');
+        await _downgradeFromTrialPressure('[L5跨窗口] 检测到Trial池冷却');
+        _updatePoolBar();
+        _refreshPanel();
+        return;
+      }
+    }
+
+    // 自适应间隔 — Thinking模型3s(最快), boost/burst 15s, 正幅45s
     const isThinking = _isOpusModel(modelUid) && _isThinkingModel(modelUid);
     const capacityState = _getCapacityState();
     if (!capacityState) return;
@@ -2073,10 +2086,10 @@ function _startQuotaWatcher(context) {
       // 非关键，静默处理
     }
   };
-  // Layer 5 定时器: 首次延迟10s(等API key就绪), 之后每30s检查一次
+  // Layer 5 定时器: 首次延迟10s(等API key就绪), 之后每3s检查(内部自适应间隔控制实际探测频率)
   const l5Timer = setTimeout(() => {
     checkCapacityProbe(); // 首次探测
-    const l5Interval = setInterval(checkCapacityProbe, 30000);
+    const l5Interval = setInterval(checkCapacityProbe, CAPACITY_CHECK_THINKING);
     context.subscriptions.push({ dispose: () => clearInterval(l5Interval) });
   }, 10000);
   context.subscriptions.push({ dispose: () => clearTimeout(l5Timer) });
