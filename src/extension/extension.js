@@ -251,6 +251,7 @@ function _setAccountQuarantine(indexOrEmail, seconds, reason, meta = {}) {
   const current = _getAccountQuarantineByEmail(email);
   if (current && current.until >= until) return;
   schedulerState.accountQuarantines.set(email, { until, reason, ...meta });
+  _syncSchedulerToShared();
 }
 
 function _clearAccountQuarantine(indexOrEmail) {
@@ -259,6 +260,7 @@ function _clearAccountQuarantine(indexOrEmail) {
     : _normalizeEmail(indexOrEmail);
   if (!email) return;
   schedulerState.accountQuarantines.delete(email);
+  _syncSchedulerToShared();
 }
 
 function _getTrialPoolCooldown(modelUid) {
@@ -273,6 +275,7 @@ function _armTrialPoolCooldown(modelUid, seconds, reason, meta = {}) {
   const current = _getTrialPoolCooldown(modelUid);
   if (current && current.until >= until) return;
   schedulerState.poolCooldowns.set(key, { until, reason, ...meta });
+  _syncSchedulerToShared();
 }
 
 function _isTrialLikeAccount(index) {
@@ -812,7 +815,9 @@ function _registerWindow(accountIndex) {
 
 function _heartbeatWindow() {
   if (!_windowId) return;
-  const state = _readWindowState();
+  // v14.3: 心跳时先合并其他窗口的调度状态
+  _mergeSchedulerFromShared();
+  const state = _readWindowState(true);
   if (!state.windows[_windowId]) {
     state.windows[_windowId] = { pid: process.pid, startedAt: Date.now() };
   }
@@ -823,7 +828,67 @@ function _heartbeatWindow() {
   for (const [id, w] of Object.entries(state.windows)) {
     if (now - w.lastHeartbeat > WINDOW_DEAD_MS) delete state.windows[id];
   }
+  // v14.3: 心跳时也同步本窗口调度状态到共享文件
+  _writeSchedulerToState(state);
   _writeWindowState(state);
+}
+
+/** v14.3: 写本窗口的调度阻断状态到共享 state 对象 */
+function _writeSchedulerToState(state) {
+  const now = Date.now();
+  // 合并 poolCooldowns: 本地 → 共享 (取max until)
+  const sharedPc = state.scheduler?.poolCooldowns || {};
+  for (const [key, cd] of schedulerState.poolCooldowns) {
+    if (cd.until <= now) continue;
+    if (!sharedPc[key] || cd.until > sharedPc[key].until) sharedPc[key] = { ...cd };
+  }
+  for (const k of Object.keys(sharedPc)) { if (sharedPc[k].until <= now) delete sharedPc[k]; }
+  // 合并 accountQuarantines: 本地 → 共享 (取max until)
+  const sharedAq = state.scheduler?.accountQuarantines || {};
+  for (const [email, q] of schedulerState.accountQuarantines) {
+    if (q.until <= now) continue;
+    if (!sharedAq[email] || q.until > sharedAq[email].until) sharedAq[email] = { ...q };
+  }
+  for (const e of Object.keys(sharedAq)) { if (sharedAq[e].until <= now) delete sharedAq[e]; }
+  state.scheduler = { poolCooldowns: sharedPc, accountQuarantines: sharedAq };
+}
+
+/** v14.3: 将本窗口调度状态立即写入共享文件 (arm/clear 时调用) */
+function _syncSchedulerToShared() {
+  try {
+    const state = _readWindowState(true);
+    _writeSchedulerToState(state);
+    _writeWindowState(state);
+  } catch {}
+}
+
+/** v14.3: 从共享文件合并其他窗口的调度状态 (poolTick/heartbeat 时调用) */
+function _mergeSchedulerFromShared() {
+  try {
+    const state = _readWindowState();
+    if (!state.scheduler) return;
+    const now = Date.now();
+    // 合并 poolCooldowns: 共享 → 本地 (取max until)
+    if (state.scheduler.poolCooldowns) {
+      for (const [key, cd] of Object.entries(state.scheduler.poolCooldowns)) {
+        if (cd.until <= now) continue;
+        const local = schedulerState.poolCooldowns.get(key);
+        if (!local || cd.until > local.until) {
+          schedulerState.poolCooldowns.set(key, cd);
+        }
+      }
+    }
+    // 合并 accountQuarantines: 共享 → 本地 (取max until)
+    if (state.scheduler.accountQuarantines) {
+      for (const [email, q] of Object.entries(state.scheduler.accountQuarantines)) {
+        if (q.until <= now) continue;
+        const local = schedulerState.accountQuarantines.get(email);
+        if (!local || q.until > local.until) {
+          schedulerState.accountQuarantines.set(email, q);
+        }
+      }
+    }
+  } catch {}
 }
 
 function _deregisterWindow() {
@@ -1507,6 +1572,8 @@ async function _poolTick(context) {
   const accounts = am.getAll();
   if (accounts.length === 0) return;
 
+  // v14.3: 每次tick开始时合并其他窗口的调度阻断状态
+  _mergeSchedulerFromShared();
   _detectCascadeTabs();
 
   const autoRotate = vscode.workspace.getConfiguration("wam").get("autoRotate", true);
@@ -2942,6 +3009,7 @@ function _handleAction(context, action, arg) {
         _clearAccountQuarantine(arg);
         // v13.1: 清限流时也清Trial池冷却+降级锁,允许恢复Opus
         schedulerState.poolCooldowns.clear();
+        _syncSchedulerToShared();
         _downgradeLockUntil = 0;
         _lastTrialPoolCooldownFailTs = 0;
         _updatePoolBar();
