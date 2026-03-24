@@ -21,11 +21,7 @@ export const state = reactive({
   activeQuota: null,
   threshold: 15,
   switchCount: 0,
-  groups: [],
 })
-
-/** 当前选中的分组筛选 ('' = 全部) */
-export const selectedGroup = ref('')
 
 /** Toast 消息队列 */
 export const toasts = ref([])
@@ -76,7 +72,6 @@ export function initMessageListener() {
         if (m.activeQuota !== undefined) state.activeQuota = m.activeQuota
         if (m.threshold !== undefined) state.threshold = m.threshold
         if (m.switchCount !== undefined) state.switchCount = m.switchCount
-        if (m.groups) state.groups = m.groups
         break
       case 'toast':
         addToast(m.msg, m.isError)

@@ -120,8 +120,6 @@ class AccountViewProvider {
       activeQuota.urgency = this._am.getExpiryUrgency ? this._am.getExpiryUrgency(currentIndex) : -1;
     }
 
-    const groups = this._am.getGroups ? this._am.getGroups() : [];
-
     this._view.webview.postMessage({
       type: 'state',
       accounts: enriched,
@@ -130,7 +128,6 @@ class AccountViewProvider {
       activeQuota,
       threshold,
       switchCount,
-      groups,
     });
   }
 
@@ -244,12 +241,6 @@ class AccountViewProvider {
             this._am.clearRateLimit(msg.index);
           }
           this._toast('已解除限流标记');
-          this._pushState();
-        }
-        break;
-      case 'setGroup':
-        if (msg.index !== undefined && msg.group !== undefined) {
-          this._am.setGroup(msg.index, msg.group);
           this._pushState();
         }
         break;

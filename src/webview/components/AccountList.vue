@@ -2,25 +2,20 @@
   <div class="sect">
     <div class="stog" @click="toggleDetail">
       <span class="sarr" :style="{ transform: expanded ? 'rotate(90deg)' : '' }">▶</span>
-      <span>{{ filteredAccounts.length }}/{{ accounts.length }} 个账号</span>
+      <span>{{ accounts.length }} 个账号</span>
     </div>
     <div class="sbox" :class="{ open: expanded }">
       <div id="list">
-        <template v-if="filteredAccounts.length > 0">
+        <template v-if="accounts.length > 0">
           <AccountCard
-            v-for="item in filteredAccounts"
-            :key="item.account.email || item.index"
-            :account="item.account"
-            :index="item.index"
-            :isCurrent="item.index === currentIndex"
+            v-for="(account, i) in accounts"
+            :key="account.email || i"
+            :account="account"
+            :index="i"
+            :isCurrent="i === currentIndex"
             :threshold="threshold"
-            :groups="groups"
           />
         </template>
-        <div v-else-if="accounts.length > 0" class="empty">
-          <div class="empty-icon">🔍</div>
-          当前分组无账号
-        </div>
         <div v-else class="empty">
           <div class="empty-icon">📭</div>
           号池为空<br>
@@ -32,27 +27,14 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { postMessage } from '../composables/useVscode.js'
 import AccountCard from './AccountCard.vue'
 
-const props = defineProps({
+defineProps({
   accounts: { type: Array, default: () => [] },
   currentIndex: { type: Number, default: -1 },
   threshold: { type: Number, default: 5 },
-  selectedGroup: { type: String, default: '' },
-  groups: { type: Array, default: () => [] },
-})
-
-const filteredAccounts = computed(() => {
-  const g = props.selectedGroup
-  return props.accounts
-    .map((account, index) => ({ account, index }))
-    .filter(({ account }) => {
-      if (!g) return true
-      if (g === '__none__') return !account.group
-      return account.group === g
-    })
 })
 
 const expanded = ref(true)
