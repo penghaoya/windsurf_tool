@@ -175,6 +175,11 @@ Credits 模式排序 (4级):
 | 失败防抖 | Trial池冷却切换失败后60s内不重试 |
 | 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
 | 可配置阈值 | `wam.preemptiveThreshold` (默认15, 0-100) |
+| 动态Opus冷却 | L5 resetsInSeconds优先(≥300s), 固定1500s兜底 (v14.2) |
+| Opus预算过滤 | opus_budget_guard切号时过滤Opus预算已耗尽的Trial候选 (v14.2) |
+| 全池Opus检查 | 切号前统计可用Trial候选,无候选时主动降级Sonnet (v14.2) |
+| Opus切号兜底 | opus_budget_guard切号失败→降级Sonnet作为最后防线 (v14.2) |
+| 提前preempt | budget>1时提前1条触发(T=1条切,R=2条切),留buffer完成切号 (v14.2) |
 
 ## 数据流
 

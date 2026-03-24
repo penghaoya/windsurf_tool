@@ -152,7 +152,7 @@ const OPUS_THINKING_BUDGET = 2;    // Thinking: 2条后切号
 const OPUS_REGULAR_BUDGET = 3;     // Regular Opus: 3条后切号
 const OPUS_BUDGET_WINDOW = 1200000; // 20分钟滑动窗口(ms) — 匹配实测Opus Thinking 1M 20m3s
 const OPUS_PREEMPT_RATIO = 1.0;    // 达到预算100%即切(分级预算已足够保守)
-const OPUS_COOLDOWN_DEFAULT = 1500; // Opus per-model默认冷却1500s(25min) — 匹配实测
+const OPUS_COOLDOWN_DEFAULT = 1500; // Opus per-model默认冷却1500s(25min) — 匹配实测(L5动态值优先)
 const CAPACITY_CHECK_THINKING = 3000; // Thinking模型L5探测间隔3s(更快检测hasCapacity=false)
 let _opusGuardSwitchCount = 0; // 本会话Opus守卫主动切号次数
 
@@ -283,13 +283,36 @@ function _isTrialLikeAccount(index) {
   return plan.includes('trial') || plan === 'free' || plan.startsWith('free ');
 }
 
-function _filterRuntimeCandidates(candidates, { modelUid = null } = {}) {
+function _filterRuntimeCandidates(candidates, { modelUid = null, opusBudgetFilter = false } = {}) {
   const trialPoolCooldown = _getTrialPoolCooldown(modelUid);
   return candidates.filter((candidate) => {
     if (_isAccountQuarantined(candidate.email || candidate.index)) return false;
     if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
+    // v14.2: Opus预算过滤 — 跳过Opus消息已达预算的Trial候选(避免切到也耗尽的账号)
+    if (opusBudgetFilter && _isTrialLikeAccount(candidate.index)) {
+      const opusCount = _getOpusMsgCount(candidate.index);
+      const budget = _getModelBudget(modelUid || _readCurrentModelUid());
+      if (opusCount >= budget) return false;
+    }
     return true;
   });
+}
+
+/** v14.2: 统计号池中Opus预算仍有余量的Trial账号数 */
+function _countOpusAvailableTrials(excludeIndex = -1) {
+  const accounts = am.getAll();
+  const modelUid = _currentModelUid || _readCurrentModelUid();
+  const budget = _getModelBudget(modelUid);
+  let available = 0;
+  for (let i = 0; i < accounts.length; i++) {
+    if (i === excludeIndex) continue;
+    if (!_isTrialLikeAccount(i)) continue;
+    if (am.isRateLimited(i) || am.isExpired(i)) continue;
+    if (_isAccountQuarantined(i)) continue;
+    const opusCount = _getOpusMsgCount(i);
+    if (opusCount < budget) available++;
+  }
+  return available;
 }
 
 function _resetAccountRuntimeByEmail(email) {
@@ -400,12 +423,24 @@ function _getOpusMsgCount(accountIndex) {
   return valid.length;
 }
 
-/** 判断是否达到Opus消息预算 — 分级预算, Thinking 1M=1条即切 */
+/** 判断是否达到Opus消息预算 — 分级预算, budget>1时提前1条preempt留buffer
+ *  v14.2: Thinking 1M(budget=1) → 1条即切; Thinking(budget=2) → 1条即切; Regular(budget=3) → 2条即切 */
 function _isNearOpusBudget(accountIndex) {
   const modelUid = _currentModelUid || _readCurrentModelUid();
   const budget = _getModelBudget(modelUid);
   const count = _getOpusMsgCount(accountIndex);
-  return count >= budget; // budget=1时, 1条消息后即返回true → 立即切号
+  const preemptAt = budget > 1 ? budget - 1 : budget; // 提前1条,留buffer完成切号
+  return count >= preemptAt;
+}
+
+/** v14.2: 获取动态Opus冷却时间 — L5实际值优先,固定值兜底 */
+function _getOpusDynamicCooldown(accountIndex) {
+  const capacity = _getCapacityState(accountIndex, false);
+  const lastResult = capacity?.lastResult;
+  if (lastResult && lastResult.resetsInSeconds > 0 && (Date.now() - (capacity?.lastCheck || 0)) < 120000) {
+    return Math.max(lastResult.resetsInSeconds, 300); // 最少5min,避免过短
+  }
+  return OPUS_COOLDOWN_DEFAULT;
 }
 
 /** v8.0: 切号后重置该账号的Opus消息计数 */
@@ -1190,6 +1225,7 @@ function _getOrderedCandidates({
   targetPolicy = 'same_strategy',
   modelUid = null,
   excludeClaimed = true,
+  opusBudgetFilter = false,
 } = {}) {
   const preferredMode = targetPolicy === 'same_strategy' || targetPolicy === 'same_model'
     ? _getActiveSelectionMode()
@@ -1199,12 +1235,12 @@ function _getOrderedCandidates({
   const primary = modelUid
     ? am.findBestForModel(modelUid, excludeIndex, threshold, excludedEmails, options)
     : am.selectOptimal(excludeIndex, threshold, excludedEmails, options);
-  const filteredPrimary = _filterRuntimeCandidates(primary, { modelUid });
+  const filteredPrimary = _filterRuntimeCandidates(primary, { modelUid, opusBudgetFilter });
   if (filteredPrimary.length > 0 || !excludeClaimed) return filteredPrimary;
   const fallback = modelUid
     ? am.findBestForModel(modelUid, excludeIndex, threshold, [], options)
     : am.selectOptimal(excludeIndex, threshold, [], options);
-  return _filterRuntimeCandidates(fallback, { modelUid });
+  return _filterRuntimeCandidates(fallback, { modelUid, opusBudgetFilter });
 }
 
 function _recordTrialGuardDrop(prevQuota, curQuota) {
@@ -1284,13 +1320,14 @@ async function _performSwitch(context, {
   modelUid = null,
   candidates = null,
   allowThresholdFallback = false,
+  opusBudgetFilter = false,
 } = {}) {
   if (refreshPool) await _refreshAll();
   let ordered = Array.isArray(candidates) && candidates.length > 0
-    ? _filterRuntimeCandidates(candidates, { modelUid })
-    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true });
+    ? _filterRuntimeCandidates(candidates, { modelUid, opusBudgetFilter })
+    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true, opusBudgetFilter });
   if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
-    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false });
+    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false, opusBudgetFilter });
   }
   if (ordered.length === 0 && !modelUid && _getTrialPoolCooldown(_readCurrentModelUid())) {
     const downgraded = await _downgradeFromTrialPressure('Trial候选池冷却中');
@@ -1680,17 +1717,48 @@ async function _poolTick(context) {
           const opusCount = _getOpusMsgCount(_activeIndex);
           const tierBudget = _getModelBudget(currentModel);
           _opusGuardSwitchCount++;
+          // v14.2: 动态冷却 — L5实际值优先,固定值兜底
+          const dynamicCooldown = _getOpusDynamicCooldown(_activeIndex);
           for (const variant of OPUS_VARIANTS) {
-            am.markModelRateLimited(_activeIndex, variant, OPUS_COOLDOWN_DEFAULT, { trigger: 'opus_budget_guard' });
+            am.markModelRateLimited(_activeIndex, variant, dynamicCooldown, { trigger: 'opus_budget_guard' });
           }
           _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_budget_guard', model: currentModel, msgs: opusCount, budget: tierBudget, tier: _isThinking1MModel(currentModel) ? 'T1M' : _isThinkingModel(currentModel) ? 'T' : 'R' });
+
+          // v14.2: 全池Opus预算检查 — 无可用Trial候选时主动降级Sonnet,避免切到也耗尽的账号
+          const opusAvailable = _countOpusAvailableTrials(_activeIndex);
+          if (opusAvailable === 0) {
+            _logWarn('Opus守卫', `全池Trial Opus预算耗尽(${opusCount}/${tierBudget}条,无候选) → 主动降级到Sonnet`);
+            const downgraded = await _downgradeFromTrialPressure(`[OPUS_GUARD] 全池Opus预算耗尽(已用${opusCount}/${tierBudget}条)`);
+            if (downgraded) {
+              _activateBoost();
+              _updatePoolBar();
+              _refreshPanel();
+              return;
+            }
+          } else {
+            _logInfo('Opus守卫', `Opus预算触发切号: ${opusCount}/${tierBudget}条, 可用Trial候选=${opusAvailable}个, 冷却=${dynamicCooldown}s`);
+          }
         }
         _logInfo("调度决策", `预防性切号: ${decision.reason}`);
+        // v14.2: opus_budget_guard时启用opusBudgetFilter过滤已耗尽候选
+        const isOpusGuard = decision.reason.startsWith('opus_budget_guard');
         const switchResult = await _performSwitch(context, {
           threshold,
           targetPolicy: decision.targetPolicy || 'same_strategy',
+          opusBudgetFilter: isOpusGuard,
         });
         if (!switchResult.ok) {
+          // v14.2: Opus守卫切号失败 → 降级Sonnet作为最后防线
+          if (isOpusGuard) {
+            _logWarn('Opus守卫', '切号失败,降级到Sonnet作为最后防线');
+            const downgraded = await _downgradeFromTrialPressure('[OPUS_GUARD] 切号失败,降级兜底');
+            if (downgraded) {
+              _activateBoost();
+              _updatePoolBar();
+              _refreshPanel();
+              return;
+            }
+          }
           // v13.1: 记录Trial池冷却失败时间戳,用于防抖
           if (trialPoolActive) _lastTrialPoolCooldownFailTs = Date.now();
           _updatePoolBar();
