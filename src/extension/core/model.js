@@ -5,10 +5,10 @@
 import vscode from 'vscode';
 import {
   OPUS_VARIANTS, SONNET_FALLBACK, OPUS_BUDGET_WINDOW, OPUS_COOLDOWN_DEFAULT,
-  isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
+  isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
 } from '../shared/config.js';
 import {
-  S, _getAccountRuntime, _getCapacityState, _logInfo, _logWarn,
+  S, _getAccountRuntime, _getCapacityState, _isTrialLikeAccount, _logInfo, _logWarn,
 } from './state.js';
 
 // ═══ 模型UID读取 ═══
@@ -81,9 +81,11 @@ export function _getOpusMsgCount(accountIndex) {
   return runtime.opusMsgLog.filter((m) => m.ts > cutoff).length;
 }
 
-/** 获取提前切号阈值 — budget>1时提前1条,留buffer完成切号 */
-export function _getPreemptAt(modelUid) {
-  const budget = getModelBudget(modelUid);
+/** 获取提前切号阈值 — budget>1时提前1条,留buffer完成切号
+ *  v16.0: 账号类型感知 — Pro账号预算是Trial的3倍 (500 credits/月 vs 100/2周) */
+export function _getPreemptAt(modelUid, accountIndex) {
+  const isTrial = accountIndex !== undefined ? _isTrialLikeAccount(accountIndex) : true;
+  const budget = getModelBudgetForTier(modelUid, isTrial);
   return budget > 1 ? budget - 1 : budget;
 }
 
@@ -91,7 +93,7 @@ export function _getPreemptAt(modelUid) {
 export function _isNearOpusBudget(accountIndex) {
   const modelUid = S.currentModelUid || _readCurrentModelUid();
   const count = _getOpusMsgCount(accountIndex);
-  return count >= _getPreemptAt(modelUid);
+  return count >= _getPreemptAt(modelUid, accountIndex);
 }
 
 /** 获取动态Opus冷却时间 — L5实际值优先,固定值兜底 */

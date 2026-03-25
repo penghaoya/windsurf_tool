@@ -64,10 +64,22 @@ export const OPUS_VARIANTS = [
 ];
 export const SONNET_FALLBACK = 'claude-sonnet-4-6-thinking-1m';
 
+// ═══ 模型 Credit 成本估算 (基于社区观测) ═══
+// Trial: 100 credits/2周 ≈ 7/天, Pro: 500/月 ≈ 16.7/天
+export const MODEL_CREDIT_COST = {
+  opus_thinking_1m: 10,
+  opus_thinking: 5,
+  opus_regular: 3,
+  sonnet: 1,
+  default: 1,
+};
+
 // ═══ Opus消息预算 ═══
 export const OPUS_THINKING_1M_BUDGET = 1;
 export const OPUS_THINKING_BUDGET = 2;
 export const OPUS_REGULAR_BUDGET = 3;
+// Pro 账号 Opus 预算倍率 (Pro 500 credits/月 vs Trial 100/2周 ≈ 5x)
+export const OPUS_BUDGET_MULTIPLIER_PRO = 3;
 export const OPUS_BUDGET_WINDOW = 1200000;
 export const OPUS_PREEMPT_RATIO = 1.0;
 export const OPUS_COOLDOWN_DEFAULT = 1500;
@@ -120,6 +132,24 @@ export function getModelBudget(uid) {
   if (isThinking1MModel(uid)) return OPUS_THINKING_1M_BUDGET;
   if (isThinkingModel(uid)) return OPUS_THINKING_BUDGET;
   return OPUS_REGULAR_BUDGET;
+}
+
+/** 账号类型感知的 Opus 预算
+ *  Pro 账号有更多 credits (500/月 vs Trial 100/2周),
+ *  可承受更多 Opus 消息后再切号 */
+export function getModelBudgetForTier(uid, isTrialLike = true) {
+  const base = getModelBudget(uid);
+  if (isTrialLike) return base;
+  return base * OPUS_BUDGET_MULTIPLIER_PRO;
+}
+
+/** 获取模型每次消息的预估 credit 成本 */
+export function getModelCreditCost(uid) {
+  if (!uid) return MODEL_CREDIT_COST.default;
+  if (isThinking1MModel(uid)) return MODEL_CREDIT_COST.opus_thinking_1m;
+  if (isOpusModel(uid) && isThinkingModel(uid)) return MODEL_CREDIT_COST.opus_thinking;
+  if (isOpusModel(uid)) return MODEL_CREDIT_COST.opus_regular;
+  return MODEL_CREDIT_COST.default;
 }
 
 export function getModelVariants(uid) {

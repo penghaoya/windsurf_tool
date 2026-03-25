@@ -556,6 +556,13 @@ export function _startQuotaWatcher(context) {
       const slowFactor = Math.min(noDataCount - L5_NODATA_SLOWDOWN_AFTER + 1, 4);
       interval = Math.min(interval * (1 + slowFactor), L5_NODATA_MAX_INTERVAL);
     }
+    // v16.0: 容量自适应 — 剩余消息越少,探测越频繁 (防止最后几条消息撞限流)
+    const lastResult = capacityState.lastResult;
+    if (lastResult && lastResult.messagesRemaining >= 0) {
+      if (lastResult.messagesRemaining <= 2) interval = Math.min(interval, 3000);
+      else if (lastResult.messagesRemaining <= 5) interval = Math.min(interval, 8000);
+      else if (lastResult.messagesRemaining <= 10) interval = Math.min(interval, 15000);
+    }
     if (Date.now() - capacityState.lastCheck < interval) return;
 
     try {

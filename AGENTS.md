@@ -136,10 +136,10 @@ _poolTick
 _performSwitch(context, options)
  ├─ _getOrderedCandidates() → 有序候选列表
  ├─ _filterRuntimeCandidates() → 过滤隔离账号+Trial池冷却账号
- ├─ 遍历候选: _validateSwitchCandidate() (5s预热)
- │   ├─ 账号已隔离 / Trial池冷却中 → 跳过
- │   ├─ 额度≤阈值 / 已限流 → 跳过
- │   └─ 超时 → 跳过, 尝试下一个
+ ├─ 并行预热 Top-3 候选 (5s超时, v16.0)
+ │   ├─ Promise.allSettled 并发探测前3个候选
+ │   ├─ 取第一个成功的 → 立即切换
+ │   └─ 剩余候选串行兆底
  ├─ Trial池冷却时无候选 → _downgradeFromTrialPressure() → 降级到Sonnet
  └─ _seamlessSwitch() → 执行切换
 ```
@@ -150,8 +150,9 @@ _performSwitch(context, options)
 
 - 返回**有序数组** (非单个对象), `findBestForModel` 委托给 `selectOptimal`
 - **Mode-Aware 分组排序**: quota/credits/unknown 三类分别排序后合并
+- **Opus模型路由**: Opus请求时Pro账号前置 (credits更充裕, 承受高成本) (v16.0)
 - 支持 `excludeEmails` (多窗口隔离), `preferredMode`, `modelUid` 过滤
-- 候选数据含 `dailyRemaining`, `weeklyRemaining` 独立字段 (v14.0)
+- 候选数据含 `dailyRemaining`, `weeklyRemaining`, `isTrial` 独立字段 (v14.0/v16.0)
 
 **核心原则: 到期近+额度高 = 最优先** — 最大化"过期前能用掉的额度"
 
@@ -177,7 +178,7 @@ Credits 模式排序 (4级):
 | UFEF 冷却 | 10min 冷却防止 safe↔urgent 频繁抖动 |
 | Round-Robin | 同紧急度+额度差≤10%时轮转, 均匀消耗 |
 | 指数退避 | 限流冷却 base×2^(n-1), 上限3600s, 恢复后归零 |
-| 预热验证 | _validateSwitchCandidate: 5s超时, 逐个遍历候选 |
+| 并行预热 | Top-3候选并行预热(5s超时), worst case 5s vs 原15s (v16.0) |
 | 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
 | Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
 | NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
@@ -200,6 +201,11 @@ Credits 模式排序 (4级):
 | Token精确过期 | JWT exp字段计算精确过期时间(提前2min buffer),替代固定50min TTL (v15.0) |
 | SQLite读缓存 | 1s TTL读副本缓存,同窗口内多次读操作复用同一copyFile副本 (v15.0) |
 | _refreshPanel防抖 | 50ms防抖合并频繁调用,减少Webview序列化开销 (v15.0) |
+| 模型Credit成本 | MODEL_CREDIT_COST: Opus T1M=10, T=5, R=3, Sonnet=1 (社区观测估算) (v16.0) |
+| 账号类型Opus预算 | Pro账号Opus预算=Trial×3 (getModelBudgetForTier), Pro 500credits/月 vs Trial 100/2周 (v16.0) |
+| L5容量自适应 | 剩余≤ 2条:3s / ≤5:8s / ≤10:15s, 越少探测越频繁 (v16.0) |
+| Opus模型路由 | Opus请求时Pro账号前置, Trial后置 (成本感知路由) (v16.0) |
+| 并行预热 | Top-3候选Promise.allSettled并行探测, 切号延迟从15s→5s (v16.0) |
 
 ## 数据流
 

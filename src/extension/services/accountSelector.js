@@ -1,3 +1,9 @@
+// v16.0: Opus请求时,非Trial账号优先 (Pro有500 credits/月 vs Trial 100/2周)
+function _isOpusModelUid(uid) {
+  return uid && ['opus-4-6-thinking-1m', 'opus-4-6-thinking', 'opus-4-6-1m', 'opus-4-6', 'opus-4-6-thinking-fast', 'opus-4-6-fast']
+    .some(v => uid.includes(v));
+}
+
 function _sortQuotaCandidates(a, b) {
   const aUrg = a.urgency < 0 ? 2 : a.urgency;
   const bUrg = b.urgency < 0 ? 2 : b.urgency;
@@ -102,6 +108,8 @@ export function selectOptimal(
       const weeklyResetMs = account.usage?.weeklyReset || 0;
       const weeklyResetProximity =
         weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
+        const plan = String(account.usage?.plan || '').toLowerCase();
+      const isTrial = plan.includes('trial') || plan === 'free' || plan.startsWith('free ');
       candidates.push({
         index: i,
         email: account.email,
@@ -114,6 +122,7 @@ export function selectOptimal(
         weeklyResetProximity,
         lastUsed: accountManager.getLastUsedTs(i),
         mode: accountManager.getSelectionMode(i),
+        isTrial,
       });
     }
   }
@@ -142,6 +151,16 @@ export function selectOptimal(
   const ordered = [];
   for (const mode of modeOrder) {
     ordered.push(...byMode[mode]);
+  }
+
+  // v16.0: Opus模型路由 — Opus请求时,Pro账号前置 (credits更充裕,承受高成本)
+  if (modelUid && _isOpusModelUid(modelUid) && ordered.length > 1) {
+    const pro = ordered.filter(c => !c.isTrial);
+    const trial = ordered.filter(c => c.isTrial);
+    if (pro.length > 0 && trial.length > 0) {
+      ordered.length = 0;
+      ordered.push(...pro, ...trial);
+    }
   }
   if (ordered.length > 0) return ordered;
 

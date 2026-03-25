@@ -9,4 +9,7 @@ package-lock.json
 output/**
 dist/webview/index.html
 README.md
-
+archive
+AGENTS.md
+MIGRATION.md
+screenshots

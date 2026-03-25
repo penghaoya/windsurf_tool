@@ -166,7 +166,7 @@ export function _filterRuntimeCandidates(candidates, { modelUid = null, opusBudg
     if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
     if (opusBudgetFilter && _isTrialLikeAccount(candidate.index)) {
       const opusCount = _getOpusMsgCount(candidate.index);
-      const preemptAt = _getPreemptAt(modelUid || _readCurrentModelUid());
+      const preemptAt = _getPreemptAt(modelUid || _readCurrentModelUid(), candidate.index);
       if (opusCount >= preemptAt) return false;
     }
     return true;
@@ -178,7 +178,6 @@ export function _countOpusAvailableTrials(excludeIndex = -1) {
   const accounts = S.am.getAll();
   const modelUid = S.currentModelUid || _readCurrentModelUid();
   if (_getTrialPoolCooldown(modelUid)) return 0;
-  const preemptAt = _getPreemptAt(modelUid);
   let available = 0;
   for (let i = 0; i < accounts.length; i++) {
     if (i === excludeIndex) continue;
@@ -186,6 +185,7 @@ export function _countOpusAvailableTrials(excludeIndex = -1) {
     if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
     if (_isAccountQuarantined(i)) continue;
     const opusCount = _getOpusMsgCount(i);
+    const preemptAt = _getPreemptAt(modelUid, i);
     if (opusCount < preemptAt) available++;
   }
   return available;
@@ -274,14 +274,41 @@ export async function _performSwitch(context, {
       }
     }
   }
-  for (const candidate of ordered) {
-    const preheat = await _validateSwitchCandidate(candidate.index, threshold);
-    if (!preheat.ok) {
-      _logWarn('切换', `预热跳过 #${candidate.index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
-      continue;
+  // v16.0: 并行预热 Top-3 候选,取第一个成功的 (worst case 5s vs 原15s)
+  const PARALLEL_PREHEAT_N = 3;
+  if (ordered.length > 1) {
+    const topN = ordered.slice(0, PARALLEL_PREHEAT_N);
+    const rest = ordered.slice(PARALLEL_PREHEAT_N);
+    const preheatResults = await Promise.allSettled(
+      topN.map(c => _validateSwitchCandidate(c.index, threshold).then(r => ({ ...r, candidate: c })))
+    );
+    for (const result of preheatResults) {
+      if (result.status === 'fulfilled' && result.value.ok) {
+        const switched = await _seamlessSwitch(context, result.value.candidate.index);
+        if (switched) return { ok: true, index: result.value.candidate.index, candidate: result.value.candidate };
+      } else if (result.status === 'fulfilled') {
+        const v = result.value;
+        _logWarn('切换', `预热跳过 #${v.candidate.index + 1}: ${v.reason}${v.remaining !== null ? ` (${v.remaining}%≤${threshold}%)` : ''}`);
+      }
     }
-    const switched = await _seamlessSwitch(context, candidate.index);
-    if (switched) return { ok: true, index: candidate.index, candidate };
+    // 串行兜底剩余候选
+    for (const candidate of rest) {
+      const preheat = await _validateSwitchCandidate(candidate.index, threshold);
+      if (!preheat.ok) {
+        _logWarn('切换', `预热跳过 #${candidate.index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
+        continue;
+      }
+      const switched = await _seamlessSwitch(context, candidate.index);
+      if (switched) return { ok: true, index: candidate.index, candidate };
+    }
+  } else if (ordered.length === 1) {
+    const preheat = await _validateSwitchCandidate(ordered[0].index, threshold);
+    if (preheat.ok) {
+      const switched = await _seamlessSwitch(context, ordered[0].index);
+      if (switched) return { ok: true, index: ordered[0].index, candidate: ordered[0] };
+    } else {
+      _logWarn('切换', `预热跳过 #${ordered[0].index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
+    }
   }
   if (!panic) _logWarn('切换', '候选账号全部预热失败或不可切换');
   return { ok: false, index: -1 };
