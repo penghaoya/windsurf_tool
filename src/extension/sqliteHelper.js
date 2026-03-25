@@ -9,6 +9,30 @@ import os from 'os';
 
 let _tmpCounter = 0; // 原子计数器,避免同毫秒临时文件名碰撞
 
+// 读缓存: 短时间内复用同一临时副本,避免频繁copyFile大文件
+let _readCache = { path: null, dbPath: null, ts: 0 };
+const READ_CACHE_TTL = 1000; // 1s内复用同一副本
+
+function _getReadCopy(dbPath) {
+  const now = Date.now();
+  if (_readCache.path && _readCache.dbPath === dbPath && now - _readCache.ts < READ_CACHE_TTL) {
+    try { fs.accessSync(_readCache.path); return _readCache.path; } catch {}
+  }
+  // 清理旧副本
+  if (_readCache.path) { try { fs.unlinkSync(_readCache.path); } catch {} }
+  const tmpDb = path.join(os.tmpdir(), `wam_read_${now}_${++_tmpCounter}.db`);
+  fs.copyFileSync(dbPath, tmpDb);
+  _readCache = { path: tmpDb, dbPath, ts: now };
+  return tmpDb;
+}
+
+function _releaseReadCopy(tmpDb) {
+  // 仅在非缓存副本时立即清理
+  if (_readCache.path !== tmpDb) {
+    try { fs.unlinkSync(tmpDb); } catch {}
+  }
+}
+
 /** 获取当前平台的 state.vscdb 路径 */
 export function getStateDbPath() {
   const p = process.platform;
@@ -21,11 +45,11 @@ export function getStateDbPath() {
   return path.join(os.homedir(), '.config', 'Windsurf', 'User', 'globalStorage', 'state.vscdb');
 }
 
-/** 读取单个 key (使用临时副本避免锁冲突) */
+/** 读取单个 key (使用缓存副本避免频繁copyFile) */
 export function dbReadKey(dbPath, key) {
-  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}_${++_tmpCounter}.db`);
+  let tmpDb;
   try {
-    fs.copyFileSync(dbPath, tmpDb);
+    tmpDb = _getReadCopy(dbPath);
     const db = new DatabaseSync(tmpDb, { readOnly: true });
     try {
       const stmt = db.prepare('SELECT value FROM ItemTable WHERE key = ?');
@@ -33,14 +57,14 @@ export function dbReadKey(dbPath, key) {
       return row ? row.value : null;
     } finally { db.close(); }
   } catch { return null; }
-  finally { try { fs.unlinkSync(tmpDb); } catch {} }
+  finally { if (tmpDb) _releaseReadCopy(tmpDb); }
 }
 
-/** 读取多个 key (使用临时副本) */
+/** 读取多个 key (使用缓存副本) */
 export function dbReadKeys(dbPath, keys) {
-  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}_${++_tmpCounter}.db`);
+  let tmpDb;
   try {
-    fs.copyFileSync(dbPath, tmpDb);
+    tmpDb = _getReadCopy(dbPath);
     const db = new DatabaseSync(tmpDb, { readOnly: true });
     try {
       const stmt = db.prepare('SELECT value FROM ItemTable WHERE key = ?');
@@ -52,14 +76,14 @@ export function dbReadKeys(dbPath, keys) {
       return result;
     } finally { db.close(); }
   } catch { return {}; }
-  finally { try { fs.unlinkSync(tmpDb); } catch {} }
+  finally { if (tmpDb) _releaseReadCopy(tmpDb); }
 }
 
-/** 读取 LIKE 匹配的 key (使用临时副本) */
+/** 读取 LIKE 匹配的 key (使用缓存副本) */
 export function dbReadKeysLike(dbPath, patterns) {
-  const tmpDb = path.join(os.tmpdir(), `wam_read_${Date.now()}_${++_tmpCounter}.db`);
+  let tmpDb;
   try {
-    fs.copyFileSync(dbPath, tmpDb);
+    tmpDb = _getReadCopy(dbPath);
     const db = new DatabaseSync(tmpDb, { readOnly: true });
     try {
       const result = {};
@@ -72,7 +96,7 @@ export function dbReadKeysLike(dbPath, patterns) {
       return result;
     } finally { db.close(); }
   } catch { return {}; }
-  finally { try { fs.unlinkSync(tmpDb); } catch {} }
+  finally { if (tmpDb) _releaseReadCopy(tmpDb); }
 }
 
 /** 写入单个 key (INSERT OR REPLACE) */

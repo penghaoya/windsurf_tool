@@ -178,6 +178,11 @@ Credits 模式排序 (4级):
 | 全池Opus检查 | 切号前统计可用Trial候选,无候选时主动降级Sonnet (v14.2) |
 | Opus切号兜底 | opus_budget_guard切号失败→降级Sonnet作为最后防线 (v14.2) |
 | 提前preempt | budget>1时提前1条触发(T=1条切,R=2条切),留buffer完成切号 (v14.2) |
+| L5 NO_DATA降频 | 连续≥5次NO_DATA后逐步拉长探测间隔(最高120s),减少无效网络请求 (v15.0) |
+| 降级恢复 | Trial池冷却过期+降级锁过期后自动恢复到降级前的Opus模型 (v15.0) |
+| Token精确过期 | JWT exp字段计算精确过期时间(提前2min buffer),替代固定50min TTL (v15.0) |
+| SQLite读缓存 | 1s TTL读副本缓存,同窗口内多次读操作复用同一copyFile副本 (v15.0) |
+| _refreshPanel防抖 | 50ms防抖合并频繁调用,减少Webview序列化开销 (v15.0) |
 
 ## 数据流
 

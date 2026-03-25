@@ -136,6 +136,8 @@ let _lastModelSwitch = 0; // 上次模型切换时间戳
 let _downgradeLockUntil = 0; // 降级锁: 防止DB读取覆盖降级后的模型状态
 let _lastTrialPoolCooldownFailTs = 0; // 上次Trial池冷却导致切换失败的时间戳
 const TRIAL_POOL_COOLDOWN_RETRY_CD = 60000; // Trial池冷却切换失败后重试间隔 60s
+let _autoDowngradedFromOpus = false; // 是否因Trial压力自动降级到Sonnet
+let _preDowngradeModelUid = null; // 降级前的模型UID(用于恢复)
 
 // ═══ Layer 8: Opus消息预算守卫 (Thinking-Tier-Aware Prevention) ═══
 // 实测: Opus Thinking 1M桶容量≈3条/20min → Resets in: 20m3s (1203s)
@@ -170,6 +172,7 @@ function _createAccountRuntime() {
       failCount: 0,
       lastSuccessfulProbe: Date.now(),
       realMaxMessages: -1,
+      consecutiveNoData: 0,
     },
   };
 }
@@ -448,6 +451,8 @@ function _resetOpusMsgLog(accountIndex) {
 const CAPACITY_CHECK_INTERVAL = 45000; // 正常容量检查间隔 45s
 const CAPACITY_CHECK_FAST = 15000; // 活跃使用时快速检查 15s
 const CAPACITY_PREEMPT_REMAINING = 2; // 剩余≤2条消息时提前切号
+const L5_NODATA_SLOWDOWN_AFTER = 5; // 连续N次NO_DATA后开始降频
+const L5_NODATA_MAX_INTERVAL = 120000; // NO_DATA降频最大间隔120s
 let _cachedApiKey = null; // 缓存当前session apiKey
 let _cachedApiKeyTs = 0; // apiKey缓存时间戳
 const APIKEY_CACHE_TTL = 120000; // apiKey缓存2min(注入后刷新)
@@ -839,7 +844,7 @@ function _syncSchedulerToShared() {
     const state = _readWindowState(true);
     _writeSchedulerToState(state);
     _writeWindowState(state);
-  } catch {}
+  } catch (e) { /* 非关键: 共享状态同步失败不影响本窗口 */ }
 }
 
 /** v14.3: 从共享文件合并其他窗口的调度状态 (poolTick/heartbeat 时调用) */
@@ -1241,12 +1246,12 @@ async function _refreshOne(index) {
       am.updateUsage(index, usageInfo);
       return { credits: usageInfo.credits, usageInfo };
     }
-  } catch {}
+  } catch (e) { _logWarn('刷新', `getUsageInfo失败: ${e.message}`); }
   try {
     const credits = await auth.getCredits(account.email, account.password);
     if (credits !== undefined) am.updateCredits(index, credits);
     return { credits };
-  } catch {}
+  } catch (e) { _logWarn('刷新', `getCredits失败: ${e.message}`); }
   return { credits: undefined };
 }
 
@@ -1302,6 +1307,8 @@ async function _downgradeFromTrialPressure(reason) {
   if (switched) {
     // v13.1: 降级成功后彻底清理Opus守卫状态,防止残留触发循环
     _downgradeLockUntil = Date.now() + 120000; // 120s降级锁,防止DB读取覆盖回Opus
+    _preDowngradeModelUid = currentModel; // 记录降级前模型,用于冷却后恢复
+    _autoDowngradedFromOpus = true;
     _resetOpusMsgLog(_activeIndex); // 清Opus消息计数
     for (const variant of OPUS_VARIANTS) {
       am.clearModelRateLimit && am.clearModelRateLimit(_activeIndex, variant);
@@ -1929,12 +1936,37 @@ function _startQuotaWatcher(context) {
       }
     }
 
-    // 自适应间隔 — Thinking模型3s(最快), boost/burst 15s, 正幅45s
+    // v15.0: 降级恢复 — 池冷却过期+降级锁过期+之前因Trial压力自动降级 → L5探测确认后升回Opus
+    if (_autoDowngradedFromOpus && _preDowngradeModelUid && !_isOpusModel(modelUid)) {
+      const poolCd = _getTrialPoolCooldown(_preDowngradeModelUid);
+      const downgradeExpired = !_downgradeLockUntil || Date.now() > _downgradeLockUntil;
+      if (!poolCd && downgradeExpired && !_switching) {
+        // 池冷却已过期,尝试恢复到降级前的Opus模型
+        const restored = await _switchModelUid(_preDowngradeModelUid);
+        if (restored) {
+          _logInfo('模型恢复', `Trial池冷却已过期 → 恢复到${_preDowngradeModelUid}`);
+          _autoDowngradedFromOpus = false;
+          _preDowngradeModelUid = null;
+          _resetOpusMsgLog(_activeIndex);
+          _updatePoolBar();
+          _refreshPanel();
+          return;
+        }
+      }
+    }
+
+    // 自适应间隔 — Thinking模型3s(最快), boost/burst 15s, 正常45s, NO_DATA降频最高120s
     const isThinking = _isOpusModel(modelUid) && _isThinkingModel(modelUid);
     const capacityState = _getCapacityState();
     if (!capacityState) return;
-    const interval = isThinking ? CAPACITY_CHECK_THINKING
+    let interval = isThinking ? CAPACITY_CHECK_THINKING
       : (_isBoost() || _burstMode) ? CAPACITY_CHECK_FAST : CAPACITY_CHECK_INTERVAL;
+    // NO_DATA自适应降频: 连续NO_DATA超过阈值后逐步拉长间隔,减少无效网络请求
+    const noDataCount = capacityState.consecutiveNoData || 0;
+    if (noDataCount >= L5_NODATA_SLOWDOWN_AFTER) {
+      const slowFactor = Math.min(noDataCount - L5_NODATA_SLOWDOWN_AFTER + 1, 4); // 最多4倍
+      interval = Math.min(interval * (1 + slowFactor), L5_NODATA_MAX_INTERVAL);
+    }
     if (Date.now() - capacityState.lastCheck < interval) return;
 
     try {
@@ -1961,7 +1993,7 @@ function _startQuotaWatcher(context) {
         }
       }
     } catch (e) {
-      // 非关键，静默处理
+      _logWarn('L5探测', `探测循环异常: ${e.message}`);
     }
   };
   // Layer 5 定时器: 首次延迟10s(等API key就绪), 之后每3s检查(内部自适应间隔控制实际探测频率)
@@ -2036,9 +2068,11 @@ async function _probeCapacity() {
       const hasUsefulData = result.messagesRemaining >= 0 || result.maxMessages >= 0 || !result.hasCapacity;
       if (hasUsefulData) {
         capacityState.failCount = 0;
+        capacityState.consecutiveNoData = 0;
         capacityState.lastSuccessfulProbe = Date.now();
       } else {
         capacityState.failCount++;
+        capacityState.consecutiveNoData = (capacityState.consecutiveNoData || 0) + 1;
       }
       capacityState.lastResult = result;
 
@@ -3092,12 +3126,15 @@ async function _doBatchAdd(textFromWebview) {
 
 // ========== (v6.0: 旧监控已合并到号池引擎 _poolTick + _startQuotaWatcher) ==========
 
+let _refreshPanelTimer = null;
 function _refreshPanel() {
-  if (_panelProvider) {
-    try {
-      _panelProvider.refresh();
-    } catch {}
-  }
+  if (!_panelProvider) return;
+  // 防抖: 50ms内多次调用只执行最后一次
+  if (_refreshPanelTimer) clearTimeout(_refreshPanelTimer);
+  _refreshPanelTimer = setTimeout(() => {
+    _refreshPanelTimer = null;
+    try { _panelProvider.refresh(); } catch {}
+  }, 50);
 }
 
 // ========== Post-Injection State Refresh (v5.9.0 — 核心锚定点修复) ==========

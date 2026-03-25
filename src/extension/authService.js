@@ -278,7 +278,18 @@ class AuthService {
   }
 
   _setCachedToken(email, idToken) {
-    this._tokenCache.set(email, { idToken, expireTime: Date.now() + TOKEN_TTL });
+    // 优先从JWT exp字段计算精确过期时间(提前2min buffer), 失败时降级到固定TTL
+    let expireTime = Date.now() + TOKEN_TTL;
+    try {
+      const parts = idToken.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+        if (payload.exp) {
+          expireTime = payload.exp * 1000 - 120000; // exp是秒级,提前2min刷新
+        }
+      }
+    } catch {}
+    this._tokenCache.set(email, { idToken, expireTime });
     this._saveCache();
   }
 
