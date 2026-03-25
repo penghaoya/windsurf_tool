@@ -62,7 +62,7 @@
           class="r-btn del-confirm"
           @click="onRemove"
         >
-          确认删除
+          ok
         </button>
       </div>
     </div>
@@ -276,9 +276,9 @@ onBeforeUnmount(() => {
 .hover-btn{opacity:0;pointer-events:none;transition:opacity .15s ease}
 .ac:hover .hover-btn{opacity:1;pointer-events:auto}
 /* P2: inline delete confirm */
-.del-confirm{border:none;background:var(--rd-bg);color:var(--rd);cursor:pointer;border-radius:var(--R3);font-size:11px;font-weight:600;padding:2px 8px;height:24px;white-space:nowrap;animation:confirm-in .15s ease}
-.del-confirm:hover{background:var(--rd);color:#fff}
-@keyframes confirm-in{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+.del-confirm{border:none;background:transparent;color:var(--rd);cursor:pointer;border-radius:var(--R3);font-size:10px;font-weight:500;padding:2px 6px;height:24px;white-space:nowrap;text-decoration:underline;text-underline-offset:2px;animation:confirm-in .15s ease}
+.del-confirm:hover{background:var(--rd-bg)}
+@keyframes confirm-in{from{opacity:0;transform:translateX(4px)}to{opacity:1;transform:translateX(0)}}
 .ac-meters{display:flex;flex-direction:column;gap:4px}
 .ac-rl{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--yw);margin-top:4px}
 .ac-rl-time{color:var(--tx2)}

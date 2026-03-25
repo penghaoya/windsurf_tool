@@ -159,8 +159,8 @@ const expiryHtml = computed(() => {
 .meter-label{font-size:11px;color:var(--tx);font-weight:600}
 .meter-reset{font-size:11px;color:var(--tx3);font-weight:400}
 .meter-bar{display:flex;align-items:center;gap:6px}
-.meter-track{flex:1;height:8px;border-radius:4px;background:var(--bg);overflow:hidden}
-.meter-fill{height:100%;border-radius:4px;transition:width .4s ease}
+.meter-track{flex:1;height:6px;border-radius:3px;background:var(--bg);overflow:hidden}
+.meter-fill{height:100%;border-radius:3px;transition:width .4s ease}
 .meter-val{font-size:12px;font-weight:700;min-width:36px;text-align:right}
 .pool-stats{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}
 .chip{display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:500;background:var(--bg2);color:var(--tx2);border:1px solid var(--bd);line-height:1.6}
