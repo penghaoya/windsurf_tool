@@ -59,7 +59,7 @@ function readFingerprint() {
       result.ids.machineid = fs.readFileSync(paths.machineid, 'utf8').trim();
       result.count++;
     }
-  } catch {}
+  } catch (e) { console.warn('WAM: read machineid failed:', e.message); }
 
   try {
     if (fs.existsSync(paths.storageJson)) {
@@ -68,7 +68,7 @@ function readFingerprint() {
         if (data[k]) { result.ids[k] = data[k]; result.count++; }
       }
     }
-  } catch {}
+  } catch (e) { console.warn('WAM: read storage.json failed:', e.message); }
 
   return result;
 }
@@ -129,7 +129,7 @@ function resetFingerprint(options = {}) {
       if (fs.existsSync(paths.storageJson)) {
         storageData = JSON.parse(fs.readFileSync(paths.storageJson, 'utf8'));
       }
-    } catch { storageData = {}; }
+    } catch (e) { console.warn('WAM: parse storage.json for reset:', e.message); storageData = {}; }
 
     for (const k of TELEMETRY_KEYS) {
       storageData[k] = newIds[k];
@@ -166,7 +166,7 @@ function restoreFingerprint(backupPath) {
       if (fs.existsSync(paths.storageJson)) {
         storageData = JSON.parse(fs.readFileSync(paths.storageJson, 'utf8'));
       }
-    } catch {}
+    } catch (e) { console.warn('WAM: parse storage.json for restore:', e.message); }
 
     for (const k of TELEMETRY_KEYS) {
       if (data.ids[k]) storageData[k] = data.ids[k];
@@ -192,9 +192,9 @@ function listResetHistory() {
         try {
           const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
           return { name: f, path: fp, timestamp: data.timestamp, ids: Object.keys(data.ids).length };
-        } catch { return { name: f, path: fp }; }
+        } catch (e) { console.warn('WAM: parse backup file:', e.message); return { name: f, path: fp }; }
       });
-  } catch { return []; }
+  } catch (e) { console.warn('WAM: listResetHistory failed:', e.message); return []; }
 }
 
 /**
@@ -223,7 +223,7 @@ function ensureComplete() {
       if (fs.existsSync(paths.storageJson)) {
         storageData = JSON.parse(fs.readFileSync(paths.storageJson, 'utf8'));
       }
-    } catch { storageData = {}; }
+    } catch (e) { console.warn('WAM: parse storage.json for ensureComplete:', e.message); storageData = {}; }
 
     let changed = false;
     for (const k of TELEMETRY_KEYS) {
