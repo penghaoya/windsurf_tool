@@ -88,8 +88,7 @@ npm run install-ext     # 打包并安装到 IDE
 
 ```
 _poolTick
- ├─ TRIAL_GUARD: L5 NO_DATA + 额度下降 → 二次确认后隔离+切号 (避免误切)
- ├─ 响应式切换: 额度下降 → 切到快照中额度未变的"静止"账号
+ ├─ 响应式切换: 额度下降 → 切到快照中额度未变的“静止”账号
  ├─ evaluateActiveAccount() → decision
  │   ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
  │   ├─ Tier 2: 配额阈值
@@ -109,7 +108,7 @@ _poolTick
 ### Per-Account Runtime State
 
 - `schedulerState.accounts` Map (email 为 key)
-- 每个账号独立维护: `hourlyMsgLog`, `msgRateLog`, `quotaHistory`, `velocityLog`, `opusMsgLog`, `capacity`, `trialGuard`
+- 每个账号独立维护: `hourlyMsgLog`, `msgRateLog`, `quotaHistory`, `velocityLog`, `opusMsgLog`, `capacity`
 - 切号时 `_dropAccountRuntimeByEmail` (旧) + `_resetAccountRuntimeByEmail` (新)
 - `accountQuarantines` Map: 隔离命中Trial限流的账号 (email为key, 含过期时间)
 - `poolCooldowns` Map: Trial全局限流时按模型族冷却整组Trial候选
@@ -165,7 +164,6 @@ Credits 模式排序 (4级):
 | 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
 | Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
 | NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
-| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 二次确认(3min窗口内≥2次或降≥2)后隔离+切号 |
 | 账号隔离 | 命中Trial限流的账号隔离1h, 候选过滤+预热拒绝 |
 | Trial池冷却 | 全局Trial限流时按模型族冷却整组Trial候选(20min) |
 | 模型降级 | Trial池冷却无候选时自动从Opus降级到Sonnet |

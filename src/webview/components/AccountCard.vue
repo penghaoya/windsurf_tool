@@ -236,7 +236,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:8px 10px;margin-bottom:4px;transition:all .15s ease}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
-.ac.cur{border-color:rgba(94,218,158,.25);background:rgba(94,218,158,.04)}
+.ac.cur{border-color:var(--gn);background:rgba(94,218,158,.08);box-shadow:0 0 8px rgba(94,218,158,.08)}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
 .ac.exp{opacity:.3}
