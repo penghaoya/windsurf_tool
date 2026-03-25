@@ -16,17 +16,8 @@
           @click="postMessage('login', { index })"
           :title="isCurrent ? '当前' : '切换'"
         >
-          <svg v-if="isCurrent" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-          <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        </button>
-        <button
-          class="r-btn copy"
-          :id="`cp${index}`"
-          @click="onCopy"
-          title="复制密码"
-        >
-          <svg v-if="copyState === 'ok'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-          <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <svg v-if="isCurrent" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         </button>
         <button
           class="r-btn rfsh"
@@ -34,28 +25,44 @@
           @click="onRefresh"
           title="刷新额度"
         >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
+        </button>
+        <button
+          class="r-btn copy hover-btn"
+          :id="`cp${index}`"
+          @click="onCopy"
+          title="复制密码"
+        >
+          <svg v-if="copyState === 'ok'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         </button>
         <button
           v-if="isRateLimited || isBlocked"
-          class="r-btn rl-clear"
+          class="r-btn rl-clear hover-btn"
           @click="onClearRateLimit"
           title="解除限流/隔离"
         >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M8 8l8 8"/>
             <path d="M16 8l-8 8"/>
             <path d="M6 3h12l3 5-9 13L3 8l3-5z"/>
           </svg>
         </button>
         <button
-          class="r-btn del"
+          v-if="!confirmRemove"
+          class="r-btn del hover-btn"
           :id="`bx${index}`"
           @click="onRemove"
           title="移除"
         >
-          <span v-if="confirmRemove" style="font-size:9px;font-weight:600">?</span>
-          <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <button
+          v-if="confirmRemove"
+          class="r-btn del-confirm"
+          @click="onRemove"
+        >
+          确认删除
         </button>
       </div>
     </div>
@@ -234,22 +241,22 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:8px 10px;margin-bottom:4px;transition:all .15s ease}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:8px 10px;margin-bottom:5px;transition:all .15s ease}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
-.ac.cur{border-color:var(--gn);background:rgba(94,218,158,.08);box-shadow:0 0 8px rgba(94,218,158,.08)}
+.ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
 .ac.exp{opacity:.3}
-.ac-head{display:flex;align-items:center;gap:5px;margin-bottom:3px}
-.dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.ac-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .dot.ok{background:var(--gn)}.dot.warn{background:var(--yw)}.dot.bad{background:var(--rd)}.dot.dm{background:var(--tx3)}
-.ac-email-row{display:flex;align-items:baseline;gap:4px;margin-bottom:5px}
-.ac-idx{font-size:10px;font-weight:700;color:var(--tx2);flex-shrink:0}
-.ac-name{font-weight:600;color:var(--tx);font-size:11px;word-break:break-all;line-height:1.3}
-.a-plan{font-size:8px;font-weight:600;padding:0 4px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
-.a-days{font-size:9px;font-weight:500;flex-shrink:0}
-.ac-acts{display:flex;gap:1px;flex-shrink:0;margin-left:auto}
-.r-btn{width:20px;height:20px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:all .12s ease}
+.ac-email-row{display:flex;align-items:baseline;gap:5px;margin-bottom:5px}
+.ac-idx{font-size:11px;font-weight:700;color:var(--tx2);flex-shrink:0}
+.ac-name{font-weight:600;color:var(--tx);font-size:12px;word-break:break-all;line-height:1.3}
+.a-plan{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
+.a-days{font-size:11px;font-weight:500;flex-shrink:0}
+.ac-acts{display:flex;gap:2px;flex-shrink:0;margin-left:auto}
+.r-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:all .12s ease}
 .r-btn:hover{background:var(--bg2);color:var(--tx)}
 .r-btn:active{transform:scale(.9)}
 .r-btn.login{color:var(--ac)}
@@ -260,13 +267,20 @@ onBeforeUnmount(() => {
 .r-btn.rfsh:hover{background:var(--ac-bg);color:var(--ac)}
 .r-btn.rfsh.spinning svg{animation:spin .8s linear infinite}
 .r-btn.rl-clear{color:var(--yw)}
-.r-btn.rl-clear:hover{background:rgba(245,158,11,.12);color:var(--yw)}
+.r-btn.rl-clear:hover{background:color-mix(in srgb, var(--yw) 12%, transparent);color:var(--yw)}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .r-btn.del:hover{background:var(--rd-bg);color:var(--rd)}
 .r-btn.copy{color:var(--tx3)}
 .r-btn.copy:hover{background:var(--ac-bg);color:var(--ac)}
-.ac-meters{display:flex;flex-direction:column;gap:3px}
-.ac-rl{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--yw);margin-top:3px}
+/* P1: hover-reveal for low-freq buttons */
+.hover-btn{opacity:0;pointer-events:none;transition:opacity .15s ease}
+.ac:hover .hover-btn{opacity:1;pointer-events:auto}
+/* P2: inline delete confirm */
+.del-confirm{border:none;background:var(--rd-bg);color:var(--rd);cursor:pointer;border-radius:var(--R3);font-size:11px;font-weight:600;padding:2px 8px;height:24px;white-space:nowrap;animation:confirm-in .15s ease}
+.del-confirm:hover{background:var(--rd);color:#fff}
+@keyframes confirm-in{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+.ac-meters{display:flex;flex-direction:column;gap:4px}
+.ac-rl{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--yw);margin-top:4px}
 .ac-rl-time{color:var(--tx2)}
 .ac-qr{color:var(--rd)}
 .ac-pc{color:var(--ac)}

@@ -35,8 +35,8 @@ defineProps({
 
 <style scoped>
 .sect{margin-top:0}
-.sbox{display:none;padding:2px 0}
-.sbox.open{display:block}
-.empty{text-align:center;padding:28px 12px;color:var(--tx3);font-size:12px;line-height:2}
-.empty-icon{font-size:28px;margin-bottom:6px;opacity:.4}
+.sbox{max-height:0;overflow:hidden;transition:max-height .3s ease,opacity .25s ease;opacity:0;padding:0}
+.sbox.open{max-height:9999px;opacity:1;padding:2px 0}
+.empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
+.empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
 </style>
