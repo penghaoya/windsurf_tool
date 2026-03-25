@@ -32,8 +32,9 @@ Step 2: RegisterUser (gRPC)
         (apiKey 是 Windsurf 所有 API 调用的凭证)
 
 Step 3: 注入 Windsurf Session
-        apiKey → 写入 state.vscdb 的 windsurfAuthStatus
-        → Windsurf 读取后认为用户已登录，使用新账号的 apiKey 发起请求
+        idToken → provideAuthTokenToAuthProvider
+        → Windsurf 内部完成 registerUser / session 注入
+        → 必要时降级到 apiKey 命令注入或 state.vscdb 直写
 
 Step 4: GetPlanStatus (gRPC + Protobuf)
         idToken → Codeium GetPlanStatus API → 二进制 Protobuf 响应
@@ -144,13 +145,13 @@ P2: ~/.wam/accounts-backup.json                              (用户目录，卸
 ┌─────────────────────────────────────────────────────────┐
 │                    Extension Host (Node.js)              │
 │                                                          │
-│  extension.js ─── 号池引擎 / 12 命令 / 10 层防御          │
+│  extension.js ─── 激活入口 / 装配 / 命令绑定              │
 │       │                                                  │
-│       ├── authService.js ─── Firebase 认证 / Protobuf    │
-│       ├── accountManager.js ─── CRUD / 持久化 / 号池聚合  │
-│       ├── fingerprintManager.js ─── 6ID 读取/重置/轮转    │
-│       ├── sqliteHelper.js ─── state.vscdb 读写           │
-│       └── webviewProvider.js ─── 消息路由 / 状态推送       │
+│       ├── core/ ───── 调度核心 / 防御层 / 状态 / 窗口协调   │
+│       ├── services/ ─ 账号管理 / 认证 / 注入 / 指纹        │
+│       ├── infra/ ──── SQLite 适配                          │
+│       ├── ui/ ─────── Webview / 状态栏 / 动作路由          │
+│       └── shared/ ─── 配置常量 / 消息契约                  │
 │                    │                                     │
 │                    │ postMessage                          │
 │                    ▼                                     │
@@ -159,6 +160,18 @@ P2: ~/.wam/accounts-backup.json                              (用户目录，卸
 │  │  App.vue → 组件树 → 实时仪表盘    │                     │
 │  └─────────────────────────────────┘                     │
 └─────────────────────────────────────────────────────────┘
+```
+
+当前 `src/extension/` 目录结构：
+
+```text
+extension/
+├── extension.js
+├── core/
+├── services/
+├── infra/
+├── ui/
+└── shared/
 ```
 
 ## 技术栈

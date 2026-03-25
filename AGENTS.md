@@ -21,12 +21,29 @@ Windsurf IDE 无感号池引擎 VSIX 扩展。自动管理多 Windsurf 账号，
 windsurf-tools/
 ├── src/
 │   ├── extension/              # Extension Host (Node.js ESM → CJS 输出)
-│   │   ├── extension.js        # 主入口，号池引擎，12 命令，10 层防御
-│   │   ├── authService.js      # Firebase 认证链 + Protobuf 积分查询
-│   │   ├── accountManager.js   # 账号 CRUD + 三重持久化 + 号池聚合
-│   │   ├── fingerprintManager.js # 设备指纹 6ID 读取/重置/热轮转
-│   │   ├── sqliteHelper.js     # state.vscdb 读写 (node:sqlite DatabaseSync)
-│   │   └── webviewProvider.js  # Vue 产物加载器 + 消息路由 + 状态推送
+│   │   ├── extension.js        # 激活入口 + 依赖装配 + 命令绑定
+│   │   ├── core/               # 调度核心
+│   │   │   ├── scheduler.js    # 引擎心跳 + 评估 + 切换执行
+│   │   │   ├── defense.js      # L1-L5 检测 + 限流分类
+│   │   │   ├── model.js        # Opus 守卫 + 模型降级/恢复
+│   │   │   ├── state.js        # 共享状态 + 运行时
+│   │   │   └── window.js       # 多窗口心跳 + 共享状态
+│   │   ├── services/           # 业务服务
+│   │   │   ├── account.js      # 账号 CRUD + 持久化 + 限流标记
+│   │   │   ├── accountSelector.js # 候选排序 + 优先级策略
+│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + gRPC
+│   │   │   ├── authInjector.js # 四策略注入 + 指纹轮转
+│   │   │   └── fingerprint.js  # 设备指纹 6ID 读写
+│   │   ├── infra/
+│   │   │   └── sqlite.js       # state.vscdb 读写 (node:sqlite DatabaseSync)
+│   │   ├── ui/
+│   │   │   ├── actions.js      # Webview 动作路由
+│   │   │   ├── statusbar.js    # 状态栏渲染
+│   │   │   ├── webview.js      # Vue 产物加载器 + 状态推送
+│   │   │   └── wisdom.js       # 智慧模板部署
+│   │   └── shared/
+│   │       ├── config.js       # 常量 + 正则 + 模型辅助
+│   │       └── messageTypes.js # Webview 消息契约
 │   └── webview/                # Vue 3 前端 (ESM)
 │       ├── main.js             # Vue 入口
 │       ├── App.vue             # 根组件
@@ -207,7 +224,7 @@ _pushState() ──── postMessage ────→ useVscode.state (reactive)
 
 ## 开发规则
 
-- Extension Host 6 个源文件 (含 sqliteHelper.js)
+- Extension Host 采用 `core/services/infra/ui/shared` 分层结构，避免回退到单层大文件
 - 所有源码 ESM (import/export)，构建时 Vite 转 CJS 输出
 - `vscode` 和 Node.js 内置模块作为 external，不打包
 - Webview 通过 `postMessage` 双向通信，不直接访问 Node.js API
