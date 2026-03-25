@@ -241,22 +241,22 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:8px 10px;margin-bottom:5px;transition:all .15s ease}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;margin-bottom:3px;transition:all .15s ease}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
 .ac.exp{opacity:.3}
-.ac-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.ac-head{display:flex;align-items:center;gap:4px;margin-bottom:2px}
 .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .dot.ok{background:var(--gn)}.dot.warn{background:var(--yw)}.dot.bad{background:var(--rd)}.dot.dm{background:var(--tx3)}
-.ac-email-row{display:flex;align-items:baseline;gap:5px;margin-bottom:5px}
+.ac-email-row{display:flex;align-items:baseline;gap:4px;margin-bottom:3px}
 .ac-idx{font-size:11px;font-weight:700;color:var(--tx2);flex-shrink:0}
 .ac-name{font-weight:600;color:var(--tx);font-size:12px;word-break:break-all;line-height:1.3}
 .a-plan{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
 .a-days{font-size:11px;font-weight:500;flex-shrink:0}
 .ac-acts{display:flex;gap:2px;flex-shrink:0;margin-left:auto}
-.r-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:all .12s ease}
+.r-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:all .12s ease}
 .r-btn:hover{background:var(--bg2);color:var(--tx)}
 .r-btn:active{transform:scale(.9)}
 .r-btn.login{color:var(--ac)}
@@ -276,11 +276,11 @@ onBeforeUnmount(() => {
 .hover-btn{opacity:0;pointer-events:none;transition:opacity .15s ease}
 .ac:hover .hover-btn{opacity:1;pointer-events:auto}
 /* P2: inline delete confirm */
-.del-confirm{border:none;background:transparent;color:var(--rd);cursor:pointer;border-radius:var(--R3);font-size:10px;font-weight:500;padding:2px 6px;height:24px;white-space:nowrap;text-decoration:underline;text-underline-offset:2px;animation:confirm-in .15s ease}
+.del-confirm{border:none;background:transparent;color:var(--rd);cursor:pointer;border-radius:var(--R3);font-size:10px;font-weight:500;padding:2px 5px;height:22px;white-space:nowrap;text-decoration:underline;text-underline-offset:2px;animation:confirm-in .15s ease}
 .del-confirm:hover{background:var(--rd-bg)}
 @keyframes confirm-in{from{opacity:0;transform:translateX(4px)}to{opacity:1;transform:translateX(0)}}
-.ac-meters{display:flex;flex-direction:column;gap:4px}
-.ac-rl{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--yw);margin-top:4px}
+.ac-meters{display:flex;flex-direction:column;gap:2px}
+.ac-rl{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--yw);margin-top:3px}
 .ac-rl-time{color:var(--tx2)}
 .ac-qr{color:var(--rd)}
 .ac-pc{color:var(--ac)}

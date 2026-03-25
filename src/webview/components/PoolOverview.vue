@@ -148,32 +148,32 @@ const expiryHtml = computed(() => {
 </script>
 
 <style scoped>
-.pool{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:8px 10px;margin-bottom:4px}
-.pool-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
-.pool-overall{display:flex;align-items:baseline;gap:4px}
-.pool-pct{font-size:20px;font-weight:800;letter-spacing:-0.5px;line-height:1}
+.pool{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;margin-bottom:3px}
+.pool-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px}
+.pool-overall{display:flex;align-items:baseline;gap:3px}
+.pool-pct{font-size:18px;font-weight:800;letter-spacing:-0.5px;line-height:1}
 .pool-pct-label{font-size:11px;color:var(--tx3);font-weight:500}
 .pool-count{font-size:11px;color:var(--tx3);font-weight:500}
-.pool-meters{display:flex;flex-direction:column;gap:4px;margin-bottom:4px}
-.meter-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:1px}
+.pool-meters{display:flex;flex-direction:column;gap:2px;margin-bottom:2px}
+.meter-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0}
 .meter-label{font-size:11px;color:var(--tx);font-weight:600}
-.meter-reset{font-size:11px;color:var(--tx3);font-weight:400}
-.meter-bar{display:flex;align-items:center;gap:6px}
+.meter-reset{font-size:10px;color:var(--tx3);font-weight:400}
+.meter-bar{display:flex;align-items:center;gap:5px}
 .meter-track{flex:1;height:6px;border-radius:3px;background:var(--bg);overflow:hidden}
 .meter-fill{height:100%;border-radius:3px;transition:width .4s ease}
-.meter-val{font-size:12px;font-weight:700;min-width:36px;text-align:right}
-.pool-stats{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}
-.chip{display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:500;background:var(--bg2);color:var(--tx2);border:1px solid var(--bd);line-height:1.6}
+.meter-val{font-size:11px;font-weight:700;min-width:34px;text-align:right}
+.pool-stats{display:flex;gap:3px;flex-wrap:wrap;margin-top:1px}
+.chip{display:inline-flex;align-items:center;gap:2px;padding:0 5px;border-radius:7px;font-size:10px;font-weight:500;background:var(--bg2);color:var(--tx2);border:1px solid var(--bd);line-height:1.5}
 .chip b{font-weight:600;color:var(--tx)}
 .chip.warn{color:var(--yw);border-color:color-mix(in srgb, var(--yw) 20%, transparent);background:var(--yw-bg)}
 .chip.bad{color:var(--rd);border-color:color-mix(in srgb, var(--rd) 20%, transparent);background:var(--rd-bg)}
 .chip.muted{color:var(--tx3)}
-.pool-active{margin-top:5px;padding:6px 8px;background:var(--bg2);border-radius:var(--R3);border:1px solid var(--bd);display:flex;align-items:center;gap:6px}
-.pool-active .act-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);flex-shrink:0;box-shadow:0 0 4px var(--gn)}
+.pool-active{margin-top:3px;padding:4px 6px;background:var(--bg2);border-radius:var(--R3);border:1px solid var(--bd);display:flex;align-items:center;gap:5px}
+.pool-active .act-dot{width:5px;height:5px;border-radius:50%;background:var(--gn);flex-shrink:0;box-shadow:0 0 3px var(--gn)}
 .pool-active .act-info{flex:1;min-width:0}
-.pool-active .act-row{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:12px}
-.pool-active .act-name{font-weight:600;color:var(--tx);word-break:break-all;font-size:12px}
-.pool-active .act-plan{font-size:10px;font-weight:600;padding:1px 4px;border-radius:3px;border:1px solid var(--ac);color:var(--ac)}
-.pool-active .act-expiry{font-size:11px}
-.pool-active .act-meta{font-size:11px;color:var(--tx3);margin-top:1px;display:flex;gap:4px;flex-wrap:wrap}
+.pool-active .act-row{display:flex;align-items:center;gap:3px;flex-wrap:wrap;font-size:11px}
+.pool-active .act-name{font-weight:600;color:var(--tx);word-break:break-all;font-size:11px}
+.pool-active .act-plan{font-size:9px;font-weight:600;padding:0 3px;border-radius:2px;border:1px solid var(--ac);color:var(--ac)}
+.pool-active .act-expiry{font-size:10px}
+.pool-active .act-meta{font-size:10px;color:var(--tx3);margin-top:0;display:flex;gap:3px;flex-wrap:wrap}
 </style>

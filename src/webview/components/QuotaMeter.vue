@@ -34,10 +34,10 @@ const resetStr = computed(() =>
 </script>
 
 <style scoped>
-.am{display:flex;align-items:center;gap:6px}
-.am-l{font-size:11px;color:var(--tx2);font-weight:600;width:14px;flex-shrink:0}
-.am-track{flex:1;height:6px;border-radius:3px;background:var(--bg);overflow:hidden}
-.am-fill{height:100%;border-radius:3px;transition:width .4s ease}
-.am-v{font-size:12px;font-weight:700;min-width:36px;text-align:right}
-.am-r{font-size:11px;color:var(--tx3);min-width:54px;text-align:right;flex-shrink:0}
+.am{display:flex;align-items:center;gap:4px}
+.am-l{font-size:11px;color:var(--tx2);font-weight:600;width:13px;flex-shrink:0}
+.am-track{flex:1;height:5px;border-radius:2.5px;background:var(--bg);overflow:hidden}
+.am-fill{height:100%;border-radius:2.5px;transition:width .4s ease}
+.am-v{font-size:11px;font-weight:700;min-width:34px;text-align:right}
+.am-r{font-size:10px;color:var(--tx3);min-width:50px;text-align:right;flex-shrink:0}
 </style>

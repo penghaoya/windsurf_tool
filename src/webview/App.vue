@@ -15,7 +15,7 @@
         <span>{{ state.accounts.length }} 个账号</span>
       </div>
     </div>
-    <div class="app-scroll">
+    <div class="app-scroll" @mouseenter="scrollHover=true" @mouseleave="scrollHover=false" :class="{scrolling:scrollHover}">
       <AccountList
         :accounts="state.accounts"
         :currentIndex="state.currentIndex"
@@ -37,6 +37,7 @@ import AccountList from './components/AccountList.vue'
 import ToastMessage from './components/ToastMessage.vue'
 
 const listExpanded = ref(true)
+const scrollHover = ref(false)
 
 onMounted(() => {
   initMessageListener()
@@ -45,9 +46,11 @@ onMounted(() => {
 
 <style>
 .app-root{display:flex;flex-direction:column;height:100vh;overflow:hidden}
-.app-fixed{flex-shrink:0;padding:10px 10px 0}
-.app-scroll{flex:1;overflow-y:auto;min-height:0;padding:0 10px 10px}
-.list-toggle{cursor:pointer;font-size:11px;color:var(--tx2);padding:6px 2px;display:flex;align-items:center;gap:6px;user-select:none;font-weight:500;transition:color .15s}
+.app-fixed{flex-shrink:0;padding:6px 8px 0}
+.app-scroll{flex:1;overflow-y:auto;min-height:0;padding:0 8px 6px}
+.app-scroll::-webkit-scrollbar-thumb{background:transparent}
+.app-scroll.scrolling::-webkit-scrollbar-thumb{background:var(--bd2)}
+.list-toggle{cursor:pointer;font-size:11px;color:var(--tx2);padding:4px 2px;display:flex;align-items:center;gap:5px;user-select:none;font-weight:500;transition:color .15s}
 .list-toggle:hover{color:var(--tx)}
 .list-toggle-arr{transition:transform .2s ease;font-size:8px;color:var(--tx3)}
 .loading { opacity: .35; pointer-events: none; transition: opacity .2s }
