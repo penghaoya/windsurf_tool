@@ -7,10 +7,10 @@ import path from 'path';
 import os from 'os';
 import {
   WINDOW_STATE_FILE, WINDOW_HEARTBEAT_MS, WINDOW_DEAD_MS, CACHE_TTL,
-} from './config.js';
+} from '../shared/config.js';
 import {
   S, schedulerState, _normalizeEmail, _logInfo, _logWarn,
-} from './engineState.js';
+} from './state.js';
 
 // ═══ 路径 ═══
 

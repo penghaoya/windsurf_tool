@@ -16,7 +16,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { dbReadKeys } from './sqliteHelper.js';
+import { dbReadKeys } from '../infra/sqlite.js';
 
 const TELEMETRY_KEYS = [
   'storage.serviceMachineId',

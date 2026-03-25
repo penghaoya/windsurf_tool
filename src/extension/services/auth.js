@@ -20,7 +20,7 @@ import path from 'path';
 import os from 'os';
 import net from 'net';
 import { execSync } from 'child_process';
-import { getStateDbPath, dbReadKey, dbReadKeys, dbReadKeysLike, dbWriteKey } from './sqliteHelper.js';
+import { getStateDbPath, dbReadKey, dbReadKeys, dbReadKeysLike, dbWriteKey } from '../infra/sqlite.js';
 
 // Dual Firebase API Keys (v5.6.29 primary, v5.0.20 fallback)
 const FIREBASE_KEYS = [

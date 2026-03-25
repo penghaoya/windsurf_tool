@@ -14,21 +14,21 @@ import {
   CAPACITY_CHECK_THINKING, CAPACITY_PREEMPT_REMAINING, APIKEY_CACHE_TTL,
   L5_NODATA_SLOWDOWN_AFTER, L5_NODATA_MAX_INTERVAL, RATE_LIMIT_CONTEXTS,
   isOpusModel, getModelBudget, getModelVariants,
-} from './config.js';
+} from '../shared/config.js';
 import {
   S, deps, _getAccountRuntime, _getCapacityState,
   _setAccountQuarantine, _getTrialPoolCooldown, _armTrialPoolCooldown,
   _isTrialLikeAccount, _getPreemptiveThreshold, _getActiveSelectionMode,
   _logInfo, _logWarn, _isBoost, _activateBoost, _refreshPanel,
   _getAccountEmail,
-} from './engineState.js';
+} from './state.js';
 import {
   _readCurrentModelUid, _switchModelUid,
   _resetOpusMsgLog, _downgradeFromTrialPressure,
-} from './modelManager.js';
+} from './model.js';
 import {
   _getOtherWindowAccountEmails, _mergeSchedulerFromShared,
-} from './windowCoord.js';
+} from './window.js';
 
 // ═══ 限流分类 ═══
 

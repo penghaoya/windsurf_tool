@@ -5,6 +5,10 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import {
+  findBestForModel as findBestForModelWithSelector,
+  selectOptimal as selectOptimalWithSelector,
+} from './accountSelector.js';
 
 class AccountManager {
   constructor(storagePath, options) {
@@ -844,11 +848,14 @@ class AccountManager {
 
   /** Find ordered candidates for a specific modelUid while preserving pool strategy */
   findBestForModel(modelUid, excludeIndex = -1, threshold = 0, excludeEmails = [], options = {}) {
-    return this.selectOptimal(excludeIndex, threshold, excludeEmails, {
-      ...options,
+    return findBestForModelWithSelector(
+      this,
       modelUid,
-      preferredMode: options.preferredMode ?? (excludeIndex >= 0 ? this.getSelectionMode(excludeIndex) : null),
-    });
+      excludeIndex,
+      threshold,
+      excludeEmails,
+      options,
+    );
   }
 
   /** Get all model rate limit entries (for diagnostics) */
@@ -860,6 +867,24 @@ class AccountManager {
       }
     }
     return result;
+  }
+
+  /** Get Opus cooldown info for a specific account (for webview display) */
+  getOpusCooldownInfo(index) {
+    const a = this.get(index);
+    if (!a) return null;
+    let maxUntil = 0;
+    let trigger = null;
+    for (const [key, rl] of this._modelRateLimits) {
+      if (!key.startsWith(a.email + '|')) continue;
+      if (rl.until <= Date.now()) continue;
+      if (rl.until > maxUntil) {
+        maxUntil = rl.until;
+        trigger = rl.trigger || null;
+      }
+    }
+    if (maxUntil <= 0) return null;
+    return { until: maxUntil, trigger, remainingCooldown: Math.ceil((maxUntil - Date.now()) / 1000) };
   }
 
   /** Get count of currently rate-limited accounts */
@@ -1095,85 +1120,13 @@ class AccountManager {
 
   /** Select ordered candidates for seamless rotation with mixed-pool safety */
   selectOptimal(excludeIndex = -1, threshold = 5, excludeEmails = [], options = {}) {
-    const excluded = new Set();
-    if (excludeIndex >= 0) excluded.add(excludeIndex);
-    const excludedEmailsSet = new Set((excludeEmails || []).map((email) => String(email || '').toLowerCase()).filter(Boolean));
-    const preferredMode = options.preferredMode || null;
-    const modelUid = options.modelUid || null;
-
-    const candidates = [];
-    for (let i = 0; i < this._accounts.length; i++) {
-      if (excluded.has(i)) continue;
-      const account = this._accounts[i];
-      if (!account) continue;
-      if (excludedEmailsSet.has(String(account.email || '').toLowerCase())) continue;
-      if (this.isRateLimited(i)) continue;
-      if (this.isExpired(i)) continue;
-      if (modelUid && this.isModelRateLimited(i, modelUid)) continue;
-      const rem = this.effectiveRemaining(i);
-      if (rem !== null && rem !== undefined && rem > threshold) {
-        const planDays = this.getPlanDaysRemaining(i);
-        const urgency = this.getExpiryUrgency(i);
-        const resetTs = this.effectiveResetTime(i);
-        const resetProximity = resetTs ? Math.max(0, resetTs - Date.now()) : Infinity;
-        const weeklyResetMs = account.usage?.weeklyReset || 0;
-        const weeklyResetProximity = weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
-        const lastUsed = this.getLastUsedTs(i);
-        const dailyRemaining = account.usage?.daily?.remaining ?? null;
-        const weeklyRemaining = account.usage?.weekly?.remaining ?? null;
-        candidates.push({
-          index: i,
-          email: account.email,
-          remaining: rem,
-          dailyRemaining,
-          weeklyRemaining,
-          planDays,
-          urgency,
-          resetProximity,
-          weeklyResetProximity,
-          lastUsed,
-          mode: this.getSelectionMode(i),
-        });
-      }
-    }
-
-    const byMode = {
-      quota: this._sortCandidatesByMode(candidates.filter(c => c.mode === 'quota'), 'quota'),
-      credits: this._sortCandidatesByMode(candidates.filter(c => c.mode === 'credits'), 'credits'),
-      unknown: this._sortCandidatesByMode(candidates.filter(c => c.mode === 'unknown'), 'unknown'),
-    };
-
-    let modeOrder = ['quota', 'credits', 'unknown'];
-    if (preferredMode === 'credits') modeOrder = ['credits', 'quota', 'unknown'];
-    else if (preferredMode === 'quota') modeOrder = ['quota', 'credits', 'unknown'];
-
-    const ordered = [];
-    for (const mode of modeOrder) ordered.push(...byMode[mode]);
-    if (ordered.length > 0) return ordered;
-
-    const unknownCandidates = [];
-    for (let i = 0; i < this._accounts.length; i++) {
-      if (excluded.has(i)) continue;
-      const account = this._accounts[i];
-      if (!account) continue;
-      if (excludedEmailsSet.has(String(account.email || '').toLowerCase())) continue;
-      if (this.isRateLimited(i)) continue;
-      if (this.isExpired(i)) continue;
-      if (modelUid && this.isModelRateLimited(i, modelUid)) continue;
-      const rem = this.effectiveRemaining(i);
-      if (rem === null || rem === undefined) {
-        unknownCandidates.push({
-          index: i,
-          email: account.email,
-          remaining: null,
-          planDays: this.getPlanDaysRemaining(i),
-          urgency: this.getExpiryUrgency(i),
-          lastUsed: this.getLastUsedTs(i),
-          mode: this.getSelectionMode(i),
-        });
-      }
-    }
-    return this._sortCandidatesByMode(unknownCandidates, 'unknown');
+    return selectOptimalWithSelector(
+      this,
+      excludeIndex,
+      threshold,
+      excludeEmails,
+      options,
+    );
   }
 
   /** Get switch recommendation with reason (v7.4: + expiry urgency awareness) */

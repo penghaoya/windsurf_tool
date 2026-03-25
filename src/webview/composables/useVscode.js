@@ -3,6 +3,7 @@
  * 提供与 Extension Host 的双向通信
  */
 import { ref, reactive } from 'vue'
+import { ACTION, MSG } from '../../extension/shared/messageTypes.js'
 
 // acquireVsCodeApi 在 VS Code webview 环境中全局可用
 let _vscode = null
@@ -47,7 +48,7 @@ function addToast(msg, isError = false) {
 
 /** 主动请求 Extension Host 推送最新状态 */
 export function requestState() {
-  postMessage('requestState')
+  postMessage(ACTION.REQUEST_STATE)
 }
 
 /** 初始化消息监听 */
@@ -65,7 +66,7 @@ export function initMessageListener() {
     if (!m || !m.type) return
 
     switch (m.type) {
-      case 'state':
+      case MSG.STATE:
         if (m.accounts) state.accounts = m.accounts
         if (m.currentIndex !== undefined) state.currentIndex = m.currentIndex
         if (m.pool) state.pool = m.pool
@@ -73,16 +74,16 @@ export function initMessageListener() {
         if (m.threshold !== undefined) state.threshold = m.threshold
         if (m.switchCount !== undefined) state.switchCount = m.switchCount
         break
-      case 'toast':
+      case MSG.TOAST:
         addToast(m.msg, m.isError)
         break
-      case 'loading':
+      case MSG.LOADING:
         isLoading.value = !!m.on
         break
-      case 'previewResult':
+      case MSG.PREVIEW_RESULT:
         previewAccounts.value = m.accounts || []
         break
-      case 'pwdResult':
+      case MSG.PWD_RESULT:
         if (m.index !== undefined) {
           pwdResults[m.index] = { email: m.email, pwd: m.pwd }
         }

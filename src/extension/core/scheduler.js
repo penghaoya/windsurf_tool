@@ -12,27 +12,27 @@ import {
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
   getReactiveDropMin,
-} from './config.js';
+} from '../shared/config.js';
 import {
   S, schedulerState, deps, _getAccountRuntime, _getCapacityState,
   _normalizeEmail, _getAccountEmail, _dropAccountRuntimeByEmail,
   _resetAccountRuntimeByEmail, _isAccountQuarantined, _getTrialPoolCooldown,
   _isTrialLikeAccount, _getPreemptiveThreshold, _getActiveSelectionMode,
   _logInfo, _logWarn, _logError, _isBoost, _activateBoost, _refreshPanel,
-} from './engineState.js';
+} from './state.js';
 import {
   _readCurrentModelUid, _trackOpusMsg, _getOpusMsgCount, _getPreemptAt,
   _isNearOpusBudget, _getOpusDynamicCooldown, _resetOpusMsgLog,
   _downgradeFromTrialPressure,
-} from './modelManager.js';
+} from './model.js';
 import {
   _getOtherWindowAccountEmails, _getActiveWindowCount,
   _heartbeatWindow, _mergeSchedulerFromShared,
-} from './windowCoord.js';
+} from './window.js';
 import {
   _classifyRateLimit, _trackHourlyMsg, _getHourlyMsgCount, _isNearTierCap,
   _invalidateApiKeyCache, _pushRateLimitEvent, _startQuotaWatcher,
-} from './defenseLayer.js';
+} from './defense.js';
 
 // ═══ 并发Tab感知 ═══
 

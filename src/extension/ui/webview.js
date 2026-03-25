@@ -8,7 +8,8 @@
 import vscode from 'vscode';
 import path from 'path';
 import fs from 'fs';
-import { AccountManager } from './accountManager.js';
+import { AccountManager } from '../services/account.js';
+import { ACTION, MSG } from '../shared/messageTypes.js';
 
 function _getNonce() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -121,7 +122,7 @@ class AccountViewProvider {
     }
 
     this._view.webview.postMessage({
-      type: 'state',
+      type: MSG.STATE,
       accounts: enriched,
       currentIndex,
       pool,
@@ -136,10 +137,10 @@ class AccountViewProvider {
   async _handleMessage(msg) {
     const act = this._onAction;
     switch (msg.type) {
-      case 'requestState':
+      case ACTION.REQUEST_STATE:
         this._pushState();
         break;
-      case 'remove':
+      case ACTION.REMOVE:
         if (msg.index !== undefined) {
           const currentIndex = act ? act('getCurrentIndex') : -1;
           if (currentIndex >= 0 && msg.index === currentIndex) {
@@ -150,7 +151,7 @@ class AccountViewProvider {
           }
         }
         break;
-      case 'login':
+      case ACTION.LOGIN:
         if (msg.index !== undefined && act) {
           this._setLoading(true);
           await act('login', msg.index);
@@ -158,13 +159,15 @@ class AccountViewProvider {
           this._pushState();
         }
         break;
-      case 'preview':
+      case ACTION.PREVIEW:
         if (msg.text) {
           const accounts = AccountManager.parseAccounts(msg.text);
-          if (this._view) this._view.webview.postMessage({ type: 'previewResult', accounts });
+          if (this._view) {
+            this._view.webview.postMessage({ type: MSG.PREVIEW_RESULT, accounts });
+          }
         }
         break;
-      case 'batchAdd':
+      case ACTION.BATCH_ADD:
         if (msg.text && act) {
           this._setLoading(true);
           const result = await act('batchAdd', msg.text);
@@ -182,49 +185,49 @@ class AccountViewProvider {
           this._pushState();
         }
         break;
-      case 'refresh':
-      case 'refreshAllAndRotate':
+      case ACTION.REFRESH:
+      case ACTION.REFRESH_ALL_AND_ROTATE:
         if (act) { this._setLoading(true); await act('refreshAll'); this._setLoading(false); this._toast('刷新完成'); this._pushState(); }
         break;
-      case 'smartRotate':
+      case ACTION.SMART_ROTATE:
         if (act) { this._setLoading(true); await act('smartRotate'); this._setLoading(false); this._pushState(); }
         break;
-      case 'panicSwitch':
+      case ACTION.PANIC_SWITCH:
         if (act) { this._setLoading(true); await act('panicSwitch'); this._setLoading(false); this._pushState(); }
         break;
-      case 'setMode':
+      case ACTION.SET_MODE:
         if (msg.mode && act) { act('setMode', msg.mode); this._pushState(); }
         break;
-      case 'reprobeProxy':
+      case ACTION.REPROBE_PROXY:
         if (act) { this._setLoading(true); await act('reprobeProxy'); this._setLoading(false); this._pushState(); }
         break;
-      case 'resetFingerprint':
+      case ACTION.RESET_FINGERPRINT:
         if (act) act('resetFingerprint');
         break;
-      case 'removeEmpty':
+      case ACTION.REMOVE_EMPTY:
         this._removeEmpty(); this._pushState();
         break;
-      case 'toggleDetail':
+      case ACTION.TOGGLE_DETAIL:
         break; // Vue侧自行管理展开状态
-      case 'setProxyPort':
+      case ACTION.SET_PROXY_PORT:
         if (msg.port !== undefined) { const p = parseInt(msg.port); if (p > 0 && p < 65536 && act) act('setProxyPort', p); this._pushState(); }
         break;
-      case 'setAutoRotate':
+      case ACTION.SET_AUTO_ROTATE:
         if (act) act('setAutoRotate', msg.value);
         this._pushState();
         break;
       case 'setCreditThreshold':
-      case 'setPreemptiveThreshold':
+      case ACTION.SET_PREEMPTIVE_THRESHOLD:
         if (act) act('setPreemptiveThreshold', msg.value);
         this._pushState();
         break;
-      case 'exportAccounts':
+      case ACTION.EXPORT_ACCOUNTS:
         if (act) act('exportAccounts');
         break;
-      case 'importAccounts':
+      case ACTION.IMPORT_ACCOUNTS:
         if (act) { await act('importAccounts'); this._pushState(); }
         break;
-      case 'refreshOne':
+      case ACTION.REFRESH_ONE:
         if (msg.index !== undefined && act) {
           this._setLoading(true);
           await act('refreshOne', msg.index);
@@ -233,7 +236,7 @@ class AccountViewProvider {
           this._pushState();
         }
         break;
-      case 'clearRateLimit':
+      case ACTION.CLEAR_RATE_LIMIT:
         if (msg.index !== undefined) {
           if (act) {
             await act('clearRateLimit', msg.index);
@@ -244,10 +247,17 @@ class AccountViewProvider {
           this._pushState();
         }
         break;
-      case 'copyPwd':
+      case ACTION.COPY_PWD:
         if (msg.index !== undefined) {
           const account = this._am.get(msg.index);
-          if (account && this._view) this._view.webview.postMessage({ type: 'pwdResult', index: msg.index, email: account.email, pwd: account.password });
+          if (account && this._view) {
+            this._view.webview.postMessage({
+              type: MSG.PWD_RESULT,
+              index: msg.index,
+              email: account.email,
+              pwd: account.password,
+            });
+          }
         }
         break;
     }
@@ -266,8 +276,8 @@ class AccountViewProvider {
   }
 
   refresh() { this._pushState(); }
-  _toast(msg, isError) { if (this._view) this._view.webview.postMessage({ type: 'toast', msg, isError: !!isError }); }
-  _setLoading(on) { if (this._view) this._view.webview.postMessage({ type: 'loading', on }); }
+  _toast(msg, isError) { if (this._view) this._view.webview.postMessage({ type: MSG.TOAST, msg, isError: !!isError }); }
+  _setLoading(on) { if (this._view) this._view.webview.postMessage({ type: MSG.LOADING, on }); }
   // 兼容原接口
   _render() { this._pushState(); }
 }

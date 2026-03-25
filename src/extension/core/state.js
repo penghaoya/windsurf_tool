@@ -3,7 +3,7 @@
  * 所有模块通过 S 对象读写共享可变状态，通过 deps 调用跨模块函数
  */
 import vscode from 'vscode';
-import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily } from './config.js';
+import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily } from '../shared/config.js';
 
 // ═══ 共享可变状态单例 ═══
 export const S = {

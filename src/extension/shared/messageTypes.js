@@ -1,0 +1,32 @@
+export const MSG = {
+  STATE: 'state',
+  TOAST: 'toast',
+  LOADING: 'loading',
+  PREVIEW_RESULT: 'previewResult',
+  PWD_RESULT: 'pwdResult',
+};
+
+export const ACTION = {
+  REQUEST_STATE: 'requestState',
+  REMOVE: 'remove',
+  LOGIN: 'login',
+  PREVIEW: 'preview',
+  BATCH_ADD: 'batchAdd',
+  REFRESH: 'refresh',
+  REFRESH_ALL_AND_ROTATE: 'refreshAllAndRotate',
+  REFRESH_ONE: 'refreshOne',
+  SMART_ROTATE: 'smartRotate',
+  PANIC_SWITCH: 'panicSwitch',
+  SET_MODE: 'setMode',
+  REPROBE_PROXY: 'reprobeProxy',
+  RESET_FINGERPRINT: 'resetFingerprint',
+  REMOVE_EMPTY: 'removeEmpty',
+  TOGGLE_DETAIL: 'toggleDetail',
+  SET_PROXY_PORT: 'setProxyPort',
+  SET_AUTO_ROTATE: 'setAutoRotate',
+  SET_PREEMPTIVE_THRESHOLD: 'setPreemptiveThreshold',
+  EXPORT_ACCOUNTS: 'exportAccounts',
+  IMPORT_ACCOUNTS: 'importAccounts',
+  CLEAR_RATE_LIMIT: 'clearRateLimit',
+  COPY_PWD: 'copyPwd',
+};

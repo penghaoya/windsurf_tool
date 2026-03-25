@@ -6,10 +6,10 @@ import vscode from 'vscode';
 import {
   OPUS_VARIANTS, SONNET_FALLBACK, OPUS_BUDGET_WINDOW, OPUS_COOLDOWN_DEFAULT,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
-} from './config.js';
+} from '../shared/config.js';
 import {
   S, _getAccountRuntime, _getCapacityState, _logInfo, _logWarn,
-} from './engineState.js';
+} from './state.js';
 
 // ═══ 模型UID读取 ═══
 
