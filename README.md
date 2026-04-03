@@ -53,7 +53,7 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 │  2. 任一层触发 → shouldSwitch = true               │
 │  3. selectOptimal() 选择最优账号                    │
 │     ├─ 过滤: 已限流 / 已过期 / 额度耗尽             │
-│     ├─ UFEF排序: 过期紧急度 > 周重置 > Round-Robin > 额度 │
+│     ├─ 价值最大化: 到期近+额度高=最优先 (v14.1)          │
 │     └─ 预热验证: 刷新目标账号确认额度充足              │
 │  4. 执行切换                                       │
 │     ├─ 轮转设备指纹 (6 组 ID)                       │
@@ -79,13 +79,12 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 | L9 | 输出通道拦截 | 实时监控 Windsurf 输出通道，拦截 rate limit 错误信息 |
 | L10 | 多窗口协调 | 共享状态文件 + 心跳机制，多窗口间账号隔离 (跨平台路径) |
 
-### 3.1 调度策略 (v13.1)
+### 3.1 调度策略 (v16.0)
 
 号池引擎采用 Per-Account Runtime State + 统一切换入口:
 
 | 机制 | 说明 |
 |------|------|
-| TRIAL_GUARD | L5 NO_DATA + 额度下降 → 二次确认后隔离+切号 (避免误切) |
 | 账号隔离 | 命中 Trial 限流的账号隔离 1h，候选过滤+预热拒绝 |
 | Trial池冷却 | 全局 Trial 限流时按模型族冷却整组 Trial 候选 (20min) |
 | 模型降级 | Trial 池冷却无候选时自动从 Opus 降级到 Sonnet |
@@ -96,11 +95,20 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 | UFEF 冷却 | 10min 冷却防止 safe↔urgent 账号频繁抖动 |
 | Round-Robin | 同紧急度 + 额度差≤10% 时轮转，均匀消耗 |
 | 指数退避 | 限流冷却 base×2^(n-1)，上限 3600s，恢复后归零 |
-| 预热验证 | _validateSwitchCandidate: 5s 超时，逐个遍历候选 |
+| 并行预热 | Top-3 候选 Promise.allSettled 并行探测 (5s 超时)，切号延迟从 15s→5s (v16.0) |
 | 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
 | 可配置阈值 | `wam.preemptiveThreshold` (默认 15, 0-100) |
 | Mode-Aware | selectOptimal 返回有序数组，quota/credits/unknown 分组排序 |
 | Email 隔离 | 多窗口协调使用 Email 而非 index，避免顺序变化失效 |
+| 价值最大化 | selectOptimal: 到期近+额度高=最优先，Quota 7 级 / Credits 4 级排序 (v14.1) |
+| 动态Opus冷却 | L5 resetsInSeconds 优先(≥300s)，固定 1500s 兜底 (v14.2) |
+| Opus预算过滤 | opus_budget_guard 切号时过滤已耗尽候选，无候选时主动降级 Sonnet (v14.2) |
+| L5 NO_DATA降频 | 连续≥5次无数据后逐步拉长探测间隔(最高120s) (v15.0) |
+| 降级恢复 | Trial池冷却+降级锁过期后自动恢复到降级前的 Opus 模型 (v15.0) |
+| Token精确过期 | JWT exp 计算精确过期时间(提前2min buffer) (v15.0) |
+| 模型Credit成本 | MODEL_CREDIT_COST: Opus T1M=10, T=5, R=3, Sonnet=1 (v16.0) |
+| Opus模型路由 | Opus 请求时 Pro 账号前置、Trial 后置 (成本感知路由) (v16.0) |
+| L5容量自适应 | 剩余≤2条:3s / ≤5:8s / ≤10:15s，越少探测越频繁 (v16.0) |
 
 ### 4. 设备指纹热重置
 

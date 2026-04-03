@@ -2,7 +2,7 @@ import vscode from 'vscode';
 import {
   CONCURRENT_TAB_SAFE,
   TIER_MSG_CAP_ESTIMATE,
-  getModelBudget,
+  getModelBudgetForTier,
   isOpusModel,
   isThinking1MModel,
   isThinkingModel,
@@ -12,6 +12,7 @@ import {
   _getCapacityState,
   _getPreemptiveThreshold,
   _isBoost,
+  _isTrialLikeAccount,
 } from '../core/state.js';
 import {
   _getVelocity,
@@ -180,7 +181,8 @@ export function _updatePoolBar() {
     L('**防御状态**');
     if (isOpusModel(currentModel) && S.activeIndex >= 0) {
       const opusCount = _getOpusMsgCount(S.activeIndex);
-      const tierBudget = getModelBudget(currentModel);
+      const isTrial = _isTrialLikeAccount(S.activeIndex);
+      const tierBudget = getModelBudgetForTier(currentModel, isTrial);
       const tierLabel = isThinking1MModel(currentModel)
         ? 'T1M'
         : isThinkingModel(currentModel)
@@ -190,17 +192,16 @@ export function _updatePoolBar() {
     }
     if (lastCapacityResult) {
       const icon = lastCapacityResult.hasCapacity ? '✓' : '✗';
-      const remaining =
-        lastCapacityResult.messagesRemaining >= 0
-          ? lastCapacityResult.messagesRemaining
-          : '?';
-      const maxMessages =
-        lastCapacityResult.maxMessages >= 0
-          ? lastCapacityResult.maxMessages
-          : '?';
-      L(
-        `L5容量 &nbsp; ${icon} **${remaining}/${maxMessages}条** (第${S.capacityProbeCount}次探测)`,
-      );
+      const hasNumbers = lastCapacityResult.messagesRemaining >= 0 || lastCapacityResult.maxMessages >= 0;
+      if (hasNumbers) {
+        const remaining = lastCapacityResult.messagesRemaining >= 0 ? lastCapacityResult.messagesRemaining : '?';
+        const max = lastCapacityResult.maxMessages >= 0 ? lastCapacityResult.maxMessages : '?';
+        L(`L5容量 &nbsp; ${icon} **${remaining}/${max}条** (第${S.capacityProbeCount}次探测)`);
+      } else {
+        const noData = capacityState?.consecutiveNoData || 0;
+        const suffix = noData >= 5 ? ` 降频中(${noData}次无数据)` : '';
+        L(`L5容量 &nbsp; ${icon} **可用**(无精确数据)${suffix}`);
+      }
     }
     if (probeFailCount > 0) L(`探测失败 &nbsp; **${probeFailCount}次**连续`);
   }

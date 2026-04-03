@@ -23,7 +23,7 @@ import {
   _getAccountEmail,
 } from './state.js';
 import {
-  _readCurrentModelUid, _switchModelUid,
+  _readCurrentModelUid, _switchModelUid, _trackOpusMsg,
   _resetOpusMsgLog, _downgradeFromTrialPressure,
 } from './model.js';
 import {
@@ -261,6 +261,18 @@ export async function _probeCapacity() {
         capacityState.failCount++;
         capacityState.consecutiveNoData = (capacityState.consecutiveNoData || 0) + 1;
       }
+      // L5辅助Opus消息追踪: 当messagesRemaining下降且模型=Opus时,补充记录
+      // 解决quota%轮询无法检测到消息消耗的问题
+      const prevResult = capacityState.lastResult;
+      if (hasUsefulData && prevResult && prevResult.messagesRemaining >= 0 && result.messagesRemaining >= 0) {
+        const consumed = prevResult.messagesRemaining - result.messagesRemaining;
+        if (consumed > 0 && isOpusModel(modelUid)) {
+          for (let i = 0; i < consumed; i++) _trackOpusMsg(S.activeIndex);
+          capacityState.lastL5OpusTrackTs = Date.now();
+          _logInfo('L5探测', `Opus消息追踪: 检测到消耗${consumed}条 (${prevResult.messagesRemaining}→${result.messagesRemaining})`);
+        }
+      }
+
       capacityState.lastResult = result;
 
       if (result.maxMessages > 0 && result.maxMessages !== capacityState.realMaxMessages) {

@@ -543,11 +543,16 @@ async function _poolTick(context) {
     if (curQuota < prevQuota) {
       const currentModel = _readCurrentModelUid();
       if (isOpusModel(currentModel)) {
-        _trackOpusMsg(S.activeIndex);
+        // L5已追踪时跳过,避免重复计数 (L5通过messagesRemaining更精确)
+        const capacityState = _getCapacityState(S.activeIndex, false);
+        const l5RecentlyTracked = capacityState?.lastL5OpusTrackTs && (Date.now() - capacityState.lastL5OpusTrackTs < 60000);
+        if (!l5RecentlyTracked) {
+          _trackOpusMsg(S.activeIndex);
+        }
         const opusCount = _getOpusMsgCount(S.activeIndex);
         const tierBudget = getModelBudget(currentModel);
         const tierLabel = isThinking1MModel(currentModel) ? 'Thinking-1M' : isThinkingModel(currentModel) ? 'Thinking' : 'Regular';
-        _logInfo('Opus守卫', `#${S.activeIndex + 1} 已发${opusCount}/${tierBudget}条 (${tierLabel})${opusCount >= tierBudget ? ' → 达到预算上限,即将切号!' : ''}`);
+        _logInfo('Opus守卫', `#${S.activeIndex + 1} 已发${opusCount}/${tierBudget}条 (${tierLabel})${l5RecentlyTracked ? ' (L5已追踪)' : ''}${opusCount >= tierBudget ? ' → 达到预算上限,即将切号!' : ''}`);
       }
     }
     const vel = _getVelocity();

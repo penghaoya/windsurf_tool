@@ -64,7 +64,9 @@ export async function _switchModelUid(targetUid) {
 
 // ═══ Opus消息预算追踪 ═══
 
-/** 追踪Opus消息 — 在quota%下降且当前模型=Opus时调用 */
+/** 追踪Opus消息 — 两条路径调用:
+ *  1. _poolTick: quota%下降且当前模型=Opus时 (L5未覆盖时的兜底)
+ *  2. L5探测: messagesRemaining下降且模型=Opus时 (更精确) */
 export function _trackOpusMsg(accountIndex) {
   const runtime = _getAccountRuntime(accountIndex);
   if (!runtime) return;
