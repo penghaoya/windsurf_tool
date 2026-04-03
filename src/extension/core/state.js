@@ -46,6 +46,10 @@ export const S = {
   lastReactiveSwitchTs: 0,
   lastUfefSwitchTs: 0,
 
+  // 防封控 (v18.0)
+  lastSwitchTs: 0,
+  hourlySwitchLog: [],
+
   // 热重置
   lastRotatedIds: null,
   hotResetCount: 0,

@@ -86,6 +86,40 @@ npm run install-ext     # 打包并安装到 IDE
 3. provideAuthTokenToAuthProvider (idToken) → 注入 Windsurf session
 4. GetPlanStatus (idToken) → Protobuf 解析 → credits/quota
 
+## 防封控架构 (v18.0)
+
+### Per-Account 指纹绑定
+
+每个账号绑定唯一设备指纹，切换时恢复而非随机生成：
+
+```
+切换到账号 #N
+ ├─ S.am.getFingerprint(N) → 已有指纹?
+ │   ├─ 是 → applyFingerprint(fp) → 恢复专属设备身份
+ │   └─ 否 → generateFingerprint() → 生成+保存+应用
+ ├─ machineid 文件写入
+ ├─ storage.json 原子写入 (tmp+rename, 防崩溃损坏)
+ ├─ state.vscdb 同步 (dbUpdateKeys)
+ └─ hotVerify 延迟验证 (3s后确认生效)
+```
+
+- 账号数据持久化 `fingerprint` 字段 (6个ID + createdAt)
+- 导出/导入时保留指纹数据
+- 手动重置指纹 (`resetFingerprint`) 独立于 per-account 绑定
+
+### 切换频率控制
+
+| 机制 | 值 | 说明 |
+|------|-----|------|
+| MIN_SWITCH_INTERVAL | 30s | 两次自动切换最小间隔 |
+| MAX_SWITCHES_PER_HOUR | 30 | 每小时自动切换上限 |
+| Timing Jitter | 200-2200ms | 注入前随机延迟, 降低时序规律性 |
+| panic 旁路 | — | 紧急切换(L5耗尽等)绕过频率限制 |
+
+- 频率控制仅在 `_performSwitch` (自动切换入口) 生效
+- 手动切换 (`_seamlessSwitch` 直接调用) 不受限
+- `S.lastSwitchTs` + `S.hourlySwitchLog` 追踪切换时间
+
 ## 10 层防御
 
 | 层级 | 机制 |
@@ -134,14 +168,17 @@ _poolTick
 
 ```
 _performSwitch(context, options)
+ ├─ v18.0: 频率保护 (非panic时)
+ │   ├─ MIN_SWITCH_INTERVAL 30s 最小间隔检查
+ │   └─ MAX_SWITCHES_PER_HOUR 30次/h 上限检查
  ├─ _getOrderedCandidates() → 有序候选列表
  ├─ _filterRuntimeCandidates() → 过滤隔离账号+Trial池冷却账号
  ├─ 并行预热 Top-3 候选 (5s超时, v16.0)
  │   ├─ Promise.allSettled 并发探测前3个候选
  │   ├─ 取第一个成功的 → 立即切换
- │   └─ 剩余候选串行兆底
+ │   └─ 剩余候选串行兜底
  ├─ Trial池冷却时无候选 → _downgradeFromTrialPressure() → 降级到Sonnet
- └─ _seamlessSwitch() → 执行切换
+ └─ _seamlessSwitch() → Per-Account指纹恢复 + Jitter + 执行切换
 ```
 
 支持参数: `targetPolicy` (same_strategy/quota_first/same_model), `panic`, `refreshPool`, `allowThresholdFallback`, `candidates`
@@ -227,6 +264,10 @@ Credits 模式排序 (4级):
 | 层级阈值 | Free=20% / Pro=15% / Max=8% 预防性切换阈值 (v17.0) |
 | SWE-1.5免费降级 | Free账号耗尽时降级到SWE-1.5(零quota消耗) (v17.0) |
 | 日额度地板 | 日额度≤5%的账号不作为切换候选 (MIN_DAILY_QUOTA_FOR_SWITCH) (v17.0) |
+| Per-Account指纹 | 每个账号绑定唯一设备指纹, 切换时恢复而非随机生成 (v18.0) |
+| 切换频率控制 | MIN_SWITCH_INTERVAL=30s + MAX_SWITCHES_PER_HOUR=30 (v18.0) |
+| Timing Jitter | 注入前200-2200ms随机延迟, 降低时序规律性 (v18.0) |
+| 原子写入 | storage.json tmp+rename 防崩溃损坏 (v18.0) |
 
 ## 数据流
 

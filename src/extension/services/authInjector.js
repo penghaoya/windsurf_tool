@@ -8,7 +8,7 @@ import {
   dbUpdateKeys,
   getStateDbPath,
 } from '../infra/sqlite.js';
-import { hotVerify, resetFingerprint } from './fingerprint.js';
+import { hotVerify, generateFingerprint, applyFingerprint } from './fingerprint.js';
 import { S, _logError, _logInfo, _logWarn } from '../core/state.js';
 import { _getWindsurfGlobalStoragePath } from '../core/window.js';
 
@@ -61,10 +61,12 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
     const config = vscode.workspace.getConfiguration('wam');
     if (config.get('rotateFingerprint', true)) {
-      rotateFingerprintForSwitch();
+      applyAccountFingerprintForSwitch(index);
       S.hotResetCount++;
-      _logInfo('热重置', `指纹已轮转 (第${S.hotResetCount}次)`);
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      _logInfo('热重置', `指纹已应用 (第${S.hotResetCount}次)`);
+      // v18.0: 随机延迟 200-2200ms, 降低时序规律性
+      const jitter = 200 + Math.floor(Math.random() * 2000);
+      await new Promise((resolve) => setTimeout(resolve, jitter));
     }
 
     let injected = false;
@@ -369,44 +371,54 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
     }
   }
 
-  function rotateFingerprintForSwitch() {
+  /** v18.0: Per-Account 指纹绑定 — 每个账号始终看到同一台"设备"
+   *  首次使用 → 生成并保存专属指纹
+   *  后续切换 → 恢复已保存的指纹 (不生成新的)
+   *  解决: 同一账号从大量不同"设备"登录的封控风险 */
+  function applyAccountFingerprintForSwitch(targetIndex) {
     try {
-      const result = resetFingerprint({ backup: false });
+      let fp = S.am.getFingerprint(targetIndex);
+      const isNew = !fp;
+      if (!fp) {
+        fp = generateFingerprint();
+        S.am.setFingerprint(targetIndex, fp);
+      }
+
+      const result = applyFingerprint(fp);
       if (!result.ok) {
-        _logWarn('指纹', '轮转失败', result.error);
+        _logWarn('\u6307\u7eb9', `\u5e94\u7528\u5931\u8d25: ${result.error}`);
         return;
       }
-      const oldId = result.old['storage.serviceMachineId']?.slice(0, 8) || '?';
-      const newId = result.new['storage.serviceMachineId']?.slice(0, 8) || '?';
-      S.lastRotatedIds = result.new;
-      _logInfo('指纹', `已轮转: ${oldId}→${newId} (已保存待验证)`);
 
+      // Sync to state.vscdb
       const dbPath = getStateDbPath();
-      if (!fs.existsSync(dbPath)) return;
+      if (fs.existsSync(dbPath)) {
+        const pairs = [
+          'storage.serviceMachineId',
+          'telemetry.devDeviceId',
+          'telemetry.machineId',
+          'telemetry.macMachineId',
+          'telemetry.sqmId',
+        ]
+          .filter((key) => fp[key])
+          .map((key) => ({ key, value: fp[key] }));
 
-      const pairs = [
-        'storage.serviceMachineId',
-        'telemetry.devDeviceId',
-        'telemetry.machineId',
-        'telemetry.macMachineId',
-        'telemetry.sqmId',
-      ]
-        .filter((key) => result.new[key])
-        .map((key) => ({ key, value: result.new[key] }));
-
-      if (pairs.length === 0) return;
-
-      try {
-        if (dbUpdateKeys(dbPath, pairs)) {
-          _logInfo('指纹', 'state.vscdb已更新(运行时生效)');
-        } else {
-          _logWarn('指纹', 'state.vscdb更新跳过(非关键)');
+        if (pairs.length > 0) {
+          try {
+            if (dbUpdateKeys(dbPath, pairs)) {
+              _logInfo('\u6307\u7eb9', 'state.vscdb\u5df2\u540c\u6b65');
+            }
+          } catch (error) {
+            _logWarn('\u6307\u7eb9', 'state.vscdb\u540c\u6b65\u8df3\u8fc7(\u975e\u5173\u952e)', error.message);
+          }
         }
-      } catch (error) {
-        _logWarn('指纹', 'state.vscdb更新跳过(非关键)', error.message);
       }
+
+      S.lastRotatedIds = fp;
+      const id = fp['storage.serviceMachineId']?.slice(0, 8) || '?';
+      _logInfo('\u6307\u7eb9', `${isNew ? '\u5df2\u751f\u6210\u5e76\u4fdd\u5b58' : '\u5df2\u6062\u590d'} #${targetIndex + 1} \u4e13\u5c5e\u6307\u7eb9: ${id}`);
     } catch (error) {
-      _logWarn('指纹', '指纹轮转异常(非关键)', error.message);
+      _logWarn('\u6307\u7eb9', '\u6307\u7eb9\u5e94\u7528\u5f02\u5e38(\u975e\u5173\u952e)', error.message);
     }
   }
 

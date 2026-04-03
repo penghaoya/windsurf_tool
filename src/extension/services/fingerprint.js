@@ -29,6 +29,60 @@ const TELEMETRY_KEYS = [
 function _uuid() { return crypto.randomUUID(); }
 function _hex32() { return crypto.randomBytes(16).toString('hex'); }
 
+/** Generate a new fingerprint set (without applying to disk)
+ *  v18.0: 用于 per-account 指纹绑定 — 生成后保存到账号数据 */
+function generateFingerprint() {
+  const machineId = _uuid();
+  return {
+    'machineid': machineId,
+    'storage.serviceMachineId': machineId,
+    'telemetry.devDeviceId': _uuid(),
+    'telemetry.macMachineId': _hex32(),
+    'telemetry.machineId': _hex32(),
+    'telemetry.sqmId': _hex32(),
+    createdAt: Date.now(),
+  };
+}
+
+/** Apply a pre-generated fingerprint to machineid file + storage.json (atomic write)
+ *  v18.0: 不更新 state.vscdb (调用方通过 dbUpdateKeys 单独处理) */
+function applyFingerprint(ids) {
+  if (!ids) return { ok: false, error: 'no ids' };
+  const paths = getFingerPrintPaths();
+  try {
+    // Write machineid file
+    if (ids.machineid && fs.existsSync(path.dirname(paths.machineid))) {
+      fs.writeFileSync(paths.machineid, ids.machineid, 'utf8');
+    }
+    // Read existing storage.json
+    let storageData = {};
+    try {
+      if (fs.existsSync(paths.storageJson)) {
+        storageData = JSON.parse(fs.readFileSync(paths.storageJson, 'utf8'));
+      }
+    } catch { storageData = {}; }
+    // Apply fingerprint keys
+    for (const k of TELEMETRY_KEYS) {
+      if (ids[k]) storageData[k] = ids[k];
+    }
+    // Atomic write: tmp + rename (防崩溃损坏)
+    const dir = path.dirname(paths.storageJson);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = paths.storageJson + '.tmp.' + process.pid;
+    fs.writeFileSync(tmpPath, JSON.stringify(storageData, null, '\t'), 'utf8');
+    try {
+      fs.renameSync(tmpPath, paths.storageJson);
+    } catch {
+      // rename 失败时降级直写 (跨设备/跨分区时 rename 可能失败)
+      fs.writeFileSync(paths.storageJson, JSON.stringify(storageData, null, '\t'), 'utf8');
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 /** Discover fingerprint file paths based on platform */
 function getFingerPrintPaths() {
   const p = process.platform;
@@ -137,7 +191,15 @@ function resetFingerprint(options = {}) {
 
     const storageDir = path.dirname(paths.storageJson);
     if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
-    fs.writeFileSync(paths.storageJson, JSON.stringify(storageData, null, '\t'), 'utf8');
+    // Atomic write: tmp + rename
+    const tmpPath = paths.storageJson + '.tmp.' + process.pid;
+    fs.writeFileSync(tmpPath, JSON.stringify(storageData, null, '\t'), 'utf8');
+    try {
+      fs.renameSync(tmpPath, paths.storageJson);
+    } catch {
+      fs.writeFileSync(paths.storageJson, JSON.stringify(storageData, null, '\t'), 'utf8');
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
 
     result.ok = true;
   } catch (e) {
@@ -281,4 +343,4 @@ function hotVerify(expectedIds) {
   }
 }
 
-export { readFingerprint, resetFingerprint, restoreFingerprint, listResetHistory, getFingerPrintPaths, ensureComplete, hotVerify };
+export { readFingerprint, resetFingerprint, restoreFingerprint, listResetHistory, getFingerPrintPaths, ensureComplete, hotVerify, generateFingerprint, applyFingerprint };

@@ -62,6 +62,10 @@ export const MSG_RATE_LIMIT = 12;
 export const BURST_DETECT_THRESHOLD = 0.7;
 export const TAB_CHECK_INTERVAL = 10000;
 
+// ═══ 防封控 (v18.0) ═══
+export const MIN_SWITCH_INTERVAL = 30000;     // 两次自动切换最小间隔 30s
+export const MAX_SWITCHES_PER_HOUR = 30;      // 每小时最大自动切换次数
+
 // ═══ 全池监控 ═══
 export const FULL_SCAN_INTERVAL_NORMAL = 300000;
 export const FULL_SCAN_INTERVAL_BOOST = 120000;

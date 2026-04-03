@@ -504,6 +504,21 @@ class AccountManager {
     this._save();
   }
 
+  // ========== Per-Account Fingerprint (v18.0: 防封控) ==========
+
+  /** 获取账号绑定的设备指纹 (无则返回 null) */
+  getFingerprint(index) {
+    if (index < 0 || index >= this._accounts.length) return null;
+    return this._accounts[index].fingerprint || null;
+  }
+
+  /** 保存设备指纹到账号 (持久化) */
+  setFingerprint(index, ids) {
+    if (index < 0 || index >= this._accounts.length || !ids) return;
+    this._accounts[index].fingerprint = ids;
+    this._save();
+  }
+
   /** Smart batch add — auto-detect ANY seller format
    *  Supports: email----pass | email:pass | email pass | 卡号/卡密 pairs | 账号/密码 pairs
    *  Returns: { added, skipped, errors, total, accounts: [{email, password}] } */
@@ -596,7 +611,8 @@ class AccountManager {
       lastChecked: a.lastChecked || 0,
       rateLimit: a.rateLimit || null,
       usage: a.usage || null,
-      creditHistory: a.creditHistory || []
+      creditHistory: a.creditHistory || [],
+      fingerprint: a.fingerprint || null
     }));
   }
 

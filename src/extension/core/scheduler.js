@@ -10,6 +10,7 @@ import {
   FULL_SCAN_INTERVAL_BURST, REACTIVE_SWITCH_CD, UFEF_COOLDOWN,
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, OPUS_VARIANTS, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
+  MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK, isTierFree,
 } from '../shared/config.js';
@@ -262,6 +263,19 @@ export async function _performSwitch(context, {
   allowThresholdFallback = false,
   opusBudgetFilter = false,
 } = {}) {
+  // v18.0: 切换频率控制 — 防封控
+  const now = Date.now();
+  if (!panic) {
+    if (S.lastSwitchTs && now - S.lastSwitchTs < MIN_SWITCH_INTERVAL) {
+      _logWarn('切换', `频率保护: 距上次仅${Math.round((now - S.lastSwitchTs) / 1000)}s < ${MIN_SWITCH_INTERVAL / 1000}s`);
+      return { ok: false, index: -1, reason: 'switch_cooldown' };
+    }
+    S.hourlySwitchLog = S.hourlySwitchLog.filter(ts => now - ts < 3600000);
+    if (S.hourlySwitchLog.length >= MAX_SWITCHES_PER_HOUR) {
+      _logWarn('切换', `小时上限: 已切${S.hourlySwitchLog.length}次/h (cap=${MAX_SWITCHES_PER_HOUR})`);
+      return { ok: false, index: -1, reason: 'hourly_cap' };
+    }
+  }
   if (refreshPool) await deps.refreshAll();
   let ordered = Array.isArray(candidates) && candidates.length > 0
     ? _filterRuntimeCandidates(candidates, { modelUid, opusBudgetFilter })
@@ -443,6 +457,9 @@ export async function _seamlessSwitch(context, targetIndex) {
     S.switchCount++;
     S.am.markUsed(targetIndex);
     S.lastQuota = null;
+    // v18.0: 记录切换时间戳 (防封控频率追踪)
+    S.lastSwitchTs = Date.now();
+    S.hourlySwitchLog.push(S.lastSwitchTs);
     _dropAccountRuntimeByEmail(prevEmail);
     _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
     _resetOpusMsgLog(targetIndex);
