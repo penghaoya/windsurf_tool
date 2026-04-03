@@ -3,7 +3,7 @@
  * 所有模块通过 S 对象读写共享可变状态，通过 deps 调用跨模块函数
  */
 import vscode from 'vscode';
-import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily } from '../shared/config.js';
+import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily, getPlanTier, isTierFree, PLAN_TIERS } from '../shared/config.js';
 
 // ═══ 共享可变状态单例 ═══
 export const S = {
@@ -242,12 +242,17 @@ export function _armTrialPoolCooldown(modelUid, seconds, reason, meta = {}) {
   deps.syncSchedulerToShared?.();
 }
 
-export function _isTrialLikeAccount(index) {
-  if (!S.am || index < 0) return false;
+/** 获取账号的计划层级 (PLAN_TIERS 值) */
+export function _getPlanTier(index) {
+  if (!S.am || index < 0) return PLAN_TIERS.FREE;
   const account = S.am.get(index);
-  if (!account) return false;
-  const plan = String(account.usage?.plan || '').toLowerCase();
-  return plan.includes('trial') || plan === 'free' || plan.startsWith('free ');
+  if (!account) return PLAN_TIERS.FREE;
+  return getPlanTier(account.usage?.plan);
+}
+
+/** 向后兼容: 账号是否 Free/Trial 类 */
+export function _isTrialLikeAccount(index) {
+  return isTierFree(_getPlanTier(index));
 }
 
 export function _resetAccountRuntimeByEmail(email) {

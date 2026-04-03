@@ -23,6 +23,27 @@ export const WINDOW_HEARTBEAT_MS = 30000;
 export const WINDOW_DEAD_MS = 90000;
 export const CACHE_TTL = 5000;
 
+// ═══ 计划层级 (2026-03 Windsurf 定价改革) ═══
+// Free=免费无extra usage, Pro=$20/月, Max=$200/月, Teams=$40/座/月, Enterprise=credits
+export const PLAN_TIERS = { FREE: 'free', PRO: 'pro', MAX: 'max', TEAMS: 'teams', ENTERPRISE: 'enterprise' };
+
+/** 从 plan 字符串 (GetPlanStatus 返回) 推断层级 */
+export function getPlanTier(planStr) {
+  if (!planStr) return PLAN_TIERS.FREE;
+  const p = String(planStr).toLowerCase().trim();
+  if (p.includes('enterprise')) return PLAN_TIERS.ENTERPRISE;
+  if (p.includes('max')) return PLAN_TIERS.MAX;
+  if (p.includes('team')) return PLAN_TIERS.TEAMS;
+  if (p.includes('pro')) return PLAN_TIERS.PRO;
+  return PLAN_TIERS.FREE; // free / trial / unknown → 最保守
+}
+
+/** 层级是否为 Free/Trial 类 (无 extra usage, 最受限) */
+export function isTierFree(tier) { return !tier || tier === PLAN_TIERS.FREE; }
+
+/** 层级是否为付费类 (Pro/Max/Teams/Enterprise) */
+export function isTierPaid(tier) { return tier && tier !== PLAN_TIERS.FREE; }
+
 // ═══ 号池轮询 ═══
 export const POLL_NORMAL = 45000;
 export const POLL_BOOST = 8000;
@@ -63,6 +84,7 @@ export const OPUS_VARIANTS = [
   'claude-opus-4-6-fast',
 ];
 export const SONNET_FALLBACK = 'claude-sonnet-4-6-thinking-1m';
+export const SWE_FREE_FALLBACK = 'swe-1.5';  // 免费模型,不消耗 quota
 
 // ═══ 模型 Credit 成本估算 (基于社区观测) ═══
 // Trial: 100 credits/2周 ≈ 7/天, Pro: 500/月 ≈ 16.7/天
@@ -78,8 +100,9 @@ export const MODEL_CREDIT_COST = {
 export const OPUS_THINKING_1M_BUDGET = 1;
 export const OPUS_THINKING_BUDGET = 2;
 export const OPUS_REGULAR_BUDGET = 3;
-// Pro 账号 Opus 预算倍率 (Pro 500 credits/月 vs Trial 100/2周 ≈ 5x)
-export const OPUS_BUDGET_MULTIPLIER_PRO = 3;
+// 各层级 Opus 预算倍率 (相对 Free/Trial 基准)
+export const OPUS_BUDGET_MULTIPLIER_PRO = 3;   // Pro: ×3
+export const OPUS_BUDGET_MULTIPLIER_MAX = 10;  // Max($200/月): ×10
 export const OPUS_BUDGET_WINDOW = 1200000;
 export const OPUS_PREEMPT_RATIO = 1.0;
 export const OPUS_COOLDOWN_DEFAULT = 1500;
@@ -137,13 +160,17 @@ export function getModelBudget(uid) {
   return OPUS_REGULAR_BUDGET;
 }
 
-/** 账号类型感知的 Opus 预算
- *  Pro 账号有更多 credits (500/月 vs Trial 100/2周),
- *  可承受更多 Opus 消息后再切号 */
-export function getModelBudgetForTier(uid, isTrialLike = true) {
+/** 层级感知的 Opus 预算 — Max > Pro > Free
+ *  tier 参数: PLAN_TIERS 值, 或兼容旧的 boolean (true=Free) */
+export function getModelBudgetForTier(uid, tierOrBool = PLAN_TIERS.FREE) {
   const base = getModelBudget(uid);
-  if (isTrialLike) return base;
-  return base * OPUS_BUDGET_MULTIPLIER_PRO;
+  const tier = typeof tierOrBool === 'boolean'
+    ? (tierOrBool ? PLAN_TIERS.FREE : PLAN_TIERS.PRO)
+    : (tierOrBool || PLAN_TIERS.FREE);
+  if (tier === PLAN_TIERS.MAX) return base * OPUS_BUDGET_MULTIPLIER_MAX;
+  if (tier === PLAN_TIERS.PRO || tier === PLAN_TIERS.TEAMS) return base * OPUS_BUDGET_MULTIPLIER_PRO;
+  if (tier === PLAN_TIERS.ENTERPRISE) return base * OPUS_BUDGET_MULTIPLIER_PRO;
+  return base; // Free/Trial: 基础预算
 }
 
 /** 获取模型每次消息的预估 credit 成本 */
@@ -168,9 +195,21 @@ export function getModelFamily(uid) {
   return 'other';
 }
 
-/** 响应式切换按账号类型差异化阈值 */
-export function getReactiveDropMin(isTrialLike, selectionMode) {
-  if (isTrialLike) return 3; // Trial: 额度跳跃更大,用更低阈值快速响应
-  if (selectionMode === 'credits') return 8; // Credits: 消耗更均匀,用更高阈值避免噪音
-  return REACTIVE_DROP_MIN; // Pro/Quota: 默认5%
+/** 响应式切换按层级差异化阈值 — 支持 tier 字符串或旧 boolean */
+export function getReactiveDropMin(tierOrBool, selectionMode) {
+  const tier = typeof tierOrBool === 'boolean'
+    ? (tierOrBool ? PLAN_TIERS.FREE : PLAN_TIERS.PRO)
+    : (tierOrBool || PLAN_TIERS.FREE);
+  if (isTierFree(tier)) return 3;  // Free: 额度跳跃更大,用更低阈值快速响应
+  if (selectionMode === 'credits') return 8; // Enterprise Credits: 消耗更均匀
+  if (tier === PLAN_TIERS.MAX) return 8; // Max: 额度充裕,提高阈值减少噪音
+  return REACTIVE_DROP_MIN; // Pro/Teams: 默认5%
+}
+
+/** 层级差异化预防性切换阈值 (% 额度) — Free 更早切, Max 更晚切 */
+export function getTierPreemptiveThreshold(tier, userOverride) {
+  if (userOverride !== undefined && userOverride !== null) return userOverride;
+  if (tier === PLAN_TIERS.MAX) return 8;
+  if (isTierFree(tier)) return 20;
+  return DEFAULT_PREEMPTIVE_THRESHOLD; // Pro/Teams/Enterprise: 15%
 }

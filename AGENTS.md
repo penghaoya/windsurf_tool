@@ -99,7 +99,7 @@ npm run install-ext     # 打包并安装到 IDE
 | L9 | 输出通道实时拦截 |
 | L10 | 多窗口协调 (账号隔离+心跳, 跨平台路径) |
 
-## 调度策略 (v16.0)
+## 调度策略 (v17.0)
 
 ### 调度架构
 
@@ -119,7 +119,7 @@ _poolTick
  ├─ 静默模式: Trial池冷却+降级锁生效时跳过预防性轮转 (避免重试风暴)
  ├─ 防抖: Trial池冷却失败后60s内不重试
  └─ _performSwitch() → 过滤隔离账号+有序候选遍历+预热验证+切换
-     └─ Trial池冷却时无候选 → 自动降级到Sonnet
+     └─ Trial池冷却时无候选 → Free降级到SWE-1.5(零消耗) / 付费降级到Sonnet (v17.0)
 ```
 
 ### Per-Account Runtime State
@@ -146,13 +146,30 @@ _performSwitch(context, options)
 
 支持参数: `targetPolicy` (same_strategy/quota_first/same_model), `panic`, `refreshPool`, `allowThresholdFallback`, `candidates`
 
+### 计划层级系统 (v17.0 — 2026-03 定价改革适配)
+
+| 层级 | 价格 | 计费模式 | 超限行为 | 预防阈值 | Opus预算倍率 |
+|------|------|----------|----------|----------|------------|
+| **Free** | $0 | Quota (日/周) | 等待重置 | 20% | ×1 |
+| **Pro** | $20/月 | Quota | Extra Usage | 15% | ×3 |
+| **Max** | $200/月 | Quota | Extra Usage | 8% | ×10 |
+| **Teams** | $40/座/月 | Quota | Extra Usage | 15% | ×3 |
+| **Enterprise** | 定制 | Credits | Credits 购买 | 15% | ×3 |
+
+- `PLAN_TIERS` 常量 + `getPlanTier(planStr)` 函数 (config.js)
+- `_getPlanTier(index)` 读取账号层级 (state.js), `_isTrialLikeAccount` 委托给层级系统
+- `getTierPreemptiveThreshold(tier)` 层级差异化阈值 (config.js)
+- `getReactiveDropMin(tier)` 响应式切换按层级差异化 (Free=3% / Max=8%)
+- `SWE_FREE_FALLBACK = 'swe-1.5'` 免费模型,不消耗 quota (config.js)
+- Free账号降级目标: SWE-1.5 (零消耗); 付费账号: Sonnet (model.js)
+
 ### 账号选择排序 (selectOptimal) — v14.1 价值最大化
 
 - 返回**有序数组** (非单个对象), `findBestForModel` 委托给 `selectOptimal`
 - **Mode-Aware 分组排序**: quota/credits/unknown 三类分别排序后合并
-- **Opus模型路由**: Opus请求时Pro账号前置 (credits更充裕, 承受高成本) (v16.0)
+- **Opus模型路由**: Opus请求时 Max前置 > Pro/Teams > Free后置 (额度感知路由) (v17.0)
 - 支持 `excludeEmails` (多窗口隔离), `preferredMode`, `modelUid` 过滤
-- 候选数据含 `dailyRemaining`, `weeklyRemaining`, `isTrial` 独立字段 (v14.0/v16.0)
+- 候选数据含 `tier`, `dailyRemaining`, `weeklyRemaining`, `isTrial` 字段 (v17.0)
 
 **核心原则: 到期近+额度高 = 最优先** — 最大化"过期前能用掉的额度"
 
@@ -184,7 +201,7 @@ Credits 模式排序 (4级):
 | NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
 | 账号隔离 | 命中Trial限流的账号隔离1h, 候选过滤+预热拒绝 |
 | Trial池冷却 | 全局Trial限流时按模型族冷却整组Trial候选(20min) |
-| 模型降级 | Trial池冷却无候选时自动从Opus降级到Sonnet |
+| 模型降级 | 池冷却无候选时: Free→SWE-1.5(零消耗), 付费→Sonnet (v17.0) |
 | 降级锁 | 降级后120s内_readCurrentModelUid()不读DB, 防止覆盖回Opus |
 | 降级清理 | 降级成功后清Opus消息计数+per-model限流标记 |
 | 静默模式 | Trial池冷却+降级锁生效时跳过预防性轮转 |
@@ -202,10 +219,14 @@ Credits 模式排序 (4级):
 | SQLite读缓存 | 1s TTL读副本缓存,同窗口内多次读操作复用同一copyFile副本 (v15.0) |
 | _refreshPanel防抖 | 50ms防抖合并频繁调用,减少Webview序列化开销 (v15.0) |
 | 模型Credit成本 | MODEL_CREDIT_COST: Opus T1M=10, T=5, R=3, Sonnet=1 (社区观测估算) (v16.0) |
-| 账号类型Opus预算 | Pro账号Opus预算=Trial×3 (getModelBudgetForTier), Pro 500credits/月 vs Trial 100/2周 (v16.0) |
+| 多层级Opus预算 | Max×10 > Pro/Teams×3 > Free×1 (getModelBudgetForTier) (v17.0) |
 | L5容量自适应 | 剩余≤ 2条:3s / ≤5:8s / ≤10:15s, 越少探测越频繁 (v16.0) |
-| Opus模型路由 | Opus请求时Pro账号前置, Trial后置 (成本感知路由) (v16.0) |
+| Opus模型路由 | Opus请求时 Max前置 > Pro/Teams > Free后置 (层级感知路由) (v17.0) |
 | 并行预热 | Top-3候选Promise.allSettled并行探测, 切号延迟从15s→5s (v16.0) |
+| 多层级计划 | PLAN_TIERS: Free/Pro/Max/Teams/Enterprise, 层级感知阈值+降级+路由 (v17.0) |
+| 层级阈值 | Free=20% / Pro=15% / Max=8% 预防性切换阈值 (v17.0) |
+| SWE-1.5免费降级 | Free账号耗尽时降级到SWE-1.5(零quota消耗) (v17.0) |
+| 日额度地板 | 日额度≤5%的账号不作为切换候选 (MIN_DAILY_QUOTA_FOR_SWITCH) (v17.0) |
 
 ## 数据流
 

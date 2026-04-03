@@ -13,6 +13,7 @@ import {
   _getPreemptiveThreshold,
   _isBoost,
   _isTrialLikeAccount,
+  _getPlanTier,
 } from '../core/state.js';
 import {
   _getVelocity,
@@ -181,8 +182,8 @@ export function _updatePoolBar() {
     L('**防御状态**');
     if (isOpusModel(currentModel) && S.activeIndex >= 0) {
       const opusCount = _getOpusMsgCount(S.activeIndex);
-      const isTrial = _isTrialLikeAccount(S.activeIndex);
-      const tierBudget = getModelBudgetForTier(currentModel, isTrial);
+      const tier = _getPlanTier(S.activeIndex);
+      const tierBudget = getModelBudgetForTier(currentModel, tier);
       const tierLabel = isThinking1MModel(currentModel)
         ? 'T1M'
         : isThinkingModel(currentModel)

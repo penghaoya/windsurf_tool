@@ -11,13 +11,13 @@ import {
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, OPUS_VARIANTS, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
-  getReactiveDropMin,
+  getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK, isTierFree,
 } from '../shared/config.js';
 import {
   S, schedulerState, deps, _getAccountRuntime, _getCapacityState,
   _normalizeEmail, _getAccountEmail, _dropAccountRuntimeByEmail,
   _resetAccountRuntimeByEmail, _isAccountQuarantined, _getTrialPoolCooldown,
-  _isTrialLikeAccount, _getPreemptiveThreshold, _getActiveSelectionMode,
+  _isTrialLikeAccount, _getPlanTier, _getPreemptiveThreshold, _getActiveSelectionMode,
   _logInfo, _logWarn, _logError, _isBoost, _activateBoost, _refreshPanel,
 } from './state.js';
 import {
@@ -507,7 +507,9 @@ async function _poolTick(context) {
   _detectCascadeTabs();
 
   const autoRotate = vscode.workspace.getConfiguration("wam").get("autoRotate", true);
-  const threshold = _getPreemptiveThreshold();
+  const userThreshold = _getPreemptiveThreshold();
+  const activeTier = _getPlanTier(S.activeIndex);
+  const threshold = getTierPreemptiveThreshold(activeTier, userThreshold !== 15 ? userThreshold : undefined);
 
   if (S.activeIndex < 0 || S.activeIndex >= accounts.length) {
     const switchResult = await _performSwitch(context, {
@@ -573,7 +575,7 @@ async function _poolTick(context) {
 
   // ═══ 响应式切换 (按账号类型差异化阈值) ═══
   const quotaDrop = prevQuota !== null && curQuota !== null ? prevQuota - curQuota : 0;
-  const reactiveDropMin = getReactiveDropMin(_isTrialLikeAccount(S.activeIndex), _getActiveSelectionMode());
+  const reactiveDropMin = getReactiveDropMin(_getPlanTier(S.activeIndex), _getActiveSelectionMode());
   if (
     quotaChanged && curQuota < prevQuota && quotaDrop >= reactiveDropMin &&
     autoRotate && Date.now() - S.lastReactiveSwitchTs > REACTIVE_SWITCH_CD

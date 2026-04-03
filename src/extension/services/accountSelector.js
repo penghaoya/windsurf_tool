@@ -1,4 +1,4 @@
-import { MIN_DAILY_QUOTA_FOR_SWITCH } from '../shared/config.js';
+import { MIN_DAILY_QUOTA_FOR_SWITCH, getPlanTier, PLAN_TIERS, isTierFree } from '../shared/config.js';
 
 // v16.0: Opus请求时,非Trial账号优先 (Pro有500 credits/月 vs Trial 100/2周)
 function _isOpusModelUid(uid) {
@@ -112,8 +112,7 @@ export function selectOptimal(
       const weeklyResetMs = account.usage?.weeklyReset || 0;
       const weeklyResetProximity =
         weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
-        const plan = String(account.usage?.plan || '').toLowerCase();
-      const isTrial = plan.includes('trial') || plan === 'free' || plan.startsWith('free ');
+      const tier = getPlanTier(account.usage?.plan);
       candidates.push({
         index: i,
         email: account.email,
@@ -126,7 +125,8 @@ export function selectOptimal(
         weeklyResetProximity,
         lastUsed: accountManager.getLastUsedTs(i),
         mode: accountManager.getSelectionMode(i),
-        isTrial,
+        tier,
+        isTrial: isTierFree(tier),
       });
     }
   }
@@ -157,13 +157,16 @@ export function selectOptimal(
     ordered.push(...byMode[mode]);
   }
 
-  // v16.0: Opus模型路由 — Opus请求时,Pro账号前置 (credits更充裕,承受高成本)
+  // v17.0: Opus模型路由 — Opus请求时 Max前置 > Pro/Teams > Free后置 (额度感知路由)
   if (modelUid && _isOpusModelUid(modelUid) && ordered.length > 1) {
-    const pro = ordered.filter(c => !c.isTrial);
-    const trial = ordered.filter(c => c.isTrial);
-    if (pro.length > 0 && trial.length > 0) {
-      ordered.length = 0;
-      ordered.push(...pro, ...trial);
+    const tierRank = (c) => {
+      if (c.tier === PLAN_TIERS.MAX) return 0;
+      if (c.tier === PLAN_TIERS.PRO || c.tier === PLAN_TIERS.TEAMS || c.tier === PLAN_TIERS.ENTERPRISE) return 1;
+      return 2; // Free/Trial
+    };
+    const hasDiff = ordered.some(c => tierRank(c) !== tierRank(ordered[0]));
+    if (hasDiff) {
+      ordered.sort((a, b) => tierRank(a) - tierRank(b));
     }
   }
   if (ordered.length > 0) return ordered;

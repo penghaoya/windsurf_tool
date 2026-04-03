@@ -531,7 +531,7 @@ export function _startQuotaWatcher(context) {
     const modelUid = S.currentModelUid || _readCurrentModelUid();
     if (isOpusModel(modelUid) && _isTrialLikeAccount(S.activeIndex) && _getTrialPoolCooldown(modelUid)) {
       if (!S.switching && Date.now() > S.downgradeLockUntil) {
-        _logWarn('L5探测', '❄ 检测到跨窗口Trial池冷却 → 主动降级Sonnet');
+        _logWarn('L5探测', '❄ 检测到跨窗口Trial池冷却 → 主动降级');
         await _downgradeFromTrialPressure('[L5跨窗口] 检测到Trial池冷却');
         deps.updatePoolBar?.();
         _refreshPanel();

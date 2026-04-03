@@ -4,11 +4,12 @@
  */
 import vscode from 'vscode';
 import {
-  OPUS_VARIANTS, SONNET_FALLBACK, OPUS_BUDGET_WINDOW, OPUS_COOLDOWN_DEFAULT,
+  OPUS_VARIANTS, SONNET_FALLBACK, SWE_FREE_FALLBACK, OPUS_BUDGET_WINDOW, OPUS_COOLDOWN_DEFAULT,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
+  isTierFree,
 } from '../shared/config.js';
 import {
-  S, _getAccountRuntime, _getCapacityState, _isTrialLikeAccount, _logInfo, _logWarn,
+  S, _getAccountRuntime, _getCapacityState, _isTrialLikeAccount, _getPlanTier, _logInfo, _logWarn,
 } from './state.js';
 
 // ═══ 模型UID读取 ═══
@@ -84,10 +85,10 @@ export function _getOpusMsgCount(accountIndex) {
 }
 
 /** 获取提前切号阈值 — budget>1时提前1条,留buffer完成切号
- *  v16.0: 账号类型感知 — Pro账号预算是Trial的3倍 (500 credits/月 vs 100/2周) */
+ *  v17.0: 层级感知 — Max×10 > Pro×3 > Free×1 */
 export function _getPreemptAt(modelUid, accountIndex) {
-  const isTrial = accountIndex !== undefined ? _isTrialLikeAccount(accountIndex) : true;
-  const budget = getModelBudgetForTier(modelUid, isTrial);
+  const tier = accountIndex !== undefined ? _getPlanTier(accountIndex) : undefined;
+  const budget = getModelBudgetForTier(modelUid, tier);
   return budget > 1 ? budget - 1 : budget;
 }
 
@@ -116,11 +117,14 @@ export function _resetOpusMsgLog(accountIndex) {
 
 // ═══ 模型降级 ═══
 
-/** Trial压力降级: Opus → Sonnet */
+/** Free/Trial压力降级: Opus → SWE-1.5(Free账号) 或 Sonnet(付费账号)
+ *  v17.0: Free账号优先降级到 SWE-1.5 (零quota消耗),付费账号降级到 Sonnet */
 export async function _downgradeFromTrialPressure(reason) {
   const currentModel = _readCurrentModelUid();
   if (!isOpusModel(currentModel) || currentModel === SONNET_FALLBACK) return false;
-  const switched = await _switchModelUid(SONNET_FALLBACK);
+  const tier = _getPlanTier(S.activeIndex);
+  const fallback = isTierFree(tier) ? SWE_FREE_FALLBACK : SONNET_FALLBACK;
+  const switched = await _switchModelUid(fallback);
   if (switched) {
     S.downgradeLockUntil = Date.now() + 120000;
     S.preDowngradeModelUid = currentModel;
@@ -129,7 +133,7 @@ export async function _downgradeFromTrialPressure(reason) {
     for (const variant of OPUS_VARIANTS) {
       S.am.clearModelRateLimit && S.am.clearModelRateLimit(S.activeIndex, variant);
     }
-    _logWarn('模型降级', `${reason} → 降级到${SONNET_FALLBACK}，避免Trial账号互切 (降级锁120s)`);
+    _logWarn('模型降级', `${reason} → 降级到${fallback} (${isTierFree(tier) ? 'Free账号→零消耗' : '付费账号'}) 降级锁120s`);
   }
   return switched;
 }
