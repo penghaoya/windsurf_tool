@@ -9,7 +9,7 @@ import {
   TAB_CHECK_INTERVAL, FULL_SCAN_INTERVAL_NORMAL, FULL_SCAN_INTERVAL_BOOST,
   FULL_SCAN_INTERVAL_BURST, REACTIVE_SWITCH_CD, UFEF_COOLDOWN,
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, OPUS_VARIANTS, SONNET_FALLBACK,
-  TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD,
+  TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
   getReactiveDropMin,
 } from '../shared/config.js';
@@ -239,6 +239,10 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
     if (remaining !== null && remaining <= threshold) {
       return { ok: false, remaining, reason: 'insufficient_quota' };
     }
+    const dailyRem = S.am.getDailyRemaining(targetIndex);
+    if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) {
+      return { ok: false, remaining: dailyRem, reason: `daily_quota_floor(${dailyRem}%≤${MIN_DAILY_QUOTA_FOR_SWITCH}%)` };
+    }
     return { ok: true, remaining };
   } catch (e) {
     return { ok: false, remaining: null, reason: e.message };
@@ -463,6 +467,8 @@ export function _roundRobinFallback() {
   for (let r = 1; r < accounts.length; r++) {
     const ci = (S.activeIndex + r) % accounts.length;
     if (S.am.isRateLimited(ci) || S.am.isExpired(ci) || _isAccountQuarantined(ci)) continue;
+    const dailyRem = S.am.getDailyRemaining(ci);
+    if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
     const trialCd = _getTrialPoolCooldown(_readCurrentModelUid());
     if (trialCd && _isTrialLikeAccount(ci)) continue;
     return ci;
@@ -581,6 +587,8 @@ async function _poolTick(context) {
       if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
       const rem = S.am.effectiveRemaining(i);
       if (rem === null || rem === undefined || rem <= threshold) continue;
+      const dailyRem = S.am.getDailyRemaining(i);
+      if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
       const snap = S.allQuotaSnapshot.get(i);
       if ((snap && snap.remaining === rem) || !snap) {
         stableCandidates.push({ index: i, remaining: rem });

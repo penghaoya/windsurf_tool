@@ -1,3 +1,5 @@
+import { MIN_DAILY_QUOTA_FOR_SWITCH } from '../shared/config.js';
+
 // v16.0: Opus请求时,非Trial账号优先 (Pro有500 credits/月 vs Trial 100/2周)
 function _isOpusModelUid(uid) {
   return uid && ['opus-4-6-thinking-1m', 'opus-4-6-thinking', 'opus-4-6-1m', 'opus-4-6', 'opus-4-6-thinking-fast', 'opus-4-6-fast']
@@ -99,6 +101,8 @@ export function selectOptimal(
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;
     const rem = accountManager.effectiveRemaining(i);
     if (rem !== null && rem !== undefined && rem > threshold) {
+      const dailyRem = accountManager.getDailyRemaining(i);
+      if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
       const planDays = accountManager.getPlanDaysRemaining(i);
       const urgency = accountManager.getExpiryUrgency(i);
       const resetTs = accountManager.effectiveResetTime(i);

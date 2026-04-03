@@ -349,6 +349,14 @@ class AccountManager {
     return a.credits !== undefined ? a.credits : null;
   }
 
+  /** Get daily remaining % for quota-mode accounts, null otherwise */
+  getDailyRemaining(index) {
+    const a = this.get(index);
+    if (!a || !a.usage || a.usage.mode !== 'quota') return null;
+    const d = a.usage.daily?.remaining;
+    return (d !== null && d !== undefined) ? d : null;
+  }
+
   /**
    * Get effective reset time for an account (matches official ype formula).
    * Official logic:

@@ -93,6 +93,9 @@ export const L5_NODATA_SLOWDOWN_AFTER = 5;
 export const L5_NODATA_MAX_INTERVAL = 120000;
 export const APIKEY_CACHE_TTL = 120000;
 
+// ═══ 候选过滤 ═══
+export const MIN_DAILY_QUOTA_FOR_SWITCH = 5;
+
 // ═══ 杂项 ═══
 export const MAX_EVENT_LOG = 200;
 export const TRIAL_POOL_COOLDOWN_RETRY_CD = 60000;
