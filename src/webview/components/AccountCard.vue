@@ -1,7 +1,7 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted }"
     :id="`row${index}`"
   >
     <!-- Row 1: Tags left + Actions right -->
@@ -89,6 +89,11 @@
       />
     </div>
 
+    <!-- Daily Depleted Badge -->
+    <div v-if="isDailyDepleted && !isRateLimited" class="ac-dep">
+      <span>💤 日额度耗尽</span>
+    </div>
+
     <!-- Rate Limited Badge -->
     <div v-if="isRateLimited" class="ac-rl">
       <span>⏳ 限流中</span>
@@ -158,6 +163,7 @@ const poolCoolRemaining = computed(() => {
 const quarantineLabel = computed(() => formatCooldown(quarantineRemaining.value))
 const poolCoolLabel = computed(() => formatCooldown(poolCoolRemaining.value))
 const isBlocked = computed(() => quarantineRemaining.value > 0 || poolCoolRemaining.value > 0)
+const isDailyDepleted = computed(() => props.account.dailyDepleted === true)
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
 
@@ -244,6 +250,7 @@ onBeforeUnmount(() => {
 .ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;margin-bottom:3px;transition:all .15s ease}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
+.ac.dep{opacity:.35;filter:grayscale(.6)}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
 .ac.exp{opacity:.3}
@@ -284,4 +291,5 @@ onBeforeUnmount(() => {
 .ac-rl-time{color:var(--tx2)}
 .ac-qr{color:var(--rd)}
 .ac-pc{color:var(--ac)}
+.ac-dep{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--tx3);margin-top:3px}
 </style>

@@ -134,7 +134,7 @@ npm run install-ext     # 打包并安装到 IDE
 | L9 | 输出通道实时拦截 |
 | L10 | 多窗口协调 (账号隔离+心跳, 跨平台路径) |
 
-## 调度策略 (v17.0)
+## 调度策略 (v19.0)
 
 ### 调度架构
 
@@ -173,13 +173,15 @@ _performSwitch(context, options)
  │   ├─ MIN_SWITCH_INTERVAL 30s 最小间隔检查
  │   └─ MAX_SWITCHES_PER_HOUR 30次/h 上限检查
  ├─ _getOrderedCandidates() → 有序候选列表
+ │   └─ selectOptimal 内部过滤: 日额度≤5% / 限流 / 过期 / 模型限流
  ├─ _filterRuntimeCandidates() → 过滤隔离账号+Trial池冷却账号
  ├─ 并行预热 Top-3 候选 (5s超时, v16.0)
+ │   ├─ _validateSwitchCandidate → refreshOne + 日额度地板检查
  │   ├─ Promise.allSettled 并发探测前3个候选
  │   ├─ 取第一个成功的 → 立即切换
  │   └─ 剩余候选串行兜底
  ├─ Trial池冷却时无候选 → _downgradeFromTrialPressure() → 降级到Sonnet
- └─ _seamlessSwitch() → Per-Account指纹恢复 + Jitter + 执行切换
+ └─ _seamlessSwitch() → Per-Account指纹恢复 + Jitter + 执行切换 + globalState持久化
 ```
 
 支持参数: `targetPolicy` (same_strategy/quota_first/same_model), `panic`, `refreshPool`, `allowThresholdFallback`, `candidates`
@@ -265,10 +267,41 @@ Credits 模式排序 (4级):
 | 层级阈值 | Free=20% / Pro=15% / Max=8% 预防性切换阈值 (v17.0) |
 | SWE-1.5免费降级 | Free账号耗尽时降级到SWE-1.5(零quota消耗) (v17.0) |
 | 日额度地板 | 日额度≤5%的账号不作为切换候选 (MIN_DAILY_QUOTA_FOR_SWITCH) (v17.0) |
+| Proto3默认值修复 | 日额度0%在wire上被省略→现在正确识别为耗尽而非unknown (v19.0) |
+| 日额度耗尽UI | AccountCard灰显(opacity+grayscale)+💤badge, dailyDepleted标记推送 (v19.0) |
+| Opus预算日志一致 | evaluateActiveAccount/_poolTick统一用getModelBudgetForTier (v19.0) |
+| cachedPlanInfo校验 | _refreshOne中比对cached.email与account.email, 防止数据污染 (v19.0) |
+| activeIndex持久化 | _seamlessSwitch成功后globalState.update, 崩溃恢复不回退 (v19.0) |
+| Protobuf模块拆分 | 9个纯函数从auth.js提取到protobuf.js, auth.js瘦身~280行 (v19.0) |
+| tooltip缓存 | statusbar tooltip指纹比对, 数据不变时跳过MarkdownString重建 (v19.0) |
+| effectiveRemaining防御 | daily=null但weekly存在时返回0(非weekly值), 三层防御 (v19.0) |
 | Per-Account指纹 | 每个账号绑定唯一设备指纹, 切换时恢复而非随机生成 (v18.0) |
 | 切换频率控制 | MIN_SWITCH_INTERVAL=30s + MAX_SWITCHES_PER_HOUR=30 (v18.0) |
 | Timing Jitter | 注入前200-2200ms随机延迟, 降低时序规律性 (v18.0) |
 | 原子写入 | storage.json tmp+rename 防崩溃损坏 (v18.0) |
+
+### Proto3 默认值修复 (v19.0)
+
+Protobuf3 不在 wire 上发送值为 0 的字段。当日额度 = 0% 时：
+
+```
+服务端 dailyPct=0 → Proto3省略字段 → dailyPct=undefined → result.daily=null
+  → effectiveRemaining 返回 weekly(15%) 而非 min(0,15%)=0
+  → getDailyRemaining 返回 null
+  → 所有 "dailyRem !== null && dailyRem <= 5" 检查被绕过
+  → 日额度耗尽的账号被错误选为候选 → 切换后中断
+```
+
+**三层修复**:
+1. **protobuf.js**: `parseUsageInfo` 中 billing=quota 且一维度存在时，缺失维度默认 0
+2. **account.js**: `effectiveRemaining` 中 daily=null+weekly 存在 → 返回 0
+3. **account.js**: `getDailyRemaining` 中 daily=null+weekly 存在 → 返回 0 (使过滤检查生效)
+
+### 日额度耗尽 UI (v19.0)
+
+- `webview.js`: enriched 数据新增 `dailyDepleted` 标记 (`getDailyRemaining(i) <= 5`)
+- `AccountCard.vue`: `.dep` class → `opacity: .35` + `grayscale(.6)` + 💤日额度耗尽 badge
+- 与限流(`.rl`)、隔离(`.blk`)、过期(`.exp`) 灰显风格一致
 
 ## 数据流
 

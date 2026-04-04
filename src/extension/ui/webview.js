@@ -105,16 +105,20 @@ class AccountViewProvider {
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
 
     // 为每个账号附加计算属性 (Vue 侧只做展示，不做业务逻辑)
-    const enriched = accounts.map((a, i) => ({
-      ...a,
-      effective: this._am.effectiveRemaining(i),
-      isExpired: this._am.isExpired ? this._am.isExpired(i) : false,
-      planDays: this._am.getPlanDaysRemaining ? this._am.getPlanDaysRemaining(i) : null,
-      planEnd: a.usage?.planEnd || null,
-      urgency: this._am.getExpiryUrgency ? this._am.getExpiryUrgency(i) : -1,
-      rateLimitInfo: this._am.getRateLimitInfo ? this._am.getRateLimitInfo(i) : null,
-      schedulerBlocked: this._onAction ? this._onAction('getAccountBlocked', i) : null,
-    }));
+    const enriched = accounts.map((a, i) => {
+      const dailyRem = this._am.getDailyRemaining ? this._am.getDailyRemaining(i) : null;
+      return {
+        ...a,
+        effective: this._am.effectiveRemaining(i),
+        isExpired: this._am.isExpired ? this._am.isExpired(i) : false,
+        planDays: this._am.getPlanDaysRemaining ? this._am.getPlanDaysRemaining(i) : null,
+        planEnd: a.usage?.planEnd || null,
+        urgency: this._am.getExpiryUrgency ? this._am.getExpiryUrgency(i) : -1,
+        rateLimitInfo: this._am.getRateLimitInfo ? this._am.getRateLimitInfo(i) : null,
+        schedulerBlocked: this._onAction ? this._onAction('getAccountBlocked', i) : null,
+        dailyDepleted: dailyRem !== null && dailyRem <= 5,
+      };
+    });
 
     // 补充 activeQuota 的紧急度
     if (activeQuota && currentIndex >= 0) {
