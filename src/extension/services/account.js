@@ -342,9 +342,12 @@ class AccountManager {
     if (a.usage && a.usage.mode === 'quota') {
       const d = a.usage.daily?.remaining;
       const w = a.usage.weekly?.remaining;
-      if (d !== null && d !== undefined && w !== null && w !== undefined) return Math.min(d, w);
-      if (d !== null && d !== undefined) return d;
-      if (w !== null && w !== undefined) return w;
+      const hasD = d !== null && d !== undefined;
+      const hasW = w !== null && w !== undefined;
+      if (hasD && hasW) return Math.min(d, w);
+      if (hasD) return d;
+      // Proto3 fix: daily missing but weekly present → daily is 0% (depleted), return 0
+      if (hasW) return 0;
     }
     return a.credits !== undefined ? a.credits : null;
   }
@@ -354,7 +357,11 @@ class AccountManager {
     const a = this.get(index);
     if (!a || !a.usage || a.usage.mode !== 'quota') return null;
     const d = a.usage.daily?.remaining;
-    return (d !== null && d !== undefined) ? d : null;
+    if (d !== null && d !== undefined) return d;
+    // Proto3 fix: daily missing but weekly present → daily is 0% (depleted)
+    const w = a.usage.weekly?.remaining;
+    if (w !== null && w !== undefined) return 0;
+    return null;
   }
 
   /**

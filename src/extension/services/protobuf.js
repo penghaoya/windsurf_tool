@@ -269,18 +269,30 @@ export function parseUsageInfo(buf) {
     const dailyResetUnix = ps[17]?.[0]?.value;  // daily_quota_reset_at_unix
     const weeklyResetUnix = ps[18]?.[0]?.value; // weekly_quota_reset_at_unix
 
-    if (dailyPct !== undefined && dailyPct !== null) {
+    // Proto3 default value semantics: 0 is omitted from the wire.
+    // When billing=quota and one dimension exists but the other is missing,
+    // the missing one is 0% (depleted), NOT "unknown".
+    // Without this fix, daily=0% gets treated as null → bypasses candidate filtering.
+    const isQuotaBilling = result.billingStrategy === 'quota' || result.billingStrategy === 'acu';
+    const effectiveDaily = (dailyPct !== undefined && dailyPct !== null)
+      ? dailyPct
+      : (isQuotaBilling || (weeklyPct !== undefined && weeklyPct !== null)) ? 0 : undefined;
+    const effectiveWeekly = (weeklyPct !== undefined && weeklyPct !== null)
+      ? weeklyPct
+      : (isQuotaBilling || (dailyPct !== undefined && dailyPct !== null)) ? 0 : undefined;
+
+    if (effectiveDaily !== undefined) {
       result.daily = {
-        used: Math.max(0, Math.min(100, 100 - dailyPct)),
+        used: Math.max(0, Math.min(100, 100 - effectiveDaily)),
         total: 100,
-        remaining: dailyPct,
+        remaining: effectiveDaily,
       };
     }
-    if (weeklyPct !== undefined && weeklyPct !== null) {
+    if (effectiveWeekly !== undefined) {
       result.weekly = {
-        used: Math.max(0, Math.min(100, 100 - weeklyPct)),
+        used: Math.max(0, Math.min(100, 100 - effectiveWeekly)),
         total: 100,
-        remaining: weeklyPct,
+        remaining: effectiveWeekly,
       };
     }
     if (dailyResetUnix) result.resetTime = dailyResetUnix * 1000;
