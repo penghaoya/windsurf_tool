@@ -268,7 +268,7 @@ class AccountViewProvider {
     let removed = 0;
     for (let i = accounts.length - 1; i >= 0; i--) {
       const a = accounts[i];
-      if (/test|x\.com|example/i.test(a.email) || (a.credits !== undefined && a.credits <= 0)) {
+      if (/^test[@.]|@test\.|@example\.|@example\.com$/i.test(a.email) || (a.credits !== undefined && a.credits <= 0 && !a.usage?.daily)) {
         this._am.remove(i); removed++;
       }
     }

@@ -117,9 +117,10 @@ function _activate(context) {
   // ═══ 结构化日志通道 (v6.2 P1: 用户可见) ═══
   S.outputChannel = vscode.window.createOutputChannel("Windsurf小助手");
   context.subscriptions.push(S.outputChannel);
+  const _version = context.extension?.packageJSON?.version || '?';
   _logInfo(
     "启动",
-    "WAM 号池引擎 v13.1 启动中...",
+    `WAM 号池引擎 v${_version} 启动中...`,
   );
 
   // 指纹完整性
@@ -243,7 +244,7 @@ function _activate(context) {
   const winCount = _getActiveWindowCount();
   _logInfo(
     "启动",
-    `✅ 号池引擎就绪 v13.1 | 账号: ${accounts.length}个 | 代理: ${proxyInfo.mode}:${proxyInfo.port} | 窗口: ${winCount}个 | 对话: ${S.cascadeTabCount}个${S.burstMode ? ' (BURST防护)' : ''}`,
+    `✅ 号池引擎就绪 v${_version} | 账号: ${accounts.length}个 | 代理: ${proxyInfo.mode}:${proxyInfo.port} | 窗口: ${winCount}个 | 对话: ${S.cascadeTabCount}个${S.burstMode ? ' (BURST防护)' : ''}`,
   );
   _logInfo(
     "启动",
@@ -266,6 +267,11 @@ async function _refreshOne(index) {
         try {
           const cached = S.auth.readCachedQuota();
           if (cached) {
+            // Validate cached email matches current account (avoid stale data from previous account)
+            if (cached.email && account.email && cached.email.toLowerCase() !== account.email.toLowerCase()) {
+              _logWarn('额度补充', `cachedPlanInfo email不匹配: cached=${cached.email} vs account=${account.email}, 跳过补充`);
+              cached.daily = null; // skip quota supplement
+            }
             // Supplement daily% if billingStrategy=quota but API didn't return it
             if (usageInfo.billingStrategy === "quota" && !usageInfo.daily && cached.daily !== null) {
               usageInfo.daily = {

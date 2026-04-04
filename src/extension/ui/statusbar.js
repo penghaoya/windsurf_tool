@@ -24,6 +24,8 @@ import { _getHourlyMsgCount, _isNearTierCap } from '../core/defense.js';
 import { _getOpusMsgCount, _readCurrentModelUid } from '../core/model.js';
 import { _getActiveWindowCount } from '../core/window.js';
 
+let _lastTooltipFingerprint = '';
+
 export function _updatePoolBar() {
   if (!S.statusBar || !S.am) return;
   const accounts = S.am.getAll();
@@ -83,6 +85,12 @@ export function _updatePoolBar() {
   const vel = _getVelocity();
   const hourlyCount = _getHourlyMsgCount();
   const currentModel = S.currentModelUid || _readCurrentModelUid();
+
+  // Tooltip fingerprint: skip rebuild if data unchanged (avoid MarkdownString churn in boost mode)
+  const opusCount = (isOpusModel(currentModel) && S.activeIndex >= 0) ? _getOpusMsgCount(S.activeIndex) : -1;
+  const fp = `${S.activeIndex}|${pool.available}|${pool.total}|${pool.depleted}|${pool.rateLimited}|${pool.expired}|${pool.avgDaily}|${pool.avgWeekly}|${pool.avgEffective}|${pool.urgentCount}|${vel.toFixed(1)}|${hourlyCount}|${slopeInfo}|${S.switchCount}|${winCount}|${S.cascadeTabCount}|${S.burstMode}|${currentModel}|${opusCount}|${lastCapacityResult?.messagesRemaining}|${lastCapacityResult?.hasCapacity}|${probeFailCount}|${S.capacityProbeCount}|${mode}|${threshold}`;
+  if (fp === _lastTooltipFingerprint) return;
+  _lastTooltipFingerprint = fp;
 
   const md = new vscode.MarkdownString('', true);
   md.isTrusted = true;
@@ -181,7 +189,6 @@ export function _updatePoolBar() {
     L('---');
     L('**防御状态**');
     if (isOpusModel(currentModel) && S.activeIndex >= 0) {
-      const opusCount = _getOpusMsgCount(S.activeIndex);
       const tier = _getPlanTier(S.activeIndex);
       const tierBudget = getModelBudgetForTier(currentModel, tier);
       const tierLabel = isThinking1MModel(currentModel)

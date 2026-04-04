@@ -11,7 +11,7 @@ import {
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, OPUS_VARIANTS, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR,
-  isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget,
+  isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK, isTierFree,
 } from '../shared/config.js';
 import {
@@ -304,6 +304,7 @@ export async function _performSwitch(context, {
       if (result.status === 'fulfilled' && result.value.ok) {
         const switched = await _seamlessSwitch(context, result.value.candidate.index);
         if (switched) return { ok: true, index: result.value.candidate.index, candidate: result.value.candidate };
+        _logWarn('切换', `预热成功但切换失败 #${result.value.candidate.index + 1} (switching=${S.switching}, active=${S.activeIndex})`);
       } else if (result.status === 'fulfilled') {
         const v = result.value;
         _logWarn('切换', `预热跳过 #${v.candidate.index + 1}: ${v.reason}${v.remaining !== null ? ` (${v.remaining}%≤${threshold}%)` : ''}`);
@@ -377,7 +378,7 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
     const currentModel = _readCurrentModelUid();
     if (isOpusModel(currentModel) && S.downgradeLockUntil <= Date.now() && _isNearOpusBudget(S.activeIndex)) {
       const opusCount = _getOpusMsgCount(S.activeIndex);
-      const tierBudget = getModelBudget(currentModel);
+      const tierBudget = getModelBudgetForTier(currentModel, _getPlanTier(S.activeIndex));
       decision.action = 'switch_account';
       decision.reason = `opus_budget_guard(model=${currentModel},msgs=${opusCount}/${tierBudget},tier=${isThinking1MModel(currentModel) ? 'T1M' : isThinkingModel(currentModel) ? 'T' : 'R'})`;
       return decision;
@@ -464,6 +465,8 @@ export async function _seamlessSwitch(context, targetIndex) {
     _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
     _resetOpusMsgLog(targetIndex);
     _heartbeatWindow();
+    // 持久化activeIndex,崩溃恢复时不会回退到旧账号
+    if (context?.globalState) context.globalState.update('wam-current-index', targetIndex);
     _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
     return true;
   } catch (e) {
@@ -575,7 +578,7 @@ async function _poolTick(context) {
           _trackOpusMsg(S.activeIndex);
         }
         const opusCount = _getOpusMsgCount(S.activeIndex);
-        const tierBudget = getModelBudget(currentModel);
+        const tierBudget = getModelBudgetForTier(currentModel, _getPlanTier(S.activeIndex));
         const tierLabel = isThinking1MModel(currentModel) ? 'Thinking-1M' : isThinkingModel(currentModel) ? 'Thinking' : 'Regular';
         _logInfo('Opus守卫', `#${S.activeIndex + 1} 已发${opusCount}/${tierBudget}条 (${tierLabel})${l5RecentlyTracked ? ' (L5已追踪)' : ''}${opusCount >= tierBudget ? ' → 达到预算上限,即将切号!' : ''}`);
       }
@@ -668,7 +671,7 @@ async function _poolTick(context) {
         if (decision.reason.startsWith('opus_budget_guard')) {
           const currentModel = _readCurrentModelUid();
           const opusCount = _getOpusMsgCount(S.activeIndex);
-          const tierBudget = getModelBudget(currentModel);
+          const tierBudget = getModelBudgetForTier(currentModel, _getPlanTier(S.activeIndex));
           S.opusGuardSwitchCount++;
           const dynamicCooldown = _getOpusDynamicCooldown(S.activeIndex);
           for (const variant of OPUS_VARIANTS) {

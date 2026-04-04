@@ -31,9 +31,10 @@ windsurf-tools/
 │   │   ├── services/           # 业务服务
 │   │   │   ├── account.js      # 账号 CRUD + 持久化 + 限流标记
 │   │   │   ├── accountSelector.js # 候选排序 + 优先级策略
-│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + gRPC
+│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + gRPC + 网络层
 │   │   │   ├── authInjector.js # 四策略注入 + 指纹轮转
-│   │   │   └── fingerprint.js  # 设备指纹 6ID 读写
+│   │   │   ├── fingerprint.js  # 设备指纹 6ID 读写
+│   │   │   └── protobuf.js     # Protobuf 编解码 (纯函数, 从 auth.js 拆分)
 │   │   ├── infra/
 │   │   │   └── sqlite.js       # state.vscdb 读写 (node:sqlite DatabaseSync)
 │   │   ├── ui/
