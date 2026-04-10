@@ -394,7 +394,7 @@ class AuthService {
     return parts.join('');
   }
 
-  _httpsJson(url, method, body, useProxy) {
+  _httpsJson(url, method, body, useProxy, extraHeaders = {}) {
     return new Promise(async (resolve, reject) => {
       const _t0 = Date.now();
       const u = new URL(url);
@@ -405,11 +405,12 @@ class AuthService {
       else if (ACTIVE_MODE === 'relay') wantProxy = false;
       else wantProxy = this._needsProxy(u.hostname);
 
+      const hdrs = { 'Content-Type': 'application/json', ...extraHeaders };
+
       if (wantProxy) {
         try {
           const sock = await this._proxyTunnel(u.hostname);
-          const headers = { 'Content-Type': 'application/json' };
-          const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', headers, data);
+          const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
           _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms)`);
           try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(resp.bodyBuffer.toString('utf8')) }); }
           catch { resolve({ ok: resp.ok, status: resp.status, data: {} }); }
@@ -418,7 +419,7 @@ class AuthService {
         const agent = new https.Agent({ keepAlive: false });
         const req = https.request({
           hostname: u.hostname, port: 443, path: u.pathname + u.search,
-          method: method || 'GET', headers: { 'Content-Type': 'application/json' }, agent
+          method: method || 'GET', headers: hdrs, agent
         }, (res) => {
           let buf = '';
           res.on('data', c => buf += c);
@@ -524,6 +525,7 @@ class AuthService {
     }
 
     const payload = { returnSecureToken: true, email, password, clientType: 'CLIENT_TYPE_WEB' };
+    const fbHeaders = { Referer: 'https://windsurf.com/', Origin: 'https://windsurf.com' };
     const errors = [];
 
     if (ACTIVE_MODE === 'relay') {
@@ -543,7 +545,7 @@ class AuthService {
       for (const key of FIREBASE_KEYS) {
         try {
           const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`;
-          const r = await this._httpsJson(url, 'POST', payload, true);
+          const r = await this._httpsJson(url, 'POST', payload, true, fbHeaders);
           if (r.ok && r.data.idToken) {
             this._setCachedToken(email, r.data.idToken);
             _info('登录', `${_emailPrefix} → firebase-proxy (${Date.now() - _t0}ms)`);
@@ -557,7 +559,7 @@ class AuthService {
       for (const key of FIREBASE_KEYS) {
         try {
           const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`;
-          const r = await this._httpsJson(url, 'POST', payload);
+          const r = await this._httpsJson(url, 'POST', payload, undefined, fbHeaders);
           if (r.ok && r.data.idToken) {
             this._setCachedToken(email, r.data.idToken);
             _info('登录', `${_emailPrefix} → firebase-local (${Date.now() - _t0}ms)`);
