@@ -44,6 +44,7 @@ import {
   _logError,
   _refreshPanel,
 } from './core/state.js';
+import { L5_ENABLED } from './shared/config.js';
 import {
   _deregisterWindow,
   _getActiveWindowCount,
@@ -252,7 +253,7 @@ function _activate(context) {
   );
   _logInfo(
     "启动",
-    `检测层: L1=上下文键(2s) L3=缓存配额(10s) L5=gRPC探测(Thinking:3s/加速:15s/正常:45s) | Trial防御+模型降级`,
+    `检测层: L1=上下文键(2s) L3=缓存配额(10s)${L5_ENABLED ? ' L5=gRPC探测(Thinking:3s/加速:15s/正常:45s)' : ' L5=已禁用'} | Trial防御+模型降级`,
   );
 }
 

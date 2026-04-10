@@ -13,7 +13,7 @@ import {
   SONNET_FALLBACK, CAPACITY_CHECK_INTERVAL, CAPACITY_CHECK_FAST,
   CAPACITY_CHECK_THINKING, CAPACITY_PREEMPT_REMAINING, APIKEY_CACHE_TTL,
   L5_NODATA_SLOWDOWN_AFTER, L5_NODATA_MAX_INTERVAL, RATE_LIMIT_CONTEXTS,
-  isOpusModel, getModelBudget, getModelVariants,
+  L5_ENABLED, isOpusModel, getModelBudget, getModelVariants,
 } from '../shared/config.js';
 import {
   S, deps, _getAccountRuntime, _getCapacityState,
@@ -567,6 +567,10 @@ export function _startQuotaWatcher(context) {
     const isThinking = isOpusModel(modelUid) && /thinking/i.test(modelUid);
     const capacityState = _getCapacityState();
     if (!capacityState) return;
+
+    // L5 gRPC 探测 (Proto schema 变更时可通过 L5_ENABLED 开关禁用)
+    if (!L5_ENABLED) return;
+
     let interval = isThinking ? CAPACITY_CHECK_THINKING
       : (_isBoost() || S.burstMode) ? CAPACITY_CHECK_FAST : CAPACITY_CHECK_INTERVAL;
     const noDataCount = capacityState.consecutiveNoData || 0;
@@ -617,6 +621,6 @@ export function _startQuotaWatcher(context) {
 
   _logInfo(
     "检测层",
-    `已启动: L1=上下文键监听(${RATE_LIMIT_CONTEXTS.length}个键,每2s) | L3=缓存配额监控(每${S.burstMode ? '5' : '10'}s) | L5=gRPC容量探测(Thinking:${CAPACITY_CHECK_THINKING/1000}s/加速:${CAPACITY_CHECK_FAST/1000}s/正常:${CAPACITY_CHECK_INTERVAL/1000}s) | 防抖:${S.burstMode ? '2' : '5'}s`,
+    `已启动: L1=上下文键监听(${RATE_LIMIT_CONTEXTS.length}个键,每2s) | L3=缓存配额监控(每${S.burstMode ? '5' : '10'}s)${L5_ENABLED ? ` | L5=gRPC容量探测(Thinking:${CAPACITY_CHECK_THINKING/1000}s/加速:${CAPACITY_CHECK_FAST/1000}s/正常:${CAPACITY_CHECK_INTERVAL/1000}s)` : ' | L5=已禁用(Proto schema变更)'} | 防抖:${S.burstMode ? '2' : '5'}s`,
   );
 }

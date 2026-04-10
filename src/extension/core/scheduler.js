@@ -13,6 +13,7 @@ import {
   MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR, PREHEAT_FRESHNESS_TTL, PREHEAT_TIMEOUT,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK, isTierFree,
+  L5_ENABLED,
 } from '../shared/config.js';
 import {
   S, schedulerState, deps, _getAccountRuntime, _getCapacityState,
@@ -345,27 +346,30 @@ export async function _performSwitch(context, {
 
 export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
   const decision = { action: 'none', reason: 'ok', cooldown: null, targetPolicy: 'same_strategy' };
-  const capacity = _getCapacityState(S.activeIndex, false);
-  const lastCapacityResult = capacity?.lastResult || null;
-  const lastCapacityCheck = capacity?.lastCheck || 0;
-  const realMaxMessages = capacity?.realMaxMessages ?? -1;
-  const l5Valid = lastCapacityResult &&
-    lastCapacityResult.messagesRemaining >= 0 &&
-    (Date.now() - lastCapacityCheck < 120000);
 
-  if (l5Valid && !lastCapacityResult.hasCapacity) {
-    decision.action = 'switch_account';
-    decision.reason = `L5_no_capacity(remaining=${lastCapacityResult.messagesRemaining}/${lastCapacityResult.maxMessages},resets=${lastCapacityResult.resetsInSeconds}s)`;
-    return decision;
-  }
+  // Tier 1: L5 gRPC 容量探测 (Proto schema 变更时由 L5_ENABLED 开关禁用)
+  if (L5_ENABLED) {
+    const capacity = _getCapacityState(S.activeIndex, false);
+    const lastCapacityResult = capacity?.lastResult || null;
+    const lastCapacityCheck = capacity?.lastCheck || 0;
+    const l5Valid = lastCapacityResult &&
+      lastCapacityResult.messagesRemaining >= 0 &&
+      (Date.now() - lastCapacityCheck < 120000);
 
-  if (l5Valid && lastCapacityResult.hasCapacity) {
-    const capMax = lastCapacityResult.maxMessages > 0 ? lastCapacityResult.maxMessages : TIER_MSG_CAP_ESTIMATE;
-    const capRem = lastCapacityResult.messagesRemaining;
-    if (capRem <= 2 || (capMax > 0 && capRem <= capMax * 0.2)) {
+    if (l5Valid && !lastCapacityResult.hasCapacity) {
       decision.action = 'switch_account';
-      decision.reason = `L5_capacity_low(remaining=${capRem}/${capMax},resets=${lastCapacityResult.resetsInSeconds}s)`;
+      decision.reason = `L5_no_capacity(remaining=${lastCapacityResult.messagesRemaining}/${lastCapacityResult.maxMessages},resets=${lastCapacityResult.resetsInSeconds}s)`;
       return decision;
+    }
+
+    if (l5Valid && lastCapacityResult.hasCapacity) {
+      const capMax = lastCapacityResult.maxMessages > 0 ? lastCapacityResult.maxMessages : TIER_MSG_CAP_ESTIMATE;
+      const capRem = lastCapacityResult.messagesRemaining;
+      if (capRem <= 2 || (capMax > 0 && capRem <= capMax * 0.2)) {
+        decision.action = 'switch_account';
+        decision.reason = `L5_capacity_low(remaining=${capRem}/${capMax},resets=${lastCapacityResult.resetsInSeconds}s)`;
+        return decision;
+      }
     }
   }
 
@@ -411,7 +415,12 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
     }
   }
 
-  if (!l5Valid) {
+  // Tier 3: 启发式降级 (L5无效或禁用时生效)
+  const l5Active = L5_ENABLED && (() => {
+    const cap = _getCapacityState(S.activeIndex, false);
+    return cap?.lastResult && cap.lastResult.messagesRemaining >= 0 && (Date.now() - (cap.lastCheck || 0) < 120000);
+  })();
+  if (!l5Active) {
     if (curQuota !== null && curQuota > threshold) {
       const predicted = _slopePredict();
       if (predicted !== null && predicted <= threshold) {
@@ -440,9 +449,8 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
       return decision;
     }
     if (curQuota !== null && curQuota > threshold && _isNearTierCap()) {
-      const effectiveCap = realMaxMessages > 0 ? realMaxMessages : TIER_MSG_CAP_ESTIMATE;
       decision.action = 'switch_account';
-      decision.reason = `fallback_tier_cap(hourly=${_getHourlyMsgCount()}/${effectiveCap})`;
+      decision.reason = `fallback_tier_cap(hourly=${_getHourlyMsgCount()}/${TIER_MSG_CAP_ESTIMATE})`;
       return decision;
     }
   }

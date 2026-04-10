@@ -115,6 +115,7 @@ export const OPUS_COOLDOWN_DEFAULT = 1500;
 export const CAPACITY_CHECK_THINKING = 3000;
 
 // ═══ L5容量探测 ═══
+export const L5_ENABLED = false;  // gRPC CheckUserMessageRateLimit (Proto schema 已变更, 服务端返回400, 暂禁用)
 export const CAPACITY_CHECK_INTERVAL = 45000;
 export const CAPACITY_CHECK_FAST = 15000;
 export const CAPACITY_PREEMPT_REMAINING = 2;
