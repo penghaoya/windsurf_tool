@@ -24,6 +24,7 @@ class AccountManager {
     this._rateLimitHitCount = new Map(); // email → consecutive hit count, 指数退避
     this._discoveredPaths = []; // Auto-discovered paths (also written to on save to prevent stale merges)
     this._isolated = !!(options && options.isolated); // test isolation — skip persistent paths + discovery
+    this._saveTimer = null; // debounce timer for _save
     this._init(storagePath);
   }
 
@@ -173,15 +174,43 @@ class AccountManager {
     const deduped = before - this._accounts.length;
     if (deduped > 0) console.log(`WAM: [去重] 已移除${deduped}个重复账号`);
 
-    if (merged > 0 || deduped > 0) {
+    // Migration: strip deprecated fields from loaded data
+    let migrated = false;
+    for (const a of this._accounts) {
+      if (a.creditHistory) { delete a.creditHistory; migrated = true; }
+      if (a.lastChecked !== undefined) { delete a.lastChecked; migrated = true; }
+      if (a.usage) {
+        if (a.usage.credits !== undefined) { delete a.usage.credits; migrated = true; }
+        if (a.usage.maxPremiumMessages !== undefined) { delete a.usage.maxPremiumMessages; migrated = true; }
+        if (a.usage.gracePeriodEnd !== undefined) { delete a.usage.gracePeriodEnd; migrated = true; }
+        if (a.usage.gracePeriodStatus !== undefined) { delete a.usage.gracePeriodStatus; migrated = true; }
+      }
+    }
+
+    if (merged > 0 || deduped > 0 || migrated) {
       console.log(`WAM: [合并] 从持久化存储恢复${merged}个账号! 总计: ${this._accounts.length}`);
-      this._save(); // Persist the merged result to all locations
+      this._saveNow(); // Persist the merged result to all locations (immediate, not debounced)
     } else {
       console.log(`WAM: [加载] 已加载${this._accounts.length}个账号`);
     }
   }
 
+  /** Debounced save — coalesces rapid writes within 300ms */
   _save() {
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._saveNow(); }, 300);
+  }
+
+  /** Flush pending save immediately (call on dispose / critical ops) */
+  _flushSave() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+      this._saveNow();
+    }
+  }
+
+  _saveNow() {
     const json = JSON.stringify(this._accounts, null, 2);
     // Write to primary (extension storage)
     try {
@@ -276,20 +305,8 @@ class AccountManager {
     if (u && u.daily && u.mode !== 'quota') {
       u.daily.remaining = credits;
     }
-    this._pushCreditHistory(index, credits);
     this._save();
     this._notify();
-  }
-
-  /** Track last 5 credit readings for trend display */
-  _pushCreditHistory(index, value) {
-    if (value == null || index < 0 || index >= this._accounts.length) return;
-    const a = this._accounts[index];
-    if (!a.creditHistory) a.creditHistory = [];
-    const last = a.creditHistory[a.creditHistory.length - 1];
-    if (last && last.val === value && (Date.now() - last.ts) < 60000) return; // skip duplicate within 1min
-    a.creditHistory.push({ ts: Date.now(), val: value });
-    if (a.creditHistory.length > 5) a.creditHistory.shift();
   }
 
   /** Update comprehensive usage info (v6.9: + planStart/planEnd/gracePeriod for official alignment) */
@@ -299,18 +316,14 @@ class AccountManager {
     a.usage = {
       mode: usageInfo.mode || 'unknown',
       billingStrategy: usageInfo.billingStrategy || null,
-      credits: usageInfo.credits,
       daily: usageInfo.daily || null,
       weekly: usageInfo.weekly || null,
       plan: usageInfo.plan || null,
-      maxPremiumMessages: usageInfo.maxPremiumMessages || null,
       resetTime: usageInfo.resetTime || null,
       weeklyReset: usageInfo.weeklyReset || null,
       extraBalance: usageInfo.extraBalance || null,
       planStart: usageInfo.planStart || a.usage?.planStart || null,
       planEnd: usageInfo.planEnd || a.usage?.planEnd || null,
-      gracePeriodEnd: usageInfo.gracePeriodEnd || null,
-      gracePeriodStatus: usageInfo.gracePeriodStatus || null,
       lastChecked: Date.now(),
     };
     // v7.4: Estimate planEnd for Trial accounts if only planStart is known
@@ -323,7 +336,6 @@ class AccountManager {
     // Keep legacy credits field in sync
     if (usageInfo.credits !== null && usageInfo.credits !== undefined) {
       a.credits = usageInfo.credits;
-      this._pushCreditHistory(index, usageInfo.credits);
     }
     this._save();
     this._notify();
@@ -406,93 +418,6 @@ class AccountManager {
       return 'credits';
     }
     return 'unknown';
-  }
-
-  // ═══ v14.1 价值最大化排序 — 到期近+额度高 = 最优先 ═══
-  //
-  // 核心原则: 优先使用“即将过期且额度充足”的账号
-  //   → 过期天数少 = 紧迫, 不用就浪费
-  //   → 额度高 = 能榨取更多价值
-  //   → 综合两者: 最大化“过期前能用掉的额度”
-  //
-  // 排序优先级 (Quota模式, 7级):
-  //   T1: 过期紧急度 (urgent≤3d > soon≤7d > safe>7d)
-  //   T2: 额度高优先 (差>15%时生效, 最大化价值榨取)
-  //   T3: 周额度高优先 (差>15%时生效, 更多周内可用容量)
-  //   T4: 周重置更近优先 (>1h差异, 即将重置的先用)
-  //   T5: 过期更近优先 (天数少的先用)
-  //   T6: Round-Robin均匀消耗 (最久未用优先)
-  //   T7: 日重置更近优先 (最终兜底)
-  _sortQuotaCandidates(a, b) {
-    // === T1: 过期紧急度 (urgent先用, 避免到期浪费) ===
-    const aUrg = a.urgency < 0 ? 2 : a.urgency;
-    const bUrg = b.urgency < 0 ? 2 : b.urgency;
-    if (aUrg !== bUrg) return aUrg - bUrg;
-
-    // === T2: 额度高的优先 (最大化过期前能榨取的价值) ===
-    const maxRem = Math.max(a.remaining, b.remaining);
-    const remSimilar = maxRem > 0 && Math.abs(a.remaining - b.remaining) <= maxRem * 0.15;
-    if (!remSimilar && a.remaining !== b.remaining) {
-      return b.remaining - a.remaining; // higher remaining first
-    }
-
-    // === T3: 周额度高的优先 (更多周内可用容量) ===
-    const aWeekly = a.weeklyRemaining ?? a.remaining;
-    const bWeekly = b.weeklyRemaining ?? b.remaining;
-    if (aWeekly !== bWeekly) {
-      const weeklyMax = Math.max(aWeekly, bWeekly);
-      const weeklySimilar = weeklyMax > 0 && Math.abs(aWeekly - bWeekly) <= weeklyMax * 0.15;
-      if (!weeklySimilar) return bWeekly - aWeekly; // higher weekly first
-    }
-
-    // === T4: 周重置更近的优先 (即将重置的先用) ===
-    if (a.weeklyResetProximity !== b.weeklyResetProximity) {
-      const wDiff = a.weeklyResetProximity - b.weeklyResetProximity;
-      if (Math.abs(wDiff) > 3600000) return wDiff < 0 ? -1 : 1; // >1h差异
-    }
-
-    // === T5: 过期更近的优先 ===
-    const aDays = a.planDays ?? 999;
-    const bDays = b.planDays ?? 999;
-    if (aDays !== bDays) return aDays - bDays;
-
-    // === T6: Round-Robin均匀消耗 ===
-    if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
-
-    // === T7: 日重置更近优先 ===
-    return a.resetProximity - b.resetProximity;
-  }
-
-  // Credits模式: 到期近+额度高优先 → Round-Robin
-  _sortCreditsCandidates(a, b) {
-    // T1: 过期紧急度
-    const aUrg = a.urgency < 0 ? 2 : a.urgency;
-    const bUrg = b.urgency < 0 ? 2 : b.urgency;
-    if (aUrg !== bUrg) return aUrg - bUrg;
-    // T2: 额度高优先 (最大化价值榨取)
-    if (a.remaining !== null && b.remaining !== null && a.remaining !== b.remaining) {
-      return b.remaining - a.remaining; // higher first
-    }
-    // T3: 过期更近优先
-    const aDays = a.planDays ?? 999;
-    const bDays = b.planDays ?? 999;
-    if (aDays !== bDays) return aDays - bDays;
-    // T4: Round-Robin
-    return a.lastUsed - b.lastUsed;
-  }
-
-  _sortUnknownCandidates(a, b) {
-    const aDays = a.planDays ?? 999;
-    const bDays = b.planDays ?? 999;
-    if (aDays !== bDays) return aDays - bDays;
-    return a.lastUsed - b.lastUsed;
-  }
-
-  _sortCandidatesByMode(candidates, mode) {
-    const arr = [...candidates];
-    if (mode === 'quota') return arr.sort((a, b) => this._sortQuotaCandidates(a, b));
-    if (mode === 'credits') return arr.sort((a, b) => this._sortCreditsCandidates(a, b));
-    return arr.sort((a, b) => this._sortUnknownCandidates(a, b));
   }
 
   /** Get detected usage mode across all accounts ('quota'|'credits'|'mixed'|'unknown') */
@@ -615,10 +540,8 @@ class AccountManager {
     return this._accounts.map(a => ({
       email: a.email, password: a.password, credits: a.credits,
       loginCount: a.loginCount || 0, addedAt: a.addedAt || Date.now(),
-      lastChecked: a.lastChecked || 0,
       rateLimit: a.rateLimit || null,
       usage: a.usage || null,
-      creditHistory: a.creditHistory || [],
       fingerprint: a.fingerprint || null
     }));
   }
@@ -658,8 +581,7 @@ class AccountManager {
       if (idx < 0) {
         const newAccount = {
           email: ext.email, password: ext.password, credits: ext.credits,
-          loginCount: ext.loginCount || 0, addedAt: ext.addedAt || Date.now(),
-          lastChecked: ext.lastChecked || 0
+          loginCount: ext.loginCount || 0, addedAt: ext.addedAt || Date.now()
         };
         if (ext.rateLimit && ext.rateLimit.until > Date.now()) {
           newAccount.rateLimit = ext.rateLimit;
@@ -671,9 +593,10 @@ class AccountManager {
         const local = this._accounts[idx];
         let changed = false;
         // Update credits if remote has fresher data
-        if (ext.credits !== undefined && ext.lastChecked > (local.lastChecked || 0)) {
+        const extChecked = ext.usage?.lastChecked || ext.lastChecked || 0;
+        const localChecked = local.usage?.lastChecked || local.lastChecked || 0;
+        if (ext.credits !== undefined && extChecked > localChecked) {
           local.credits = ext.credits;
-          local.lastChecked = ext.lastChecked;
           changed = true;
         }
         // Update password if remote has one and it differs
@@ -1174,6 +1097,7 @@ class AccountManager {
   }
 
   dispose() {
+    this._flushSave();
     this.stopWatching();
     this._listeners = [];
   }
