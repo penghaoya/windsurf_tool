@@ -886,7 +886,6 @@ class AuthService {
   static CHECK_RATE_LIMIT_URLS = [
     'https://server.codeium.com/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit',
     'https://web-backend.windsurf.com/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit',
-    'https://server.codeium.com/exa.language_server_pb.LanguageServerService/CheckUserMessageRateLimit',
   ];
 
   /**
@@ -920,13 +919,13 @@ class AuthService {
    * @param {string} apiKey - Session apiKey (from windsurfAuthStatus or RegisterUser)
    * @param {string} modelUid - Model UID (e.g. 'claude-opus-4-6-thinking-1m')
    */
-  async checkRateLimitCapacity(apiKey, modelUid) {
+  async checkRateLimitCapacity(apiKey, modelUid, { quiet = false } = {}) {
     if (!apiKey || !modelUid) return null;
     if (!PROXY_CHECKED) await this._probeProxy();
 
     const reqData = this._encodeCheckRateLimitRequest(apiKey, modelUid);
 
-    // Try direct endpoints first (via proxy if needed)
+    // Try direct endpoints (via proxy if needed)
     for (const url of AuthService.CHECK_RATE_LIMIT_URLS) {
       try {
         const resp = await this._httpsBinary(url, 'POST', reqData);
@@ -935,27 +934,17 @@ class AuthService {
           _info('L5探测', `hasCapacity=${result.hasCapacity} remaining=${result.messagesRemaining}/${result.maxMessages} resets=${result.resetsInSeconds}s msg="${result.message}" (via ${new URL(url).hostname})`);
           return result;
         }
-        // Non-200 but got response — might be error body
-        if (resp.buffer && resp.buffer.length > 0) {
+        // Non-200 — log only when not in quiet (backoff) mode
+        if (!quiet && resp.buffer && resp.buffer.length > 0) {
           try {
             const errText = resp.buffer.toString('utf8');
             _warn('L5探测', `non-ok response (${resp.status}): ${errText.substring(0, 200)}`);
           } catch {}
         }
       } catch (e) {
-        _warn('L5探测', `${new URL(url).hostname} error: ${e.message}`);
+        if (!quiet) _warn('L5探测', `${new URL(url).hostname} error: ${e.message}`);
       }
     }
-
-    // 多Relay降级 — 自建→第三方
-    try {
-      const resp = await this._tryRelaysBinary('/windsurf/check-rate-limit', reqData);
-      if (resp && resp.buffer && resp.buffer.length > 0) {
-        const result = this._parseCheckRateLimitResponse(resp.buffer);
-        _info('L5探测', `hasCapacity=${result.hasCapacity} remaining=${result.messagesRemaining}/${result.maxMessages} (via relay)`);
-        return result;
-      }
-    } catch {}
 
     return null;
   }

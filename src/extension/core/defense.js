@@ -233,8 +233,14 @@ export async function _probeCapacity() {
   const capacityState = _getCapacityState();
   if (!capacityState) return null;
 
-  if (capacityState.failCount >= 5) {
-    if (Date.now() - capacityState.lastCheck < 60000) return capacityState.lastResult;
+  // 指数退避: 5次失败→60s, 10次→120s, 20次→300s, 30次+→600s
+  const fc = capacityState.failCount || 0;
+  const quiet = fc >= 5;
+  if (fc >= 5) {
+    const backoff = fc >= 30 ? 600000 : fc >= 20 ? 300000 : fc >= 10 ? 120000 : 60000;
+    if (Date.now() - capacityState.lastCheck < backoff) return capacityState.lastResult;
+    // 每 10 次长间隔探测时输出一条汇总
+    if (fc % 10 === 0) _logWarn('L5探测', `连续${fc}次失败, 退避间隔${backoff / 1000}s (Proto schema可能已变更)`);
   }
 
   const apiKey = _getCachedApiKey();
@@ -250,7 +256,7 @@ export async function _probeCapacity() {
   S.capacityProbeCount++;
 
   try {
-    const result = await S.auth.checkRateLimitCapacity(apiKey, modelUid);
+    const result = await S.auth.checkRateLimitCapacity(apiKey, modelUid, { quiet });
     if (result) {
       const hasUsefulData = result.messagesRemaining >= 0 || result.maxMessages >= 0 || !result.hasCapacity;
       if (hasUsefulData) {
