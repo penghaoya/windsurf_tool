@@ -10,7 +10,7 @@ import {
   FULL_SCAN_INTERVAL_BURST, REACTIVE_SWITCH_CD, UFEF_COOLDOWN,
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, OPUS_VARIANTS, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
-  MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR,
+  MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR, PREHEAT_FRESHNESS_TTL, PREHEAT_TIMEOUT,
   isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK, isTierFree,
 } from '../shared/config.js';
@@ -229,10 +229,18 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
     return { ok: false, remaining: null, reason: 'trial_pool_cooldown' };
   }
   try {
-    await Promise.race([
-      deps.refreshOne(targetIndex),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), 5000)),
-    ]);
+    // v19.1: 数据新鲜度跳过 — 全池扫描刚刷过的账号不再重复网络请求
+    const account = S.am.get(targetIndex);
+    const lastChecked = account?.usage?.lastChecked || 0;
+    const dataFresh = (Date.now() - lastChecked) < PREHEAT_FRESHNESS_TTL;
+    if (dataFresh) {
+      _logInfo('预热', `#${targetIndex + 1} 数据新鲜(${Math.round((Date.now() - lastChecked) / 1000)}s前刷新), 跳过网络请求`);
+    } else {
+      await Promise.race([
+        deps.refreshOne(targetIndex),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), PREHEAT_TIMEOUT)),
+      ]);
+    }
     if (S.am.isRateLimited(targetIndex)) {
       return { ok: false, remaining: null, reason: 'rate_limited' };
     }
@@ -244,7 +252,7 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
     if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) {
       return { ok: false, remaining: dailyRem, reason: `daily_quota_floor(${dailyRem}%≤${MIN_DAILY_QUOTA_FOR_SWITCH}%)` };
     }
-    return { ok: true, remaining };
+    return { ok: true, remaining, cached: dataFresh };
   } catch (e) {
     return { ok: false, remaining: null, reason: e.message };
   }

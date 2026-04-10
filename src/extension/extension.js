@@ -134,6 +134,10 @@ function _activate(context) {
   const storagePath = context.globalStorageUri.fsPath;
   S.am = new AccountManager(storagePath);
   S.auth = new AuthService(storagePath);
+  S.auth.setLogger(
+    (tag, msg) => _logInfo(tag, msg),
+    (tag, msg) => _logWarn(tag, msg),
+  );
   S.am.startWatching();
 
   // ═══ 状态栏：号池视图 ═══
