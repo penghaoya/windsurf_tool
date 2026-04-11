@@ -19,8 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import {
-  readVarint, encodeVarintBuf, parseProtoMsg, parseProtoString,
-  encodeProtoString, parseCredits, parseUsageInfo,
+  parseProtoString, encodeProtoString, parseUsageInfo,
   encodeCheckRateLimitRequest, parseCheckRateLimitResponse,
 } from './protobuf.js';
 import net from 'net';
@@ -38,8 +37,6 @@ const RELAYS = [
   'https://aiotvr.xyz/wam',   // 自建阿里云中转 (笔记本CFW代理)
   'https://168666okfa.xyz',    // 第三方中转 (备选)
 ];
-const RELAY = RELAYS[0];
-
 // Windsurf gRPC endpoints (Connect-RPC over HTTPS)
 const PLAN_STATUS_URLS = [
   'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
@@ -585,15 +582,6 @@ class AuthService {
     return { ok: false, error: errors.join(' | ') || 'All login channels failed' };
   }
 
-  // ========== Protobuf Encoding/Decoding (delegated to protobuf.js) ==========
-
-  _encodeProtoString(value, fieldNumber = 1) { return encodeProtoString(value, fieldNumber); }
-  _readVarint(data, pos) { return readVarint(data, pos); }
-  _parseCredits(buf) { return parseCredits(buf); }
-  _parseProtoString(buf) { return parseProtoString(buf); }
-  _parseProtoMsg(buf) { return parseProtoMsg(buf); }
-  _parseUsageInfo(buf) { return parseUsageInfo(buf); }
-
   // ========== Usage Info Query (adaptive: credits + quota) ==========
 
   /**
@@ -607,7 +595,7 @@ class AuthService {
     if (!loginResult.ok) { _warn('额度', `${_emailPrefix} → login failed (${Date.now() - _t0}ms)`); return null; }
     const _t1 = Date.now();
 
-    const reqData = this._encodeProtoString(loginResult.idToken);
+    const reqData = encodeProtoString(loginResult.idToken);
     let resp = await this._fetchPlanStatus(reqData);
 
     if (!resp && loginResult.cached) {
@@ -615,13 +603,13 @@ class AuthService {
       this.clearTokenCache(email);
       const fresh = await this.login(email, password, true);
       if (fresh.ok) {
-        const freshReq = this._encodeProtoString(fresh.idToken);
+        const freshReq = encodeProtoString(fresh.idToken);
         resp = await this._fetchPlanStatus(freshReq);
       }
     }
 
     if (!resp) { _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`); return null; }
-    const result = this._parseUsageInfo(resp.buffer);
+    const result = parseUsageInfo(resp.buffer);
     _info('额度', `${_emailPrefix} → ${result?.mode || '?'} daily=${result?.daily?.remaining ?? '?'}% weekly=${result?.weekly?.remaining ?? '?'}% (${Date.now() - _t0}ms, login=${_t1 - _t0}ms, plan=${Date.now() - _t1}ms)`);
     return result;
   }
@@ -639,36 +627,13 @@ class AuthService {
     return resp;
   }
 
-  // ========== Credits Query (legacy, backward-compatible) ==========
-
-  async getCredits(email, password) {
-    const loginResult = await this.login(email, password);
-    if (!loginResult.ok) return undefined;
-
-    const reqData = this._encodeProtoString(loginResult.idToken);
-    let resp = await this._fetchPlanStatus(reqData);
-
-    // If cached token failed, retry with fresh login
-    if (!resp && loginResult.cached) {
-      this.clearTokenCache(email);
-      const fresh = await this.login(email, password, true);
-      if (fresh.ok) {
-        const freshReq = this._encodeProtoString(fresh.idToken);
-        resp = await this._fetchPlanStatus(freshReq);
-      }
-    }
-
-    if (!resp) return undefined;
-    return this._parseCredits(resp.buffer);
-  }
-
   // ========== RegisterUser → apiKey (for hot injection, mode-aware) ==========
 
   async registerUser(email, password) {
     const loginResult = await this.login(email, password, true);
     if (!loginResult.ok) return null;
 
-    const reqData = this._encodeProtoString(loginResult.idToken);
+    const reqData = encodeProtoString(loginResult.idToken);
     let resp = null;
 
     if (ACTIVE_MODE === 'relay') {
@@ -682,7 +647,7 @@ class AuthService {
     }
 
     if (!resp) return null;
-    const apiKey = this._parseProtoString(resp.buffer);
+    const apiKey = parseProtoString(resp.buffer);
     return apiKey ? { apiKey, email, idToken: loginResult.idToken } : null;
   }
 
@@ -696,13 +661,13 @@ class AuthService {
     const loginResult = await this.login(email, password, true);
     if (!loginResult.ok) return null;
 
-    const reqData = this._encodeProtoString(loginResult.idToken);
+    const reqData = encodeProtoString(loginResult.idToken);
     // v5.8.0: self-serve.windsurf.com removed from Windsurf 1.108.2
     // Try relay only (the only known working OneTimeAuthToken endpoint)
     const resp = await this._tryRelaysBinary('/windsurf/auth-token', reqData);
     if (!resp) return null;
 
-    return this._parseProtoString(resp.buffer);
+    return parseProtoString(resp.buffer);
   }
 
   /** v5.8.0: Get fresh firebase idToken for direct injection into Windsurf command.
@@ -907,10 +872,6 @@ class AuthService {
     }
   }
 
-  _encodeCheckRateLimitRequest(apiKey, modelUid) { return encodeCheckRateLimitRequest(apiKey, modelUid); }
-  _encodeVarintBuf(value) { return encodeVarintBuf(value); }
-  _parseCheckRateLimitResponse(buf) { return parseCheckRateLimitResponse(buf); }
-
   /**
    * Proactive Rate Limit Capacity Check
    * Calls CheckUserMessageRateLimit gRPC endpoint to get real-time capacity data.
@@ -923,14 +884,14 @@ class AuthService {
     if (!apiKey || !modelUid) return null;
     if (!PROXY_CHECKED) await this._probeProxy();
 
-    const reqData = this._encodeCheckRateLimitRequest(apiKey, modelUid);
+    const reqData = encodeCheckRateLimitRequest(apiKey, modelUid);
 
     // Try direct endpoints (via proxy if needed)
     for (const url of AuthService.CHECK_RATE_LIMIT_URLS) {
       try {
         const resp = await this._httpsBinary(url, 'POST', reqData);
         if (resp.ok && resp.buffer && resp.buffer.length > 0) {
-          const result = this._parseCheckRateLimitResponse(resp.buffer);
+          const result = parseCheckRateLimitResponse(resp.buffer);
           _info('L5探测', `hasCapacity=${result.hasCapacity} remaining=${result.messagesRemaining}/${result.maxMessages} resets=${result.resetsInSeconds}s msg="${result.message}" (via ${new URL(url).hostname})`);
           return result;
         }

@@ -29,9 +29,9 @@ windsurf-tools/
 │   │   │   ├── state.js        # 共享状态 + 运行时
 │   │   │   └── window.js       # 多窗口心跳 + 共享状态
 │   │   ├── services/           # 业务服务
-│   │   │   ├── account.js      # 账号 CRUD + 持久化 + 限流标记
+│   │   │   ├── account.js      # 账号 CRUD + 防抖持久化 + 限流标记
 │   │   │   ├── accountSelector.js # 候选排序 + 优先级策略
-│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + gRPC + 网络层
+│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + Protobuf查询 + 网络层
 │   │   │   ├── authInjector.js # 四策略注入 + 指纹轮转
 │   │   │   ├── fingerprint.js  # 设备指纹 6ID 读写
 │   │   │   └── protobuf.js     # Protobuf 编解码 (纯函数, 从 auth.js 拆分)
@@ -127,7 +127,7 @@ npm run install-ext     # 打包并安装到 IDE
 |------|------|
 | L1-L2 | Context Key 轮询 (quota 检测) |
 | L3-L4 | Context Key 轮询 (model/tier 限流) |
-| L5 | gRPC 容量主动探测 (CheckUserMessageRateLimit) |
+| L5 | gRPC 容量主动探测 — **当前已禁用** (`L5_ENABLED=false`) |
 | L6 | 斜率预测 (线性外推) |
 | L7 | 速度检测器 (120s 突变) |
 | L8 | Opus 消息预算守卫 |
@@ -142,7 +142,7 @@ npm run install-ext     # 打包并安装到 IDE
 _poolTick
  ├─ 响应式切换: 额度下降 → 切到快照中额度未变的“静止”账号
  ├─ evaluateActiveAccount() → decision
- │   ├─ Tier 1: L5 gRPC (L5-A 耗尽 / L5-B 预警)
+ │   ├─ Tier 1: L5 gRPC (**已禁用**, L5_ENABLED=false)
  │   ├─ Tier 2: 配额阈值
  │   │   ├─ T2-A: shouldSwitch (depleted/low/expired/rate_limited)
  │   │   ├─ T2-B: isRateLimited 直接检查
@@ -230,78 +230,88 @@ Credits 模式排序 (4级):
 
 ### 调度优化机制
 
-| 机制 | 说明 |
-|------|------|
-| UFEF 冷却 | 10min 冷却防止 safe↔urgent 频繁抖动 |
-| Round-Robin | 同紧急度+额度差≤10%时轮转, 均匀消耗 |
-| 指数退避 | 限流冷却 base×2^(n-1), 上限3600s, 恢复后归零 |
-| 并行预热 | Top-3候选并行预热(5s超时), worst case 5s vs 原15s (v16.0) |
-| 自适应扫描 | 全池扫描: normal 300s / boost 120s / burst 60s |
-| Trial 检测 | `global rate limit for trial users` → tier_cap 即时切号 |
-| NO_DATA 保守 | L5 返回 -1/-1 时 Trial 预估上限降至 15 条 |
-| 账号隔离 | 命中Trial限流的账号隔离1h, 候选过滤+预热拒绝 |
-| Trial池冷却 | 全局Trial限流时按模型族冷却整组Trial候选(20min) |
-| 模型降级 | 池冷却无候选时: Free→SWE-1.5(零消耗), 付费→Sonnet (v17.0) |
-| 降级锁 | 降级后120s内_readCurrentModelUid()不读DB, 防止覆盖回Opus |
-| 降级清理 | 降级成功后清Opus消息计数+per-model限流标记 |
-| 静默模式 | Trial池冷却+降级锁生效时跳过预防性轮转 |
-| 失败防抖 | Trial池冷却切换失败后60s内不重试 |
-| 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
-| 可配置阈值 | `wam.preemptiveThreshold` (默认15, 0-100) |
-| 动态Opus冷却 | L5 resetsInSeconds优先(≥300s), 固定1500s兜底 (v14.2) |
-| Opus预算过滤 | opus_budget_guard切号时过滤Opus预算已耗尽的Trial候选 (v14.2) |
-| 全池Opus检查 | 切号前统计可用Trial候选,无候选时主动降级Sonnet (v14.2) |
-| Opus切号兜底 | opus_budget_guard切号失败→降级Sonnet作为最后防线 (v14.2) |
-| 提前preempt | budget>1时提前1条触发(T=1条切,R=2条切),留buffer完成切号 (v14.2) |
-| L5 NO_DATA降频 | 连续≥5次NO_DATA后逐步拉长探测间隔(最高120s),减少无效网络请求 (v15.0) |
-| 降级恢复 | Trial池冷却过期+降级锁过期后自动恢复到降级前的Opus模型 (v15.0) |
-| Token精确过期 | JWT exp字段计算精确过期时间(提前2min buffer),替代固定50min TTL (v15.0) |
-| SQLite读缓存 | 1s TTL读副本缓存,同窗口内多次读操作复用同一copyFile副本 (v15.0) |
-| _refreshPanel防抖 | 50ms防抖合并频繁调用,减少Webview序列化开销 (v15.0) |
-| 模型Credit成本 | MODEL_CREDIT_COST: Opus T1M=10, T=5, R=3, Sonnet=1 (社区观测估算) (v16.0) |
-| 多层级Opus预算 | Max×10 > Pro/Teams×3 > Free×1 (getModelBudgetForTier) (v17.0) |
-| L5容量自适应 | 剩余≤ 2条:3s / ≤5:8s / ≤10:15s, 越少探测越频繁 (v16.0) |
-| Opus模型路由 | Opus请求时 Max前置 > Pro/Teams > Free后置 (层级感知路由) (v17.0) |
-| 并行预热 | Top-3候选Promise.allSettled并行探测, 切号延迟从15s→5s (v16.0) |
-| 多层级计划 | PLAN_TIERS: Free/Pro/Max/Teams/Enterprise, 层级感知阈值+降级+路由 (v17.0) |
-| 层级阈值 | Free=20% / Pro=15% / Max=8% 预防性切换阈值 (v17.0) |
-| SWE-1.5免费降级 | Free账号耗尽时降级到SWE-1.5(零quota消耗) (v17.0) |
-| 日额度地板 | 日额度≤5%的账号不作为切换候选 (MIN_DAILY_QUOTA_FOR_SWITCH) (v17.0) |
-| Proto3默认值修复 | 日额度0%在wire上被省略→现在正确识别为耗尽而非unknown (v19.0) |
-| 日额度耗尽UI | AccountCard灰显(opacity+grayscale)+💤badge, dailyDepleted标记推送 (v19.0) |
-| Opus预算日志一致 | evaluateActiveAccount/_poolTick统一用getModelBudgetForTier (v19.0) |
-| cachedPlanInfo校验 | _refreshOne中比对cached.email与account.email, 防止数据污染 (v19.0) |
-| activeIndex持久化 | _seamlessSwitch成功后globalState.update, 崩溃恢复不回退 (v19.0) |
-| Protobuf模块拆分 | 9个纯函数从auth.js提取到protobuf.js, auth.js瘦身~280行 (v19.0) |
-| tooltip缓存 | statusbar tooltip指纹比对, 数据不变时跳过MarkdownString重建 (v19.0) |
-| effectiveRemaining防御 | daily=null但weekly存在时返回0(非weekly值), 三层防御 (v19.0) |
-| Per-Account指纹 | 每个账号绑定唯一设备指纹, 切换时恢复而非随机生成 (v18.0) |
-| 切换频率控制 | MIN_SWITCH_INTERVAL=30s + MAX_SWITCHES_PER_HOUR=30 (v18.0) |
-| Timing Jitter | 注入前200-2200ms随机延迟, 降低时序规律性 (v18.0) |
-| 原子写入 | storage.json tmp+rename 防崩溃损坏 (v18.0) |
+**切换控制**
+- UFEF 冷却 10min 防 safe↔urgent 抖动; Round-Robin 同级额度差≤10%时轮转均匀消耗
+- 指数退避 base×2^(n-1) 上限3600s; 并行预热 Top-3 候选 5s 超时 (Promise.allSettled)
+- 自适应扫描频率: normal 300s / boost 120s / burst 60s
+- 日额度≤5% 不作为候选 (MIN_DAILY_QUOTA_FOR_SWITCH)
+- 可配置阈值 `wam.preemptiveThreshold` (默认15, 0-100)
 
-### Proto3 默认值修复 (v19.0)
+**Trial 防护**
+- Trial 限流检测 → 账号隔离 1h + Trial 池冷却 20min (按模型族)
+- 池冷却无候选 → 模型降级: Free→SWE-1.5(零消耗), 付费→Sonnet
+- 降级锁 120s 防覆盖 + 降级成功清 Opus 计数 + 静默模式跳过预防性轮转
+- 冷却+锁过期后自动恢复降级前 Opus 模型
 
-Protobuf3 不在 wire 上发送值为 0 的字段。当日额度 = 0% 时：
+**Opus 守卫**
+- 多层级预算: Max×10 > Pro/Teams×3 > Free×1 (getModelBudgetForTier)
+- 提前 preempt: budget>1 时提前 1 条触发, 留 buffer 完成切号
+- Opus 预算耗尽的 Trial 候选在切号时过滤; 全池无候选 → 降级 Sonnet 兜底
+- Opus 模型路由: Opus 请求时 Max 前置 > Pro/Teams > Free 后置
 
-```
-服务端 dailyPct=0 → Proto3省略字段 → dailyPct=undefined → result.daily=null
-  → effectiveRemaining 返回 weekly(15%) 而非 min(0,15%)=0
-  → getDailyRemaining 返回 null
-  → 所有 "dailyRem !== null && dailyRem <= 5" 检查被绕过
-  → 日额度耗尽的账号被错误选为候选 → 切换后中断
-```
+**防封控**
+- Per-Account 指纹绑定: 切换时恢复专属设备身份而非随机生成
+- 切换频率: MIN_SWITCH_INTERVAL=30s + MAX_SWITCHES_PER_HOUR=30
+- Timing Jitter: 注入前 200-2200ms 随机延迟; storage.json 原子写入 (tmp+rename)
 
-**三层修复**:
-1. **protobuf.js**: `parseUsageInfo` 中 billing=quota 且一维度存在时，缺失维度默认 0
-2. **account.js**: `effectiveRemaining` 中 daily=null+weekly 存在 → 返回 0
-3. **account.js**: `getDailyRemaining` 中 daily=null+weekly 存在 → 返回 0 (使过滤检查生效)
+**数据可靠性**
+- Proto3 默认值修复: 日额度 0% 被省略 → 三层防御正确识别为耗尽
+- cachedPlanInfo email 校验, 防止数据污染; activeIndex 持久化防崩溃回退
+- Token 精确过期 (JWT exp, 提前 2min buffer); SQLite 1s TTL 读副本缓存
+- 账号存储防抖 300ms 合并写入; _refreshPanel 50ms 防抖; tooltip 指纹缓存
 
-### 日额度耗尽 UI (v19.0)
+### Proto3 默认值修复
 
-- `webview.js`: enriched 数据新增 `dailyDepleted` 标记 (`getDailyRemaining(i) <= 5`)
-- `AccountCard.vue`: `.dep` class → `opacity: .35` + `grayscale(.6)` + 💤日额度耗尽 badge
-- 与限流(`.rl`)、隔离(`.blk`)、过期(`.exp`) 灰显风格一致
+Proto3 不发送值为 0 的字段。日额度 = 0% 时 `dailyPct=undefined` → 三层防御:
+1. `protobuf.js`: billing=quota 且一维度存在时，缺失维度默认 0
+2. `account.js`: `effectiveRemaining` / `getDailyRemaining` 中 daily=null+weekly 存在 → 返回 0
+
+## 账号存储架构
+
+### 持久化字段 (JSON)
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `email` | string | 登录邮箱 (唯一键) |
+| `password` | string | 登录密码 |
+| `credits` | number? | Credits 余额 (credits 模式) |
+| `loginCount` | number | 累计登录次数 |
+| `addedAt` | number | 添加时间戳 |
+| `rateLimit` | object? | 持久化限流状态 (`until`, `resetsIn`, `type`, `model`) |
+| `fingerprint` | object? | Per-Account 设备指纹 (6个ID + createdAt) |
+| `usage` | object? | 额度信息 (见下) |
+
+### usage 子结构
+
+`mode`, `billingStrategy`, `daily` {used,total,remaining}, `weekly` {used,total,remaining},
+`plan`, `resetTime`, `weeklyReset`, `extraBalance`, `planStart`, `planEnd`, `lastChecked`
+
+### 运行时状态 (仅内存, 不持久化)
+
+- `_rateLimits` Map — 完整限流信息 (8字段, 含指数退避)
+- `_modelRateLimits` Map — per-(account,model) 限流桶
+- `_lastUsedTs` Map — Round-Robin 均匀消耗追踪
+- `_rateLimitHitCount` Map — 连续命中计数 (指数退避)
+
+### 存储策略
+
+- **三路持久化**: extension dir + globalStorage root + ~/.wam/ (防卸载/重装丢失)
+- **防抖写入**: `_save()` 300ms debounce 合并高频写, `_flushSave()` 在 dispose 时强制刷盘
+- **多源合并**: `_loadAndMergeAll` 从所有路径加载 → email 去重 → fresher data wins
+- **自动迁移**: 加载时清理废弃字段 (creditHistory, lastChecked, usage.credits, maxPremiumMessages 等)
+- **外部同步**: fs.watch 监听文件变更, 150ms 延迟重载 (多窗口场景)
+
+### 候选排序 (accountSelector.js)
+
+排序逻辑独立于 account.js, 由 `selectOptimal()` / `findBestForModel()` 委托调用
+
+## 认证架构 (auth.js)
+
+- **网络双模式**: `local` (本地代理 CONNECT tunnel) / `relay` (自建中转, 无需VPN)
+- **代理智能探测**: 系统代理 → 环境变量 → 端口扫描 → CONNECT 验证 → relay 降级
+- **Token 缓存**: JWT exp 精确过期 (提前 2min buffer), disk-persistent + memory Map
+- **Protobuf 编解码**: 独立 `protobuf.js` 纯函数模块, auth.js 直接调用 (无 wrapper 层)
+- **多端点容错**: `_raceUrls` 串行尝试 + `_tryRelays` 中转降级
 
 ## 数据流
 

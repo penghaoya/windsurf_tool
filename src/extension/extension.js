@@ -313,11 +313,6 @@ async function _refreshOne(index) {
       return { credits: usageInfo.credits, usageInfo };
     }
   } catch (e) { _logWarn('刷新', `getUsageInfo失败: ${e.message}`); }
-  try {
-    const credits = await S.auth.getCredits(account.email, account.password);
-    if (credits !== undefined) S.am.updateCredits(index, credits);
-    return { credits };
-  } catch (e) { _logWarn('刷新', `getCredits失败: ${e.message}`); }
   return { credits: undefined };
 }
 
