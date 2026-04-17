@@ -25,6 +25,7 @@ import {
 import net from 'net';
 import { execSync } from 'child_process';
 import { getStateDbPath, dbReadKey, dbReadKeys, dbReadKeysLike, dbWriteKey } from '../infra/sqlite.js';
+import { safeReadJsonSync, safeWriteJsonSync } from '../infra/safeJson.js';
 
 // Firebase Web API Key used by Windsurf/Codeium clients.
 const FIREBASE_KEYS = [
@@ -260,8 +261,8 @@ class AuthService {
   _loadCache() {
     try {
       const p = this._getCachePath();
-      if (!p || !fs.existsSync(p)) return;
-      const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (!p) return;
+      const data = safeReadJsonSync(p, {});
       const now = Date.now();
       for (const [email, entry] of Object.entries(data)) {
         if (entry.expireTime > now) {
@@ -277,7 +278,7 @@ class AuthService {
       if (!p) return;
       const obj = {};
       this._tokenCache.forEach((v, k) => { obj[k] = v; });
-      fs.writeFileSync(p, JSON.stringify(obj), 'utf8');
+      safeWriteJsonSync(p, obj);
     } catch {}
   }
 
@@ -926,6 +927,12 @@ class AuthService {
       const dbPath = getStateDbPath();
       if (!fs.existsSync(dbPath)) return null;
 
+      const protoQuota = this.readCachedUserStatusProto(dbPath);
+      if (protoQuota) {
+        _info('缓存额度', `proto daily=${protoQuota.daily}% weekly=${protoQuota.weekly}% plan=${protoQuota.plan} email=${protoQuota.email || 'n/a'} exhausted=${protoQuota.exhausted}`);
+        return protoQuota;
+      }
+
       const raw = dbReadKey(dbPath, 'windsurf.settings.cachedPlanInfo');
       if (!raw) return null;
 
@@ -954,6 +961,90 @@ class AuthService {
       return result;
     } catch (e) {
       _warn('缓存额度', `readCachedQuota error: ${e.message}`);
+      return null;
+    }
+  }
+
+  _protoEntryString(fields, field) {
+    const entry = fields[field]?.[0];
+    if (!entry) return null;
+    if (entry.string) return entry.string;
+    if (entry.bytes) {
+      try { return Buffer.from(entry.bytes).toString('utf8'); } catch {}
+    }
+    return null;
+  }
+
+  _protoEntryInt(fields, field) {
+    const entry = fields[field]?.[0];
+    if (!entry) return undefined;
+    if (entry.value !== undefined) return entry.value;
+    return undefined;
+  }
+
+  _protoEntrySub(fields, field) {
+    const entry = fields[field]?.[0];
+    if (!entry?.bytes) return null;
+    try { return parseProtoMsg(entry.bytes); } catch { return null; }
+  }
+
+  _protoTimestampMs(fields, field) {
+    const sub = this._protoEntrySub(fields, field);
+    const seconds = sub ? this._protoEntryInt(sub, 1) : undefined;
+    return seconds ? seconds * 1000 : null;
+  }
+
+  /**
+   * Read realtime quota from windsurfAuthStatus.userStatusProtoBinaryBase64.
+   * This local channel is fresher than cachedPlanInfo and does not require network.
+   */
+  readCachedUserStatusProto(dbPath = getStateDbPath()) {
+    try {
+      if (!fs.existsSync(dbPath)) return null;
+      const raw = dbReadKey(dbPath, 'windsurfAuthStatus');
+      if (!raw) return null;
+      const status = JSON.parse(raw);
+      const b64 = status.userStatusProtoBinaryBase64;
+      if (!b64) return null;
+
+      const outer = parseProtoMsg(Buffer.from(b64, 'base64'));
+      const email = this._protoEntryString(outer, 7) || this._protoEntryString(outer, 3) || status.userEmail || null;
+      const planStatus = this._protoEntrySub(outer, 13);
+      if (!planStatus) return null;
+
+      const planInfo = this._protoEntrySub(planStatus, 1);
+      const plan = planInfo ? this._protoEntryString(planInfo, 2) : null;
+      const dailyRaw = this._protoEntryInt(planStatus, 14);
+      const weeklyRaw = this._protoEntryInt(planStatus, 15);
+      const resetUnix = this._protoEntryInt(planStatus, 17);
+      const weeklyResetUnix = this._protoEntryInt(planStatus, 18);
+
+      const hasDailyReset = !!resetUnix;
+      const hasWeeklyReset = !!weeklyResetUnix;
+      const daily = dailyRaw !== undefined ? dailyRaw : hasDailyReset ? 0 : null;
+      const weekly = weeklyRaw !== undefined ? weeklyRaw : hasWeeklyReset ? 0 : null;
+      if (daily === null && weekly === null && !plan) return null;
+
+      const planStart = this._protoTimestampMs(planStatus, 2);
+      const planEnd = this._protoTimestampMs(planStatus, 3);
+      const extraMicros = this._protoEntryInt(planStatus, 16);
+
+      return {
+        source: 'userStatusProto',
+        daily,
+        weekly,
+        billing: 'quota',
+        plan,
+        email,
+        resetTime: resetUnix ? resetUnix * 1000 : null,
+        weeklyReset: weeklyResetUnix ? weeklyResetUnix * 1000 : null,
+        extraBalance: extraMicros ? extraMicros / 1000000 : 0,
+        exhausted: (daily !== null && daily <= 0) || (weekly !== null && weekly <= 0),
+        planStart,
+        planEnd,
+      };
+    } catch (e) {
+      _warn('缓存额度', `userStatusProto读取失败: ${e.message}`);
       return null;
     }
   }

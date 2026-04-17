@@ -9,6 +9,7 @@ import {
   findBestForModel as findBestForModelWithSelector,
   selectOptimal as selectOptimalWithSelector,
 } from './accountSelector.js';
+import { safeReadJsonSync, safeWriteJsonSync } from '../infra/safeJson.js';
 
 class AccountManager {
   constructor(storagePath, options) {
@@ -81,11 +82,8 @@ class AccountManager {
   /** Load accounts from a single file path, returns array or [] */
   _loadFrom(filePath) {
     try {
-      if (filePath && fs.existsSync(filePath)) {
-        const raw = fs.readFileSync(filePath, 'utf8');
-        const data = JSON.parse(raw);
-        if (Array.isArray(data)) return data;
-      }
+      const data = safeReadJsonSync(filePath, []);
+      if (Array.isArray(data)) return data;
     } catch {}
     return [];
   }
@@ -211,11 +209,10 @@ class AccountManager {
   }
 
   _saveNow() {
-    const json = JSON.stringify(this._accounts, null, 2);
     // Write to primary (extension storage)
     try {
       this._writing = true;
-      fs.writeFileSync(this._filePath, json, 'utf8');
+      safeWriteJsonSync(this._filePath, this._accounts);
       setTimeout(() => { this._writing = false; }, 200);
     } catch (e) {
       this._writing = false;
@@ -224,16 +221,14 @@ class AccountManager {
     // Write to ALL persistent paths (triple-persistence)
     for (const pp of this._persistentPaths) {
       try {
-        const dir = path.dirname(pp);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(pp, json, 'utf8');
+        safeWriteJsonSync(pp, this._accounts);
       } catch (e) {
         console.warn(`WAM: [PERSIST] write failed ${pp}: ${e.message}`);
       }
     }
     // Also sync to discovered paths (prevent stale data from resurrecting deleted accounts)
     for (const dp of this._discoveredPaths) {
-      try { fs.writeFileSync(dp, json, 'utf8'); } catch {}
+      try { safeWriteJsonSync(dp, this._accounts); } catch {}
     }
   }
 
@@ -242,7 +237,7 @@ class AccountManager {
     if (this._watcher || !this._filePath) return;
     try {
       if (!fs.existsSync(this._filePath)) {
-        fs.writeFileSync(this._filePath, '[]', 'utf8');
+        safeWriteJsonSync(this._filePath, []);
       }
       this._watcher = fs.watch(this._filePath, { persistent: false }, (eventType) => {
         if (eventType === 'change' && !this._writing) {
@@ -556,14 +551,14 @@ class AccountManager {
     };
     const fname = `wam-backup-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`;
     const fpath = path.join(storagePath || path.dirname(this._filePath || ''), fname);
-    fs.writeFileSync(fpath, JSON.stringify(data, null, 2), 'utf8');
+    safeWriteJsonSync(fpath, data);
     return fpath;
   }
 
   /** Import from backup JSON (merge strategy) */
   importFromFile(filePath) {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const data = JSON.parse(raw);
+    const data = safeReadJsonSync(filePath, null);
+    if (!data) throw new Error('invalid backup json');
     const accounts = data.accounts || data; // support both wrapped and raw array
     return this.merge(Array.isArray(accounts) ? accounts : []);
   }

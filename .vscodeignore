@@ -13,3 +13,5 @@ archive
 AGENTS.md
 MIGRATION.md
 screenshots
+tmp
+tests/**

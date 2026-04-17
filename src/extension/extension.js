@@ -43,6 +43,7 @@ import {
   _logWarn,
   _logError,
   _refreshPanel,
+  _configureFileLogger,
 } from './core/state.js';
 import { L5_ENABLED } from './shared/config.js';
 import {
@@ -118,6 +119,7 @@ function _activate(context) {
   // ═══ 结构化日志通道 (v6.2 P1: 用户可见) ═══
   S.outputChannel = vscode.window.createOutputChannel("Windsurf小助手");
   context.subscriptions.push(S.outputChannel);
+  _configureFileLogger(context.logUri?.fsPath);
   const _version = context.extension?.packageJSON?.version || '?';
   _logInfo(
     "启动",

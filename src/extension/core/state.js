@@ -3,7 +3,14 @@
  * 所有模块通过 S 对象读写共享可变状态，通过 deps 调用跨模块函数
  */
 import vscode from 'vscode';
+import fs from 'fs';
+import path from 'path';
 import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily, getPlanTier, isTierFree, PLAN_TIERS } from '../shared/config.js';
+
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
+const LOG_ROTATE_KEEP = 3;
+let _logWriteChain = Promise.resolve();
+let _logRotating = false;
 
 // ═══ 共享可变状态单例 ═══
 export const S = {
@@ -14,6 +21,7 @@ export const S = {
   panelProvider: null,
   panel: null,
   outputChannel: null,
+  logFilePath: null,
 
   // 号池状态
   activeIndex: -1,
@@ -111,10 +119,49 @@ export function _log(level, tag, msg, data) {
   });
   if (S.eventLog.length > MAX_EVENT_LOG)
     S.eventLog = S.eventLog.slice(-MAX_EVENT_LOG);
+  _persistLogRecord({ ts: new Date().toISOString(), level, tag, msg, data });
 }
 export function _logInfo(tag, msg, data) { _log("INFO", tag, msg, data); }
 export function _logWarn(tag, msg, data) { _log("WARN", tag, msg, data); }
 export function _logError(tag, msg, data) { _log("ERROR", tag, msg, data); }
+
+export function _configureFileLogger(logRoot) {
+  if (!logRoot) return;
+  try {
+    if (!fs.existsSync(logRoot)) fs.mkdirSync(logRoot, { recursive: true });
+    S.logFilePath = path.join(logRoot, 'windsurf-tools.log');
+  } catch {}
+}
+
+function _persistLogRecord(record) {
+  if (!S.logFilePath) return;
+  const line = `${JSON.stringify(record)}\n`;
+  _logWriteChain = _logWriteChain
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await fs.promises.mkdir(path.dirname(S.logFilePath), { recursive: true });
+        await fs.promises.appendFile(S.logFilePath, line, 'utf8');
+        await _rotateLogIfNeeded();
+      } catch {}
+    });
+}
+
+async function _rotateLogIfNeeded() {
+  if (_logRotating || !S.logFilePath) return;
+  try {
+    const stat = await fs.promises.stat(S.logFilePath);
+    if (stat.size < LOG_MAX_BYTES) return;
+    _logRotating = true;
+    await fs.promises.unlink(`${S.logFilePath}.${LOG_ROTATE_KEEP}`).catch(() => {});
+    for (let i = LOG_ROTATE_KEEP - 1; i >= 1; i--) {
+      await fs.promises.rename(`${S.logFilePath}.${i}`, `${S.logFilePath}.${i + 1}`).catch(() => {});
+    }
+    await fs.promises.rename(S.logFilePath, `${S.logFilePath}.1`).catch(() => {});
+  } finally {
+    _logRotating = false;
+  }
+}
 
 // ═══ Boost 模式 ═══
 export function _isBoost() { return Date.now() < S.boostUntil; }
