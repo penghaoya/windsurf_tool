@@ -18,12 +18,14 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { postMessage, previewAccounts } from '../composables/useVscode.js'
 
+const PREVIEW_DEBOUNCE_MS = 200
 const inputText = ref('')
 const inputRef = ref(null)
 const isFocused = ref(false)
+let previewTimer = null
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -46,9 +48,11 @@ const previewHtml = computed(() => {
 
 function onInput() {
   const t = inputText.value.trim()
-  if (t) {
+  clearTimeout(previewTimer)
+  if (!t) return
+  previewTimer = setTimeout(() => {
     postMessage('preview', { text: t })
-  }
+  }, PREVIEW_DEBOUNCE_MS)
 }
 
 function onFocus() {
@@ -64,11 +68,16 @@ function onBlur() {
 function doBatch() {
   const t = inputText.value.trim()
   if (t) {
+    clearTimeout(previewTimer)
     postMessage('batchAdd', { text: t })
     inputText.value = ''
     if (inputRef.value) inputRef.value.style.height = '28px'
   }
 }
+
+onBeforeUnmount(() => {
+  clearTimeout(previewTimer)
+})
 </script>
 
 <style scoped>
