@@ -19,17 +19,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import {
-  parseProtoString, encodeProtoString, parseUsageInfo,
+  parseProtoString, encodeProtoString, parseUsageInfo, parseProtoMsg,
   encodeCheckRateLimitRequest, parseCheckRateLimitResponse,
 } from './protobuf.js';
 import net from 'net';
 import { execSync } from 'child_process';
 import { getStateDbPath, dbReadKey, dbReadKeys, dbReadKeysLike, dbWriteKey } from '../infra/sqlite.js';
 
-// Dual Firebase API Keys (v5.6.29 primary, v5.0.20 fallback)
+// Firebase Web API Key used by Windsurf/Codeium clients.
 const FIREBASE_KEYS = [
-  'AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY',  // v5.6.29 (from windsurf.com)
-  'AIzaSyDKm6GGxMJfCbNf-k0kPytiGLaqFJpeSac'   // v5.0.20 (legacy)
+  'AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY',
 ];
 
 // Relay (works in China without proxy) — 自建优先，第三方降级
@@ -435,7 +434,7 @@ class AuthService {
     });
   }
 
-  _httpsBinary(url, method, bodyBuffer, useProxy) {
+  _httpsBinary(url, method, bodyBuffer, useProxy, extraHeaders = {}) {
     return new Promise(async (resolve, reject) => {
       const _t0 = Date.now();
       const u = new URL(url);
@@ -447,14 +446,22 @@ class AuthService {
       if (wantProxy) {
         try {
           const sock = await this._proxyTunnel(u.hostname);
-          const headers = { 'Content-Type': 'application/proto', 'connect-protocol-version': '1' };
+          const headers = {
+            'Content-Type': 'application/proto',
+            'connect-protocol-version': '1',
+            ...extraHeaders,
+          };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
           _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms)`);
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
         const agent = new https.Agent({ keepAlive: false });
-        const headers = { 'Content-Type': 'application/proto', 'connect-protocol-version': '1' };
+        const headers = {
+          'Content-Type': 'application/proto',
+          'connect-protocol-version': '1',
+          ...extraHeaders,
+        };
         const req = https.request({
           hostname: u.hostname, port: 443, path: u.pathname + u.search,
           method: method || 'POST', headers, agent
@@ -507,15 +514,136 @@ class AuthService {
     return null;
   }
 
+  // ========== Devin Auth (Windsurf new auth backend) ==========
+
+  _isTransientNetworkError(error) {
+    const msg = String(error?.message || error || '').toLowerCase();
+    return (
+      msg.includes('tls') ||
+      msg.includes('socket') ||
+      msg.includes('network') ||
+      msg.includes('econn') ||
+      msg.includes('etimedout') ||
+      msg.includes('timeout') ||
+      msg.includes('disconnected before secure')
+    );
+  }
+
+  _isFatalFirebaseAuthError(message) {
+    return /INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED/i.test(String(message || ''));
+  }
+
+  async _withNetworkRetry(label, fn, maxRetries = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        lastError = e;
+        if (attempt < maxRetries && this._isTransientNetworkError(e)) {
+          _warn('登录', `${label} 网络异常, 重试${attempt}/${maxRetries}: ${e.message}`);
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastError || new Error(`${label} failed`);
+  }
+
+  _decodeProtoStringFields(buffer) {
+    const fields = parseProtoMsg(buffer);
+    const read = (field) => {
+      const entry = fields[field]?.[0];
+      if (!entry) return '';
+      if (entry.string) return entry.string;
+      if (entry.bytes) {
+        try { return Buffer.from(entry.bytes).toString('utf8'); } catch {}
+      }
+      return '';
+    };
+    return {
+      sessionToken: read(1),
+      auth1Token: read(3),
+      accountId: read(4),
+      primaryOrgId: read(5),
+    };
+  }
+
+  async _windsurfPostAuth(auth1Token) {
+    const body = Buffer.concat([
+      encodeProtoString(auth1Token, 1),
+      encodeProtoString('', 2),
+    ]);
+    const resp = await this._httpsBinary(
+      'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
+      'POST',
+      body,
+      undefined,
+      {
+        Accept: 'application/proto',
+        'User-Agent': 'Mozilla/5.0',
+        'X-Devin-Auth1-Token': auth1Token,
+      },
+    );
+    if (!resp?.ok || !resp.buffer?.length) {
+      throw new Error(`WindsurfPostAuth failed: HTTP ${resp?.status || 'no_response'}`);
+    }
+    return this._decodeProtoStringFields(resp.buffer);
+  }
+
+  async _signInWithDevinAuth(email, password) {
+    const _emailPrefix = email.split('@')[0];
+    const connections = await this._withNetworkRetry('Devin Auth connections', async () => {
+      const r = await this._httpsJson(
+        'https://windsurf.com/_devin-auth/connections',
+        'POST',
+        { email },
+      );
+      if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
+      return r.data;
+    });
+    if (
+      connections?.auth_method?.method !== 'auth1' ||
+      connections?.auth_method?.has_password !== true
+    ) {
+      throw new Error('Devin Auth 不支持密码登录');
+    }
+
+    const login = await this._withNetworkRetry('Devin Auth password login', async () => {
+      const r = await this._httpsJson(
+        'https://windsurf.com/_devin-auth/password/login',
+        'POST',
+        { email, password },
+      );
+      if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
+      return r.data;
+    });
+    if (!login?.token) throw new Error('Devin Auth 返回空 token');
+
+    const postAuth = await this._withNetworkRetry('WindsurfPostAuth', () => this._windsurfPostAuth(login.token));
+    if (!postAuth.sessionToken) throw new Error('WindsurfPostAuth 返回空 sessionToken');
+
+    _info('登录', `${_emailPrefix} → devin-auth`);
+    return {
+      ok: true,
+      idToken: postAuth.sessionToken,
+      email: login.email || email,
+      channel: 'devin-auth',
+      provider: 'devin-auth',
+      devinAuth1Token: postAuth.auth1Token || login.token,
+      devinAccountId: postAuth.accountId,
+      devinPrimaryOrgId: postAuth.primaryOrgId,
+    };
+  }
+
   // ========== Firebase Login (双模式: relay优先 or local代理优先) ==========
 
   async login(email, password, forceFresh = false) {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
-    // Ensure proxy detection is done
     if (!PROXY_CHECKED) await this._probeProxy();
 
-    // Check cache first
     if (!forceFresh) {
       const cached = this._getCachedToken(email);
       if (cached) { _info('登录', `${_emailPrefix} → cached (0ms)`); return { ok: true, idToken: cached, email, cached: true }; }
@@ -525,9 +653,39 @@ class AuthService {
     const fbHeaders = { Referer: 'https://windsurf.com/', Origin: 'https://windsurf.com' };
     const errors = [];
 
+    try {
+      const devin = await this._signInWithDevinAuth(email, password);
+      this._setCachedToken(email, devin.idToken);
+      return { ...devin, elapsed: Date.now() - _t0 };
+    } catch (e) {
+      errors.push(`devin-auth: ${e.message}`);
+      _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
+    }
+
+    const tryFirebase = async (useProxy) => {
+      for (const key of FIREBASE_KEYS) {
+        const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`;
+        try {
+          const r = await this._httpsJson(url, 'POST', payload, useProxy, fbHeaders);
+          if (r.ok && r.data.idToken) {
+            this._setCachedToken(email, r.data.idToken);
+            const channel = useProxy === true ? 'firebase-proxy' : 'firebase-local';
+            _info('登录', `${_emailPrefix} → ${channel} (${Date.now() - _t0}ms)`);
+            return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel };
+          }
+          const msg = r.data?.error?.message || `HTTP ${r.status}`;
+          errors.push(`firebase: ${msg}`);
+          if (this._isFatalFirebaseAuthError(msg)) {
+            return { ok: false, fatal: true, error: msg };
+          }
+        } catch (e) {
+          errors.push(`firebase: ${e.message}`);
+        }
+      }
+      return { ok: false, fatal: false };
+    };
+
     if (ACTIVE_MODE === 'relay') {
-      // ═══ Relay模式（无需VPN，网站中转优先）═══
-      // Channel 1: 多Relay降级 (自建→第三方)
       try {
         const r = await this._tryRelaysJson('/firebase/login', payload);
         if (r && r.ok && r.data.idToken) {
@@ -535,38 +693,22 @@ class AuthService {
           _info('登录', `${_emailPrefix} → relay (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay' };
         }
-        if (r?.data?.error?.message) errors.push(`relay: ${r.data.error.message}`);
+        const msg = r?.data?.error?.message;
+        if (msg) {
+          errors.push(`relay: ${msg}`);
+          if (this._isFatalFirebaseAuthError(msg)) {
+            _warn('登录', `${_emailPrefix} → FAILED (${Date.now() - _t0}ms) ${errors.join(' | ')}`);
+            return { ok: false, error: errors.join(' | ') };
+          }
+        }
       } catch (e) { errors.push(`relay: ${e.message}`); }
 
-      // Channel 2: 尝试本地代理作为fallback（可能用户中途开了VPN）
-      for (const key of FIREBASE_KEYS) {
-        try {
-          const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`;
-          const r = await this._httpsJson(url, 'POST', payload, true, fbHeaders);
-          if (r.ok && r.data.idToken) {
-            this._setCachedToken(email, r.data.idToken);
-            _info('登录', `${_emailPrefix} → firebase-proxy (${Date.now() - _t0}ms)`);
-            return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: `firebase-proxy-${key.slice(-4)}` };
-          }
-        } catch {}
-      }
+      const firebase = await tryFirebase(true);
+      if (firebase.ok || firebase.fatal) return firebase;
     } else {
-      // ═══ Local模式（本地代理优先）═══
-      // Channel 1: Firebase direct with dual keys (via local proxy)
-      for (const key of FIREBASE_KEYS) {
-        try {
-          const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`;
-          const r = await this._httpsJson(url, 'POST', payload, undefined, fbHeaders);
-          if (r.ok && r.data.idToken) {
-            this._setCachedToken(email, r.data.idToken);
-            _info('登录', `${_emailPrefix} → firebase-local (${Date.now() - _t0}ms)`);
-            return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: `firebase-${key.slice(-4)}` };
-          }
-          if (r.data?.error?.message) errors.push(`firebase: ${r.data.error.message}`);
-        } catch (e) { errors.push(`firebase: ${e.message}`); }
-      }
+      const firebase = await tryFirebase(undefined);
+      if (firebase.ok || firebase.fatal) return firebase;
 
-      // Channel 2: 多Relay降级（代理失败时自动降级）
       try {
         const r = await this._tryRelaysJson('/firebase/login', payload);
         if (r && r.ok && r.data.idToken) {
@@ -597,6 +739,7 @@ class AuthService {
 
     const reqData = encodeProtoString(loginResult.idToken);
     let resp = await this._fetchPlanStatus(reqData);
+    let jsonUsage = null;
 
     if (!resp && loginResult.cached) {
       _warn('额度', `${_emailPrefix} → cached token failed, retrying fresh`);
@@ -605,11 +748,13 @@ class AuthService {
       if (fresh.ok) {
         const freshReq = encodeProtoString(fresh.idToken);
         resp = await this._fetchPlanStatus(freshReq);
+        if (!resp) jsonUsage = await this._fetchPlanStatusJson(fresh.idToken);
       }
     }
 
-    if (!resp) { _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`); return null; }
-    const result = parseUsageInfo(resp.buffer);
+    if (!resp && !jsonUsage) jsonUsage = await this._fetchPlanStatusJson(loginResult.idToken);
+    if (!resp && !jsonUsage) { _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`); return null; }
+    const result = resp ? parseUsageInfo(resp.buffer) : jsonUsage;
     _info('额度', `${_emailPrefix} → ${result?.mode || '?'} daily=${result?.daily?.remaining ?? '?'}% weekly=${result?.weekly?.remaining ?? '?'}% (${Date.now() - _t0}ms, login=${_t1 - _t0}ms, plan=${Date.now() - _t1}ms)`);
     return result;
   }
@@ -625,6 +770,94 @@ class AuthService {
       if (!resp) resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData);
     }
     return resp;
+  }
+
+  _parsePlanStatusJson(data) {
+    const ps = data?.planStatus || data?.plan_status || data;
+    if (!ps || typeof ps !== 'object') return null;
+    const pi = ps.planInfo || ps.plan_info || {};
+    const plan = pi.planName || pi.plan_name || ps.planName || ps.plan_name || null;
+    const billingRaw = pi.billingStrategy ?? pi.billing_strategy ?? ps.billingStrategy ?? ps.billing_strategy ?? null;
+    const billingStrategy = typeof billingRaw === 'string'
+      ? billingRaw.toLowerCase()
+      : billingRaw === 1
+        ? 'credits'
+        : billingRaw === 2
+          ? 'quota'
+          : billingRaw === 3
+            ? 'acu'
+            : null;
+    const dailyRemaining = ps.dailyQuotaRemainingPercent ?? ps.daily_quota_remaining_percent;
+    const weeklyRemaining = ps.weeklyQuotaRemainingPercent ?? ps.weekly_quota_remaining_percent;
+    const availablePrompt = ps.availablePromptCredits ?? ps.available_prompt_credits;
+    if (
+      !plan &&
+      dailyRemaining === undefined &&
+      weeklyRemaining === undefined &&
+      availablePrompt === undefined
+    ) {
+      return null;
+    }
+    const dailyResetUnix = Number(ps.dailyQuotaResetAtUnix ?? ps.daily_quota_reset_at_unix ?? 0);
+    const weeklyResetUnix = Number(ps.weeklyQuotaResetAtUnix ?? ps.weekly_quota_reset_at_unix ?? 0);
+    const planStartRaw = ps.planStart || ps.plan_start;
+    const planEndRaw = ps.planEnd || ps.plan_end;
+    const toMs = (value) => {
+      if (!value) return null;
+      if (typeof value === 'number') return value < 1e12 ? value * 1000 : value;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const result = {
+      mode: billingStrategy === 'credits' ? 'credits' : 'quota',
+      billingStrategy,
+      credits: null,
+      plan,
+      daily: dailyRemaining !== undefined
+        ? { used: Math.max(0, 100 - dailyRemaining), total: 100, remaining: dailyRemaining }
+        : null,
+      weekly: weeklyRemaining !== undefined
+        ? { used: Math.max(0, 100 - weeklyRemaining), total: 100, remaining: weeklyRemaining }
+        : null,
+      resetTime: dailyResetUnix ? dailyResetUnix * 1000 : null,
+      weeklyReset: weeklyResetUnix ? weeklyResetUnix * 1000 : null,
+      extraBalance: Number(ps.overageBalanceMicros ?? ps.overage_balance_micros ?? 0) / 1000000,
+      planStart: toMs(planStartRaw),
+      planEnd: toMs(planEndRaw),
+    };
+
+    const usedPrompt = ps.usedPromptCredits ?? ps.used_prompt_credits ?? 0;
+    if (availablePrompt !== undefined && availablePrompt !== null) {
+      result.credits = Math.round((availablePrompt - usedPrompt) / 100);
+      if (!result.daily && billingStrategy === 'credits') result.mode = 'credits';
+    }
+    return result;
+  }
+
+  async _fetchPlanStatusJson(idToken) {
+    const body = { auth_token: idToken };
+    const headers = {
+      'X-Auth-Token': idToken,
+      'User-Agent': 'Mozilla/5.0',
+    };
+    const urls = [
+      'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
+      'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
+    ];
+    for (const url of urls) {
+      try {
+        const r = await this._httpsJson(url, 'POST', body, undefined, headers);
+        if (r.ok) {
+          const parsed = this._parsePlanStatusJson(r.data);
+          if (parsed) return parsed;
+        }
+        _warn('额度', `JSON GetPlanStatus ${new URL(url).hostname} → ${r.status}`);
+      } catch (e) {
+        _warn('额度', `JSON GetPlanStatus ${new URL(url).hostname} → ERR ${e.message}`);
+      }
+    }
+    return null;
   }
 
   // ========== RegisterUser → apiKey (for hot injection, mode-aware) ==========

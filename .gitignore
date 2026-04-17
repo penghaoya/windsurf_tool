@@ -5,3 +5,4 @@ output/
 .DS_Store
 src/extension/extension.old.js
 archive/
+tmp
