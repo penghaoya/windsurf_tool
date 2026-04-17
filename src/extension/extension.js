@@ -58,6 +58,12 @@ import {
   _trackMessageRate,
   _detectCascadeTabs,
 } from './core/scheduler.js';
+import {
+  configureRefreshQueue,
+  enqueueRefresh,
+  enqueueRefreshAll,
+  getRefreshQueueStatus,
+} from './core/refreshQueue.js';
 
 const authInjector = createAuthInjector({
   refreshOne: _refreshOne,
@@ -73,16 +79,26 @@ const _handleAction = createActionHandler({
   doImport: _doImport,
   doRefreshPool: _doRefreshPool,
   doResetFingerprint: _doResetFingerprint,
-  refreshOne: _refreshOne,
+  refreshOne: (index) => enqueueRefresh(index, { priority: 'high', reason: 'manual_refresh_one' }),
   refreshPanel: _refreshPanel,
   updatePoolBar: renderStatusBar,
 });
 
 // ═══ deps 注册 (打破循环依赖) ═══
 function _wireDeps() {
+  configureRefreshQueue({
+    worker: _refreshOne,
+    concurrency: 3,
+    logger: (event, data) => {
+      if (event === 'enqueue' && data.priority === 'high') {
+        _logInfo('刷新队列', `高优先级入队 #${data.index + 1} (${data.reason})`);
+      }
+    },
+  });
   deps.loginToAccount = _loginToAccount;
-  deps.refreshOne = _refreshOne;
+  deps.refreshOne = (index, options) => enqueueRefresh(index, options);
   deps.refreshAll = _refreshAll;
+  deps.getRefreshQueueStatus = getRefreshQueueStatus;
   deps.doPoolRotate = _doPoolRotate;
   deps.updatePoolBar = _updatePoolBar;
   deps.syncSchedulerToShared = _syncSchedulerToShared;
@@ -318,23 +334,18 @@ async function _refreshOne(index) {
   return { credits: undefined };
 }
 
-/** Refresh all accounts with parallel batching. Optional progress callback(i, total).
- *  Concurrency=3 balances speed vs API rate limits. ~3x faster than sequential. */
-async function _refreshAll(progressFn) {
+/** Refresh all accounts through the shared queue.
+ *  Manual callers await completion; scheduler can pass { wait:false } for background scans. */
+async function _refreshAll(progressFn, options = {}) {
   const accounts = S.am.getAll();
-  const CONCURRENCY = 3;
-  let completed = 0;
-  for (let batch = 0; batch < accounts.length; batch += CONCURRENCY) {
-    const slice = accounts.slice(batch, batch + CONCURRENCY);
-    const promises = slice.map((_, j) => {
-      const idx = batch + j;
-      return _refreshOne(idx).then(() => {
-        completed++;
-        if (progressFn) progressFn(completed - 1, accounts.length);
-      });
-    });
-    await Promise.allSettled(promises);
-  }
+  const indexes = accounts.map((_, index) => index);
+  return enqueueRefreshAll(indexes, {
+    priority: options.priority || 'normal',
+    reason: options.reason || 'refresh_all',
+    wait: options.wait !== false,
+    progressFn,
+    onSettledIndex: options.onSettledIndex,
+  });
 }
 
 // ========== 号池命令 (v6.0 精简) ==========

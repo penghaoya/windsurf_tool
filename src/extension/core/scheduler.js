@@ -211,7 +211,7 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
       _logInfo('预热', `#${targetIndex + 1} 数据新鲜(${Math.round((Date.now() - lastChecked) / 1000)}s前刷新), 跳过网络请求`);
     } else {
       await Promise.race([
-        deps.refreshOne(targetIndex),
+        deps.refreshOne(targetIndex, { priority: 'high', reason: 'switch_preheat' }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('preheat_timeout')), PREHEAT_TIMEOUT)),
       ]);
     }
@@ -257,7 +257,7 @@ export async function _performSwitch(context, {
       return { ok: false, index: -1, reason: 'hourly_cap' };
     }
   }
-  if (refreshPool) await deps.refreshAll();
+  if (refreshPool) await deps.refreshAll(null, { priority: 'normal', reason: 'switch_refresh_pool' });
   let ordered = Array.isArray(candidates) && candidates.length > 0
     ? _filterRuntimeCandidates(candidates, { modelUid })
     : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true });
@@ -526,7 +526,7 @@ async function _poolTick(context) {
   }
 
   const prevQuota = S.lastQuota;
-  await deps.refreshOne(S.activeIndex);
+  await deps.refreshOne(S.activeIndex, { priority: 'high', reason: 'active_tick' });
   const curQuota = S.am.effectiveRemaining(S.activeIndex);
   S.lastQuota = curQuota;
   S.lastCheckTs = Date.now();
@@ -600,9 +600,8 @@ async function _poolTick(context) {
   const fullScanInterval = S.burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
   if (Date.now() - S.lastFullScanTs > fullScanInterval) {
     S.lastFullScanTs = Date.now();
-    _logInfo("全池扫描", `开始刷新全部${accounts.length}个账号额度...`);
-    await deps.refreshAll();
-    for (let i = 0; i < accounts.length; i++) {
+    _logInfo("全池扫描", `后台刷新全部${accounts.length}个账号额度...`);
+    const updateSnapshot = (i) => {
       const rem = S.am.effectiveRemaining(i);
       const prev = S.allQuotaSnapshot.get(i);
       if (prev && prev.remaining !== rem) {
@@ -613,7 +612,18 @@ async function _poolTick(context) {
         _logInfo("全池扫描", `#${i + 1} ${emailPrefix}: 额度 ${prev.remaining}% → ${rem}%${deltaStr}`);
       }
       S.allQuotaSnapshot.set(i, { remaining: rem, checkedAt: Date.now() });
-    }
+    };
+    for (let i = 0; i < accounts.length; i++) updateSnapshot(i);
+    deps.refreshAll?.(null, {
+      priority: 'low',
+      reason: 'full_scan',
+      wait: false,
+      onSettledIndex: (index) => {
+        updateSnapshot(index);
+        deps.updatePoolBar?.();
+        _refreshPanel();
+      },
+    }).catch(() => {});
     _refreshPanel();
   }
 
@@ -671,7 +681,7 @@ export async function _doPoolRotate(context, isPanic = false) {
       _logInfo("轮转", `✅ 紧急切换完成: → #${panicSwitch.index + 1} (耗时${Date.now() - t0}ms)`);
       deps.updatePoolBar?.();
       _refreshPanel();
-      setTimeout(() => deps.refreshAll?.().then(() => { deps.updatePoolBar?.(); _refreshPanel(); }).catch(() => {}), 5000);
+      setTimeout(() => deps.refreshAll?.(null, { priority: 'low', reason: 'panic_post_refresh', wait: false }).then(() => { deps.updatePoolBar?.(); _refreshPanel(); }).catch(() => {}), 5000);
       return;
     }
     if (accounts.length > 1) {

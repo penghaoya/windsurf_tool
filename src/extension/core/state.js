@@ -94,6 +94,7 @@ export const deps = {
   loginToAccount: null,
   refreshOne: null,
   refreshAll: null,
+  getRefreshQueueStatus: null,
   doPoolRotate: null,
   updatePoolBar: null,
   syncSchedulerToShared: null,
