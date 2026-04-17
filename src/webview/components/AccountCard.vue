@@ -133,7 +133,7 @@
 
 <script setup>
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
-import { postMessage, pwdResults } from '../composables/useVscode.js'
+import { actionResults, postMessage, pwdResults, requestAction } from '../composables/useVscode.js'
 import { dotClass, urgencyColor } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
 
@@ -149,6 +149,7 @@ const props = defineProps({
 const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
 const refreshing = ref(false)
+const refreshRequestId = ref(null)
 let confirmTimer = null
 let copyTimer = null
 
@@ -253,9 +254,15 @@ watch(() => pwdResults[props.index], (result) => {
 function onRefresh() {
   if (refreshing.value) return
   refreshing.value = true
-  postMessage('refreshOne', { index: props.index })
-  setTimeout(() => { refreshing.value = false }, 3000)
+  refreshRequestId.value = requestAction('refreshOne', { index: props.index })
 }
+
+watch(() => refreshRequestId.value ? actionResults[refreshRequestId.value] : null, (result) => {
+  if (!result || !refreshRequestId.value) return
+  delete actionResults[refreshRequestId.value]
+  refreshRequestId.value = null
+  refreshing.value = false
+})
 
 function onClearRateLimit() {
   postMessage('clearRateLimit', { index: props.index })

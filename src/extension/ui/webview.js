@@ -165,10 +165,7 @@ class AccountViewProvider {
         break;
       case ACTION.LOGIN:
         if (msg.index !== undefined && act) {
-          this._setLoading(true);
-          await act('login', msg.index);
-          this._setLoading(false);
-          this._pushState();
+          await this._runRequest(msg, () => act('login', msg.index));
         }
         break;
       case ACTION.PREVIEW:
@@ -181,37 +178,43 @@ class AccountViewProvider {
         break;
       case ACTION.BATCH_ADD:
         if (msg.text && act) {
-          this._setLoading(true);
-          const result = await act('batchAdd', msg.text);
-          if (result && result.added > 0) {
-            this._toast(`+${result.added} 账号，验证中...`);
-            this._pushState();
-            await act('refreshAll');
-            this._toast('验证完成');
-          } else if (result && result.skipped > 0) {
-            this._toast(`${result.skipped} 个已存在`, true);
-          } else {
-            this._toast('未识别到有效账号', true);
-          }
-          this._setLoading(false);
-          this._pushState();
+          await this._runRequest(msg, async () => {
+            const result = await act('batchAdd', msg.text);
+            if (result && result.added > 0) {
+              this._toast(`+${result.added} 账号，验证中...`);
+              this._pushState();
+              await act('refreshAll');
+              this._toast('验证完成');
+            } else if (result && result.skipped > 0) {
+              this._toast(`${result.skipped} 个已存在`, true);
+            } else {
+              this._toast('未识别到有效账号', true);
+            }
+            return result;
+          });
         }
         break;
       case ACTION.REFRESH:
       case ACTION.REFRESH_ALL_AND_ROTATE:
-        if (act) { this._setLoading(true); await act('refreshAll'); this._setLoading(false); this._toast('刷新完成'); this._pushState(); }
+        if (act) {
+          await this._runRequest(msg, async () => {
+            const result = await act('refreshAll');
+            this._toast('刷新完成');
+            return result;
+          });
+        }
         break;
       case ACTION.SMART_ROTATE:
-        if (act) { this._setLoading(true); await act('smartRotate'); this._setLoading(false); this._pushState(); }
+        if (act) await this._runRequest(msg, () => act('smartRotate'));
         break;
       case ACTION.PANIC_SWITCH:
-        if (act) { this._setLoading(true); await act('panicSwitch'); this._setLoading(false); this._pushState(); }
+        if (act) await this._runRequest(msg, () => act('panicSwitch'));
         break;
       case ACTION.SET_MODE:
         if (msg.mode && act) { act('setMode', msg.mode); this._pushState(); }
         break;
       case ACTION.REPROBE_PROXY:
-        if (act) { this._setLoading(true); await act('reprobeProxy'); this._setLoading(false); this._pushState(); }
+        if (act) await this._runRequest(msg, () => act('reprobeProxy'));
         break;
       case ACTION.SHOW_LOGS:
         if (act) act('showLogs');
@@ -240,15 +243,15 @@ class AccountViewProvider {
         if (act) act('exportAccounts');
         break;
       case ACTION.IMPORT_ACCOUNTS:
-        if (act) { await act('importAccounts'); this._pushState(); }
+        if (act) await this._runRequest(msg, () => act('importAccounts'));
         break;
       case ACTION.REFRESH_ONE:
         if (msg.index !== undefined && act) {
-          this._setLoading(true);
-          await act('refreshOne', msg.index);
-          this._setLoading(false);
-          this._toast('刷新完成');
-          this._pushState();
+          await this._runRequest(msg, async () => {
+            const result = await act('refreshOne', msg.index);
+            this._toast('刷新完成');
+            return result;
+          });
         }
         break;
       case ACTION.CLEAR_RATE_LIMIT:
@@ -276,6 +279,37 @@ class AccountViewProvider {
         }
         break;
     }
+  }
+
+  async _runRequest(msg, fn) {
+    try {
+      const result = await this._withLoading(fn);
+      this._pushState();
+      this._sendActionResult(msg.requestId, { ok: true, result });
+      return result;
+    } catch (e) {
+      this._toast(`错误: ${e.message}`, true);
+      this._sendActionResult(msg.requestId, { ok: false, error: e.message });
+      return null;
+    }
+  }
+
+  async _withLoading(fn) {
+    this._setLoading(true);
+    try {
+      return await fn();
+    } finally {
+      this._setLoading(false);
+    }
+  }
+
+  _sendActionResult(requestId, payload) {
+    if (!requestId || !this._view) return;
+    this._view.webview.postMessage({
+      type: MSG.ACTION_RESULT,
+      requestId,
+      ...payload,
+    });
   }
 
   _removeEmpty() {

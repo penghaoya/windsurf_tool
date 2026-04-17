@@ -2,6 +2,7 @@ export const MSG = {
   STATE: 'state',
   TOAST: 'toast',
   LOADING: 'loading',
+  ACTION_RESULT: 'actionResult',
   PREVIEW_RESULT: 'previewResult',
   PWD_RESULT: 'pwdResult',
 };

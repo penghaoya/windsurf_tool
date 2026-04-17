@@ -14,6 +14,15 @@ export function postMessage(type, data = {}) {
   _vscode?.postMessage({ type, ...data })
 }
 
+let _requestSeq = 0
+
+/** 发送需要结果回执的动作 */
+export function requestAction(type, data = {}) {
+  const requestId = `${Date.now()}-${++_requestSeq}`
+  _vscode?.postMessage({ type, requestId, ...data })
+  return requestId
+}
+
 /** 号池状态 (由 Extension Host 推送) */
 export const state = reactive({
   accounts: [],
@@ -36,6 +45,9 @@ export const previewAccounts = ref([])
 
 /** 密码复制回调 (index → { email, pwd }) */
 export const pwdResults = reactive({})
+
+/** 动作回执 (requestId → { ok, result?, error? }) */
+export const actionResults = reactive({})
 
 let _toastId = 0
 
@@ -81,6 +93,15 @@ export function initMessageListener() {
         break
       case MSG.LOADING:
         isLoading.value = !!m.on
+        break
+      case MSG.ACTION_RESULT:
+        if (m.requestId) {
+          actionResults[m.requestId] = {
+            ok: !!m.ok,
+            result: m.result,
+            error: m.error || null,
+          }
+        }
         break
       case MSG.PREVIEW_RESULT:
         previewAccounts.value = m.accounts || []
