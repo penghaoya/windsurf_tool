@@ -2,7 +2,7 @@
   <div class="sect">
     <div class="sbox" :class="{ open: expanded }">
       <div id="list">
-        <div v-if="accounts.length > 0" class="list-tools">
+        <div v-if="accounts.length > 0" ref="toolsEl" class="list-tools">
           <div class="search-row">
             <input
               v-model.trim="query"
@@ -36,17 +36,20 @@
           </div>
           <div class="result-line">{{ filteredAccounts.length }}/{{ accounts.length }} 匹配</div>
         </div>
-        <template v-if="filteredAccounts.length > 0">
-          <AccountCard
-            v-for="{ account, index } in filteredAccounts"
-            :key="account.email || index"
-            :account="account"
-            :index="index"
-            :isCurrent="index === currentIndex"
-            :threshold="threshold"
-            :switchStatus="switchStatus"
-          />
-        </template>
+        <div v-if="filteredAccounts.length > 0" class="virtual-list" :style="{ height: `${virtualWindow.totalHeight}px` }">
+          <div class="virtual-offset" :style="{ transform: `translateY(${virtualWindow.offsetTop}px)` }">
+            <AccountCard
+              v-for="{ account, index } in visibleAccounts"
+              :key="account.email || index"
+              :account="account"
+              :index="index"
+              :isCurrent="index === currentIndex"
+              :threshold="threshold"
+              :switchStatus="switchStatus"
+              :now="now"
+            />
+          </div>
+        </div>
         <div v-else class="empty">
           <div class="empty-icon">📭</div>
           {{ accounts.length > 0 ? '未找到匹配账号' : '号池为空' }}<br>
@@ -58,8 +61,11 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AccountCard from './AccountCard.vue'
+
+const ITEM_HEIGHT = 118
+const OVERSCAN = 5
 
 const props = defineProps({
   accounts: { type: Array, default: () => [] },
@@ -67,11 +73,18 @@ const props = defineProps({
   threshold: { type: Number, default: 5 },
   expanded: { type: Boolean, default: true },
   switchStatus: { type: Object, default: null },
+  scrollTop: { type: Number, default: 0 },
+  viewportHeight: { type: Number, default: 0 },
 })
 
 const query = ref('')
 const filterMode = ref('all')
 const sortMode = ref('default')
+const now = ref(Date.now())
+const toolsEl = ref(null)
+const toolsHeight = ref(0)
+let clockTimer = null
+let resizeObserver = null
 
 const normalizedQuery = computed(() => query.value.trim().toLowerCase())
 
@@ -129,12 +142,55 @@ const filteredAccounts = computed(() =>
     .filter(({ account }) => matchesQuery(account) && matchesFilter(account))
     .sort(compareAccounts)
 )
+
+const virtualWindow = computed(() => {
+  const total = filteredAccounts.value.length
+  if (total === 0) return { start: 0, end: -1, offsetTop: 0, totalHeight: 0 }
+
+  const localScrollTop = Math.max(0, props.scrollTop - toolsHeight.value)
+  const visibleCount = Math.max(1, Math.ceil((props.viewportHeight || ITEM_HEIGHT * 6) / ITEM_HEIGHT))
+  const start = Math.max(0, Math.floor(localScrollTop / ITEM_HEIGHT) - OVERSCAN)
+  const end = Math.min(total - 1, start + visibleCount + OVERSCAN * 2)
+
+  return {
+    start,
+    end,
+    offsetTop: start * ITEM_HEIGHT,
+    totalHeight: total * ITEM_HEIGHT,
+  }
+})
+
+const visibleAccounts = computed(() =>
+  filteredAccounts.value.slice(virtualWindow.value.start, virtualWindow.value.end + 1)
+)
+
+function updateToolsHeight() {
+  toolsHeight.value = toolsEl.value?.offsetHeight || 0
+}
+
+onMounted(() => {
+  clockTimer = setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+  resizeObserver = new ResizeObserver(updateToolsHeight)
+  if (toolsEl.value) resizeObserver.observe(toolsEl.value)
+  nextTick(updateToolsHeight)
+})
+
+watch([query, filterMode, sortMode], () => nextTick(updateToolsHeight))
+
+onBeforeUnmount(() => {
+  clearInterval(clockTimer)
+  resizeObserver?.disconnect()
+})
 </script>
 
 <style scoped>
 .sect{margin-top:0}
 .sbox{max-height:0;overflow:hidden;transition:max-height .3s ease,opacity .25s ease;opacity:0;padding:0}
 .sbox.open{max-height:9999px;opacity:1;padding:2px 0}
+.virtual-list{position:relative;width:100%}
+.virtual-offset{position:absolute;left:0;right:0;top:0}
 .list-tools{display:flex;flex-direction:column;gap:5px;margin:3px 0 6px}
 .search-row{display:flex;align-items:center;gap:4px}
 .search-input{flex:1;min-width:0;height:26px;background:var(--input-bg);color:var(--tx);border:1px solid var(--input-bd);border-radius:var(--R3);padding:0 8px;font:inherit;font-size:12px;outline:none}

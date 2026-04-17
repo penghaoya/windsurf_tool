@@ -15,13 +15,22 @@
         <span>{{ state.accounts.length }} 个账号</span>
       </div>
     </div>
-    <div class="app-scroll" @mouseenter="scrollHover=true" @mouseleave="scrollHover=false" :class="{scrolling:scrollHover}">
+    <div
+      ref="scrollEl"
+      class="app-scroll"
+      @scroll="onScroll"
+      @mouseenter="scrollHover=true"
+      @mouseleave="scrollHover=false"
+      :class="{scrolling:scrollHover}"
+    >
       <AccountList
         :accounts="state.accounts"
         :currentIndex="state.currentIndex"
         :threshold="state.threshold"
         :expanded="listExpanded"
         :switchStatus="state.switchStatus"
+        :scrollTop="scrollTop"
+        :viewportHeight="viewportHeight"
       />
     </div>
   </div>
@@ -29,7 +38,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onBeforeUnmount, onMounted } from 'vue'
 import { state, toasts, isLoading, initMessageListener } from './composables/useVscode.js'
 import PoolOverview from './components/PoolOverview.vue'
 import Toolbar from './components/Toolbar.vue'
@@ -39,9 +48,28 @@ import ToastMessage from './components/ToastMessage.vue'
 
 const listExpanded = ref(true)
 const scrollHover = ref(false)
+const scrollEl = ref(null)
+const scrollTop = ref(0)
+const viewportHeight = ref(0)
+let resizeObserver = null
+
+function updateViewport() {
+  viewportHeight.value = scrollEl.value?.clientHeight || 0
+}
+
+function onScroll() {
+  scrollTop.value = scrollEl.value?.scrollTop || 0
+}
 
 onMounted(() => {
   initMessageListener()
+  updateViewport()
+  resizeObserver = new ResizeObserver(updateViewport)
+  if (scrollEl.value) resizeObserver.observe(scrollEl.value)
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
 })
 </script>
 

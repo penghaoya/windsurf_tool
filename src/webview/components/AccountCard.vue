@@ -143,17 +143,14 @@ const props = defineProps({
   isCurrent: { type: Boolean, default: false },
   threshold: { type: Number, default: 5 },
   switchStatus: { type: Object, default: null },
+  now: { type: Number, default: () => Date.now() },
 })
 
 const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
 const refreshing = ref(false)
-const now = ref(Date.now())
 let confirmTimer = null
 let copyTimer = null
-const rateLimitTimer = setInterval(() => {
-  now.value = Date.now()
-}, 1000)
 
 const rateLimitUntil = computed(() =>
   props.account.rateLimitInfo?.until ?? props.account.rateLimit?.until ?? null
@@ -161,7 +158,7 @@ const rateLimitUntil = computed(() =>
 
 const remainingCooldown = computed(() => {
   if (!rateLimitUntil.value) return 0
-  return Math.max(0, Math.ceil((rateLimitUntil.value - now.value) / 1000))
+  return Math.max(0, Math.ceil((rateLimitUntil.value - props.now) / 1000))
 })
 
 const isRateLimited = computed(() => remainingCooldown.value > 0)
@@ -174,11 +171,11 @@ const poolCoolUntil = computed(() => props.account.schedulerBlocked?.poolCooled?
 
 const quarantineRemaining = computed(() => {
   if (!quarantineUntil.value) return 0
-  return Math.max(0, Math.ceil((quarantineUntil.value - now.value) / 1000))
+  return Math.max(0, Math.ceil((quarantineUntil.value - props.now) / 1000))
 })
 const poolCoolRemaining = computed(() => {
   if (!poolCoolUntil.value) return 0
-  return Math.max(0, Math.ceil((poolCoolUntil.value - now.value) / 1000))
+  return Math.max(0, Math.ceil((poolCoolUntil.value - props.now) / 1000))
 })
 
 const quarantineLabel = computed(() => formatCooldown(quarantineRemaining.value))
@@ -286,7 +283,6 @@ function formatCooldown(totalSeconds) {
 }
 
 onBeforeUnmount(() => {
-  clearInterval(rateLimitTimer)
   clearTimeout(confirmTimer)
   clearTimeout(copyTimer)
 })
