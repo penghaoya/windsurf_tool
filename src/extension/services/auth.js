@@ -49,6 +49,7 @@ const REGISTER_URLS = [
 ];
 
 const TOKEN_TTL = 50 * 60 * 1000; // 50 minutes
+const AUTH_PROVIDER_TTL = 24 * 60 * 60 * 1000;
 const PROXY_HOST = '127.0.0.1';
 const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080, 8080, 8118, 3128, 9090]; // 按优先级探测
 let ACTIVE_PROXY_PORT = 7890; // 当前生效端口（自动探测更新）
@@ -65,9 +66,12 @@ let _warn = (tag, msg) => console.log(`WAM: [WARN][${tag}] ${msg}`);
 class AuthService {
   constructor(storagePath) {
     this._tokenCache = new Map(); // email -> { idToken, expireTime }
+    this._providerCache = new Map(); // email -> { provider, expireTime }
     this._storagePath = storagePath || null;
     this._cachePath = null; // set lazily in _getCachePath()
+    this._providerCachePath = null;
     this._loadCache();
+    this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
     // This prevents TCP socket operations during Extension Host activation
   }
@@ -256,6 +260,15 @@ class AuthService {
     return path.join(base, 'wam-token-cache.json');
   }
 
+  _getProviderCachePath() {
+    if (this._providerCachePath !== null) return this._providerCachePath;
+    const tokenPath = this._getCachePath();
+    this._providerCachePath = tokenPath
+      ? path.join(path.dirname(tokenPath), 'wam-auth-provider-cache.json')
+      : null;
+    return this._providerCachePath;
+  }
+
   // ========== Token Cache (disk-persistent in globalStorage, 50min TTL) ==========
 
   _loadCache() {
@@ -309,6 +322,48 @@ class AuthService {
     if (email) this._tokenCache.delete(email);
     else this._tokenCache.clear();
     this._saveCache();
+  }
+
+  _loadProviderCache() {
+    try {
+      const p = this._getProviderCachePath();
+      if (!p) return;
+      const data = safeReadJsonSync(p, {});
+      const now = Date.now();
+      for (const [email, entry] of Object.entries(data)) {
+        if (entry?.provider && entry.expireTime > now) {
+          this._providerCache.set(email, entry);
+        }
+      }
+    } catch {}
+  }
+
+  _saveProviderCache() {
+    try {
+      const p = this._getProviderCachePath();
+      if (!p) return;
+      const obj = {};
+      this._providerCache.forEach((v, k) => { obj[k] = v; });
+      safeWriteJsonSync(p, obj);
+    } catch {}
+  }
+
+  _getCachedAuthProvider(email) {
+    const key = (email || '').trim().toLowerCase();
+    const entry = this._providerCache.get(key);
+    if (entry && entry.expireTime > Date.now()) return entry.provider;
+    this._providerCache.delete(key);
+    return null;
+  }
+
+  _setCachedAuthProvider(email, provider) {
+    const key = (email || '').trim().toLowerCase();
+    if (!key || !provider) return;
+    this._providerCache.set(key, {
+      provider,
+      expireTime: Date.now() + AUTH_PROVIDER_TTL,
+    });
+    this._saveProviderCache();
   }
 
   // ========== HTTP Helpers (with proxy support for China) ==========
@@ -638,6 +693,10 @@ class AuthService {
     };
   }
 
+  _isUnsupportedDevinAuthError(message) {
+    return /不支持密码登录|unsupported|has_password|auth_method/i.test(message || '');
+  }
+
   // ========== Firebase Login (双模式: relay优先 or local代理优先) ==========
 
   async login(email, password, forceFresh = false) {
@@ -653,14 +712,23 @@ class AuthService {
     const payload = { returnSecureToken: true, email, password, clientType: 'CLIENT_TYPE_WEB' };
     const fbHeaders = { Referer: 'https://windsurf.com/', Origin: 'https://windsurf.com' };
     const errors = [];
+    const cachedProvider = this._getCachedAuthProvider(email);
 
-    try {
-      const devin = await this._signInWithDevinAuth(email, password);
-      this._setCachedToken(email, devin.idToken);
-      return { ...devin, elapsed: Date.now() - _t0 };
-    } catch (e) {
-      errors.push(`devin-auth: ${e.message}`);
-      _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
+    if (cachedProvider !== 'firebase' && cachedProvider !== 'unsupported-devin') {
+      try {
+        const devin = await this._signInWithDevinAuth(email, password);
+        this._setCachedToken(email, devin.idToken);
+        this._setCachedAuthProvider(email, 'devin-auth');
+        return { ...devin, elapsed: Date.now() - _t0 };
+      } catch (e) {
+        errors.push(`devin-auth: ${e.message}`);
+        if (this._isUnsupportedDevinAuthError(e.message)) {
+          this._setCachedAuthProvider(email, 'unsupported-devin');
+        }
+        _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
+      }
+    } else {
+      errors.push(`devin-auth: skipped(${cachedProvider})`);
     }
 
     const tryFirebase = async (useProxy) => {
@@ -670,6 +738,7 @@ class AuthService {
           const r = await this._httpsJson(url, 'POST', payload, useProxy, fbHeaders);
           if (r.ok && r.data.idToken) {
             this._setCachedToken(email, r.data.idToken);
+            this._setCachedAuthProvider(email, 'firebase');
             const channel = useProxy === true ? 'firebase-proxy' : 'firebase-local';
             _info('登录', `${_emailPrefix} → ${channel} (${Date.now() - _t0}ms)`);
             return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel };
@@ -691,6 +760,7 @@ class AuthService {
         const r = await this._tryRelaysJson('/firebase/login', payload);
         if (r && r.ok && r.data.idToken) {
           this._setCachedToken(email, r.data.idToken);
+          this._setCachedAuthProvider(email, 'firebase');
           _info('登录', `${_emailPrefix} → relay (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay' };
         }
@@ -714,6 +784,7 @@ class AuthService {
         const r = await this._tryRelaysJson('/firebase/login', payload);
         if (r && r.ok && r.data.idToken) {
           this._setCachedToken(email, r.data.idToken);
+          this._setCachedAuthProvider(email, 'firebase');
           _info('登录', `${_emailPrefix} → relay-fallback (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay-fallback' };
         }
