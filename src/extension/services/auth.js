@@ -993,12 +993,12 @@ class AuthService {
    * Read real quota % from Windsurf's state.vscdb (cachedPlanInfo).
    * Returns: { daily, weekly, billing, plan, resetTime, weeklyReset, extraBalance } or null
    */
-  readCachedQuota() {
+  readCachedQuota(expectedEmail = null) {
     try {
       const dbPath = getStateDbPath();
       if (!fs.existsSync(dbPath)) return null;
 
-      const protoQuota = this.readCachedUserStatusProto(dbPath);
+      const protoQuota = this.readCachedUserStatusProto(dbPath, expectedEmail);
       if (protoQuota) {
         _info('缓存额度', `proto daily=${protoQuota.daily}% weekly=${protoQuota.weekly}% plan=${protoQuota.plan} email=${protoQuota.email || 'n/a'} exhausted=${protoQuota.exhausted}`);
         return protoQuota;
@@ -1028,12 +1028,21 @@ class AuthService {
         planStart: planStartMs || null,
         planEnd: planEndMs || null,
       };
+      if (!this._matchesExpectedEmail(result.email, expectedEmail)) {
+        _warn('缓存额度', `cachedPlanInfo email mismatch: cached=${result.email || 'n/a'} expected=${expectedEmail}`);
+        return null;
+      }
       _info('缓存额度', `daily=${result.daily}% weekly=${result.weekly}% billing=${result.billing} plan=${result.plan} planEnd=${result.planEnd ? new Date(result.planEnd).toLocaleDateString() : 'n/a'} exhausted=${result.exhausted}`);
       return result;
     } catch (e) {
       _warn('缓存额度', `readCachedQuota error: ${e.message}`);
       return null;
     }
+  }
+
+  _matchesExpectedEmail(actualEmail, expectedEmail) {
+    if (!expectedEmail || !actualEmail) return true;
+    return String(actualEmail).trim().toLowerCase() === String(expectedEmail).trim().toLowerCase();
   }
 
   /** Read the locally effective Windsurf account email without network.
@@ -1101,7 +1110,7 @@ class AuthService {
    * Read realtime quota from windsurfAuthStatus.userStatusProtoBinaryBase64.
    * This local channel is fresher than cachedPlanInfo and does not require network.
    */
-  readCachedUserStatusProto(dbPath = getStateDbPath()) {
+  readCachedUserStatusProto(dbPath = getStateDbPath(), expectedEmail = null) {
     try {
       if (!fs.existsSync(dbPath)) return null;
       const raw = dbReadKey(dbPath, 'windsurfAuthStatus');
@@ -1112,6 +1121,10 @@ class AuthService {
 
       const outer = parseProtoMsg(Buffer.from(b64, 'base64'));
       const email = this._protoEntryString(outer, 7) || this._protoEntryString(outer, 3) || status.userEmail || null;
+      if (!this._matchesExpectedEmail(email, expectedEmail)) {
+        _warn('缓存额度', `userStatusProto email mismatch: cached=${email || 'n/a'} expected=${expectedEmail}`);
+        return null;
+      }
       const planStatus = this._protoEntrySub(outer, 13);
       if (!planStatus) return null;
 

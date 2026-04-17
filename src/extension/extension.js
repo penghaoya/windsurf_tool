@@ -288,13 +288,8 @@ async function _refreshOne(index) {
       // v5.11.0+v6.9: Supplement from cachedPlanInfo for active account (single read)
       if (index === S.activeIndex && S.auth) {
         try {
-          const cached = S.auth.readCachedQuota();
+          const cached = S.auth.readCachedQuota(account.email);
           if (cached) {
-            // Validate cached email matches current account (avoid stale data from previous account)
-            if (cached.email && account.email && cached.email.toLowerCase() !== account.email.toLowerCase()) {
-              _logWarn('额度补充', `cachedPlanInfo email不匹配: cached=${cached.email} vs account=${account.email}, 跳过补充`);
-              cached.daily = null; // skip quota supplement
-            }
             // Supplement daily% if billingStrategy=quota but API didn't return it
             if (usageInfo.billingStrategy === "quota" && !usageInfo.daily && cached.daily !== null) {
               usageInfo.daily = {
