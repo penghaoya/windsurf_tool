@@ -103,12 +103,19 @@ class AccountViewProvider {
     const pool = this._am.getPoolStats ? this._am.getPoolStats(threshold) : { total: accounts.length, available: 0, depleted: 0, rateLimited: 0, health: 0, avgDaily: null, avgWeekly: null };
     const activeQuota = this._am.getActiveQuota ? this._am.getActiveQuota(currentIndex) : null;
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
+    const switchStatus = this._onAction ? (this._onAction('getSwitchStatus') || null) : null;
 
     // 为每个账号附加计算属性 (Vue 侧只做展示，不做业务逻辑)
     const enriched = accounts.map((a, i) => {
       const dailyRem = this._am.getDailyRemaining ? this._am.getDailyRemaining(i) : null;
       return {
-        ...a,
+        index: i,
+        email: a.email,
+        credits: a.credits,
+        usage: a.usage || null,
+        rateLimit: a.rateLimit || null,
+        loginCount: a.loginCount || 0,
+        addedAt: a.addedAt || null,
         effective: this._am.effectiveRemaining(i),
         isExpired: this._am.isExpired ? this._am.isExpired(i) : false,
         planDays: this._am.getPlanDaysRemaining ? this._am.getPlanDaysRemaining(i) : null,
@@ -133,6 +140,7 @@ class AccountViewProvider {
       activeQuota,
       threshold,
       switchCount,
+      switchStatus,
     });
   }
 
@@ -204,6 +212,9 @@ class AccountViewProvider {
         break;
       case ACTION.REPROBE_PROXY:
         if (act) { this._setLoading(true); await act('reprobeProxy'); this._setLoading(false); this._pushState(); }
+        break;
+      case ACTION.SHOW_LOGS:
+        if (act) act('showLogs');
         break;
       case ACTION.RESET_FINGERPRINT:
         if (act) act('resetFingerprint');

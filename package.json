@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "1.2.18",
+  "version": "1.2.19",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -30,7 +30,7 @@
       "windsurf-assistant": [
         {
           "id": "windsurf-assistant.assistantView",
-          "name": "-Fuck",
+          "name": "账号池",
           "type": "webview",
           "when": "windsurf-tools.active"
         }

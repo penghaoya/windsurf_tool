@@ -965,6 +965,38 @@ class AuthService {
     }
   }
 
+  /** Read the locally effective Windsurf account email without network.
+   *  Switch confirmation needs identity, not quota freshness. */
+  readCachedAuthEmail() {
+    try {
+      const dbPath = getStateDbPath();
+      if (!fs.existsSync(dbPath)) return null;
+
+      const protoQuota = this.readCachedUserStatusProto(dbPath);
+      if (protoQuota?.email) return protoQuota.email;
+
+      const authRaw = dbReadKey(dbPath, 'windsurfAuthStatus');
+      if (authRaw) {
+        try {
+          const authStatus = JSON.parse(authRaw);
+          if (authStatus.userEmail) return authStatus.userEmail;
+          if (authStatus.email) return authStatus.email;
+        } catch {}
+      }
+
+      const planRaw = dbReadKey(dbPath, 'windsurf.settings.cachedPlanInfo');
+      if (planRaw) {
+        try {
+          const plan = JSON.parse(planRaw);
+          return plan.email || plan.accountEmail || null;
+        } catch {}
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   _protoEntryString(fields, field) {
     const entry = fields[field]?.[0];
     if (!entry) return null;

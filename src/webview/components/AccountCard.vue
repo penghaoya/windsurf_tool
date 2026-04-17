@@ -73,6 +73,26 @@
       <span class="ac-name" :title="account.email">{{ account.email }}</span>
     </div>
 
+    <div v-if="switchBadge" class="switch-badge" :class="switchBadge.kind">
+      <span>{{ switchBadge.text }}</span>
+      <button
+        v-if="switchBadge.canRetry"
+        class="mini-link"
+        type="button"
+        @click="postMessage('login', { index })"
+      >
+        重试
+      </button>
+      <button
+        v-if="switchBadge.canOpenLog"
+        class="mini-link"
+        type="button"
+        @click="postMessage('showLogs')"
+      >
+        日志
+      </button>
+    </div>
+
     <!-- Quota Meters -->
     <div class="ac-meters">
       <QuotaMeter
@@ -122,6 +142,7 @@ const props = defineProps({
   index: { type: Number, required: true },
   isCurrent: { type: Boolean, default: false },
   threshold: { type: Number, default: 5 },
+  switchStatus: { type: Object, default: null },
 })
 
 const confirmRemove = ref(false)
@@ -166,6 +187,31 @@ const isBlocked = computed(() => quarantineRemaining.value > 0 || poolCoolRemain
 const isDailyDepleted = computed(() => props.account.dailyDepleted === true)
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
+
+const isPendingSwitchTarget = computed(() => props.switchStatus?.pendingIndex === props.index)
+const isConfirmedSwitchTarget = computed(() => props.switchStatus?.confirmedIndex === props.index)
+
+const switchBadge = computed(() => {
+  const phase = props.switchStatus?.phase
+  if ((phase === 'switching' || phase === 'verifying') && isPendingSwitchTarget.value) {
+    return {
+      kind: 'pending',
+      text: phase === 'switching' ? '切换中' : '验证中',
+      canRetry: false,
+      canOpenLog: false,
+    }
+  }
+  if (phase === 'confirmed' && isConfirmedSwitchTarget.value) {
+    return { kind: 'ok', text: '已确认切换', canRetry: false, canOpenLog: false }
+  }
+  if (phase === 'uncertain' && isPendingSwitchTarget.value) {
+    return { kind: 'warn', text: '可能未生效', canRetry: true, canOpenLog: true }
+  }
+  if (phase === 'failed' && isPendingSwitchTarget.value) {
+    return { kind: 'bad', text: '切换失败', canRetry: true, canOpenLog: true }
+  }
+  return null
+})
 
 const statusClass = computed(() =>
   dotClass(effectiveRemaining.value, props.threshold, props.account.isExpired)
@@ -287,6 +333,13 @@ onBeforeUnmount(() => {
 .del-confirm:hover{background:var(--rd-bg)}
 @keyframes confirm-in{from{opacity:0;transform:translateX(4px)}to{opacity:1;transform:translateX(0)}}
 .ac-meters{display:flex;flex-direction:column;gap:2px}
+.switch-badge{display:flex;align-items:center;gap:6px;margin:3px 0 4px;font-size:11px;line-height:1.6}
+.switch-badge.pending{color:var(--ac)}
+.switch-badge.ok{color:var(--gn)}
+.switch-badge.warn{color:var(--yw)}
+.switch-badge.bad{color:var(--rd)}
+.mini-link{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;text-decoration:underline;text-underline-offset:2px;padding:0 1px}
+.mini-link:hover{color:var(--tx)}
 .ac-rl{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--yw);margin-top:3px}
 .ac-rl-time{color:var(--tx2)}
 .ac-qr{color:var(--rd)}

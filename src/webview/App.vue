@@ -21,6 +21,7 @@
         :currentIndex="state.currentIndex"
         :threshold="state.threshold"
         :expanded="listExpanded"
+        :switchStatus="state.switchStatus"
       />
     </div>
   </div>

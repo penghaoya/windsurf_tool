@@ -421,6 +421,36 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
 
 // ═══ 无感切换 ═══
 
+const SWITCH_CONFIRM_TIMEOUT = 7000;
+const SWITCH_CONFIRM_POLL = 500;
+
+function _setSwitchStatus(partial) {
+  S.switchStatus = {
+    ...S.switchStatus,
+    ...partial,
+    updatedAt: Date.now(),
+  };
+  _refreshPanel();
+}
+
+async function _waitForSwitchConfirmation(targetEmail, timeoutMs = SWITCH_CONFIRM_TIMEOUT) {
+  const normalizedTarget = _normalizeEmail(targetEmail);
+  if (!normalizedTarget || !S.auth?.readCachedAuthEmail) {
+    return { ok: false, reason: 'no_local_identity_reader' };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  let lastEmail = null;
+  while (Date.now() < deadline) {
+    lastEmail = _normalizeEmail(S.auth.readCachedAuthEmail());
+    if (lastEmail && lastEmail === normalizedTarget) {
+      return { ok: true, email: lastEmail };
+    }
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_CONFIRM_POLL));
+  }
+  return { ok: false, reason: 'timeout', email: lastEmail };
+}
+
 export async function _seamlessSwitch(context, targetIndex) {
   if (S.switching || targetIndex === S.activeIndex) return false;
   S.switching = true;
@@ -428,10 +458,26 @@ export async function _seamlessSwitch(context, targetIndex) {
   S.statusBar.text = "$(sync~spin) ...";
   const prevIndex = S.activeIndex;
   const prevEmail = _getAccountEmail(prevIndex);
+  const targetEmail = _getAccountEmail(targetIndex);
+  _setSwitchStatus({
+    phase: 'switching',
+    pendingIndex: targetIndex,
+    confirmedIndex: -1,
+    targetEmail,
+    startedAt: Date.now(),
+    message: '切换中',
+  });
 
   try {
     _invalidateApiKeyCache();
     await deps.loginToAccount(context, targetIndex);
+    _setSwitchStatus({
+      phase: 'verifying',
+      pendingIndex: targetIndex,
+      targetEmail,
+      message: '验证中',
+    });
+    const confirmed = await _waitForSwitchConfirmation(targetEmail);
     S.switchCount++;
     S.am.markUsed(targetIndex);
     S.lastQuota = null;
@@ -443,9 +489,38 @@ export async function _seamlessSwitch(context, targetIndex) {
     _heartbeatWindow();
     // 持久化activeIndex,崩溃恢复时不会回退到旧账号
     if (context?.globalState) context.globalState.update('wam-current-index', targetIndex);
-    _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
+    if (confirmed.ok) {
+      _setSwitchStatus({
+        phase: 'confirmed',
+        pendingIndex: -1,
+        confirmedIndex: targetIndex,
+        targetEmail,
+        confirmedAt: Date.now(),
+        message: '已生效',
+      });
+      _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 已确认 (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
+    } else {
+      _setSwitchStatus({
+        phase: 'uncertain',
+        pendingIndex: targetIndex,
+        confirmedIndex: -1,
+        targetEmail,
+        reason: confirmed.reason,
+        observedEmail: confirmed.email || null,
+        message: '可能未生效',
+      });
+      _logWarn("切换", `⚠️ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 未确认 (${confirmed.reason || 'unknown'}, observed=${confirmed.email || 'n/a'})`);
+    }
     return true;
   } catch (e) {
+    _setSwitchStatus({
+      phase: 'failed',
+      pendingIndex: targetIndex,
+      confirmedIndex: -1,
+      targetEmail,
+      message: '切换失败',
+      reason: e.message,
+    });
     _logError("切换", `❌ 切换失败 #${targetIndex + 1}`, e.message);
     S.statusBar.text = prevBar;
     return false;

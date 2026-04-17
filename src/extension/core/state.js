@@ -31,6 +31,15 @@ export const S = {
   lastCheckTs: 0,
   boostUntil: 0,
   switchCount: 0,
+  switchStatus: {
+    phase: 'idle',
+    pendingIndex: -1,
+    confirmedIndex: -1,
+    targetEmail: null,
+    startedAt: 0,
+    updatedAt: 0,
+    message: '',
+  },
   discoveredAuthCmd: null,
   eventLog: [],
 

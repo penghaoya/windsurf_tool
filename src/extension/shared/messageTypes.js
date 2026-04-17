@@ -29,4 +29,5 @@ export const ACTION = {
   IMPORT_ACCOUNTS: 'importAccounts',
   CLEAR_RATE_LIMIT: 'clearRateLimit',
   COPY_PWD: 'copyPwd',
+  SHOW_LOGS: 'showLogs',
 };

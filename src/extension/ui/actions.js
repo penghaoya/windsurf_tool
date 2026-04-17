@@ -66,6 +66,11 @@ export function createActionHandler(helpers) {
         return S.am.getActiveQuota(S.activeIndex);
       case 'getSwitchCount':
         return S.switchCount;
+      case 'getSwitchStatus':
+        return S.switchStatus || null;
+      case 'showLogs':
+        S.outputChannel?.show(true);
+        return undefined;
       case 'getAccountBlocked': {
         if (arg === undefined || arg === null) return null;
         const quarantine = _getAccountQuarantineByEmail(_getAccountEmail(arg));
