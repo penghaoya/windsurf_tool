@@ -92,26 +92,7 @@ export const OPUS_VARIANTS = [
 export const SONNET_FALLBACK = 'claude-sonnet-4-6-thinking-1m';
 export const SWE_FREE_FALLBACK = 'swe-1.5';  // 免费模型,不消耗 quota
 
-// ═══ 模型 Credit 成本估算 (基于社区观测) ═══
-// Trial: 100 credits/2周 ≈ 7/天, Pro: 500/月 ≈ 16.7/天
-export const MODEL_CREDIT_COST = {
-  opus_thinking_1m: 10,
-  opus_thinking: 5,
-  opus_regular: 3,
-  sonnet: 1,
-  default: 1,
-};
-
-// ═══ Opus消息预算 ═══
-export const OPUS_THINKING_1M_BUDGET = 1;
-export const OPUS_THINKING_BUDGET = 2;
-export const OPUS_REGULAR_BUDGET = 3;
-// 各层级 Opus 预算倍率 (相对 Free/Trial 基准)
-export const OPUS_BUDGET_MULTIPLIER_PRO = 3;   // Pro: ×3
-export const OPUS_BUDGET_MULTIPLIER_MAX = 10;  // Max($200/月): ×10
-export const OPUS_BUDGET_WINDOW = 1200000;
-export const OPUS_PREEMPT_RATIO = 1.0;
-export const OPUS_COOLDOWN_DEFAULT = 1500;
+// ═══ L5容量探测间隔 ═══
 export const CAPACITY_CHECK_THINKING = 3000;
 
 // ═══ L5容量探测 ═══
@@ -158,35 +139,6 @@ export function isThinkingModel(uid) {
 
 export function isThinking1MModel(uid) {
   return uid && /thinking/i.test(uid) && /1m/i.test(uid) && !/fast/i.test(uid);
-}
-
-export function getModelBudget(uid) {
-  if (!uid) return OPUS_REGULAR_BUDGET;
-  if (isThinking1MModel(uid)) return OPUS_THINKING_1M_BUDGET;
-  if (isThinkingModel(uid)) return OPUS_THINKING_BUDGET;
-  return OPUS_REGULAR_BUDGET;
-}
-
-/** 层级感知的 Opus 预算 — Max > Pro > Free
- *  tier 参数: PLAN_TIERS 值, 或兼容旧的 boolean (true=Free) */
-export function getModelBudgetForTier(uid, tierOrBool = PLAN_TIERS.FREE) {
-  const base = getModelBudget(uid);
-  const tier = typeof tierOrBool === 'boolean'
-    ? (tierOrBool ? PLAN_TIERS.FREE : PLAN_TIERS.PRO)
-    : (tierOrBool || PLAN_TIERS.FREE);
-  if (tier === PLAN_TIERS.MAX) return base * OPUS_BUDGET_MULTIPLIER_MAX;
-  if (tier === PLAN_TIERS.PRO || tier === PLAN_TIERS.TEAMS) return base * OPUS_BUDGET_MULTIPLIER_PRO;
-  if (tier === PLAN_TIERS.ENTERPRISE) return base * OPUS_BUDGET_MULTIPLIER_PRO;
-  return base; // Free/Trial: 基础预算
-}
-
-/** 获取模型每次消息的预估 credit 成本 */
-export function getModelCreditCost(uid) {
-  if (!uid) return MODEL_CREDIT_COST.default;
-  if (isThinking1MModel(uid)) return MODEL_CREDIT_COST.opus_thinking_1m;
-  if (isOpusModel(uid) && isThinkingModel(uid)) return MODEL_CREDIT_COST.opus_thinking;
-  if (isOpusModel(uid)) return MODEL_CREDIT_COST.opus_regular;
-  return MODEL_CREDIT_COST.default;
 }
 
 export function getModelVariants(uid) {

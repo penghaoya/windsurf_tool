@@ -2,18 +2,12 @@ import vscode from 'vscode';
 import {
   CONCURRENT_TAB_SAFE,
   TIER_MSG_CAP_ESTIMATE,
-  getModelBudgetForTier,
-  isOpusModel,
-  isThinking1MModel,
-  isThinkingModel,
 } from '../shared/config.js';
 import {
   S,
   _getCapacityState,
   _getPreemptiveThreshold,
   _isBoost,
-  _isTrialLikeAccount,
-  _getPlanTier,
 } from '../core/state.js';
 import {
   _getVelocity,
@@ -21,7 +15,7 @@ import {
   _slopePredict,
 } from '../core/scheduler.js';
 import { _getHourlyMsgCount, _isNearTierCap } from '../core/defense.js';
-import { _getOpusMsgCount, _readCurrentModelUid } from '../core/model.js';
+import { _readCurrentModelUid } from '../core/model.js';
 import { _getActiveWindowCount } from '../core/window.js';
 
 let _lastTooltipFingerprint = '';
@@ -87,8 +81,7 @@ export function _updatePoolBar() {
   const currentModel = S.currentModelUid || _readCurrentModelUid();
 
   // Tooltip fingerprint: skip rebuild if data unchanged (avoid MarkdownString churn in boost mode)
-  const opusCount = (isOpusModel(currentModel) && S.activeIndex >= 0) ? _getOpusMsgCount(S.activeIndex) : -1;
-  const fp = `${S.activeIndex}|${pool.available}|${pool.total}|${pool.depleted}|${pool.rateLimited}|${pool.expired}|${pool.avgDaily}|${pool.avgWeekly}|${pool.avgEffective}|${pool.urgentCount}|${vel.toFixed(1)}|${hourlyCount}|${slopeInfo}|${S.switchCount}|${winCount}|${S.cascadeTabCount}|${S.burstMode}|${currentModel}|${opusCount}|${lastCapacityResult?.messagesRemaining}|${lastCapacityResult?.hasCapacity}|${probeFailCount}|${S.capacityProbeCount}|${mode}|${threshold}`;
+  const fp = `${S.activeIndex}|${pool.available}|${pool.total}|${pool.depleted}|${pool.rateLimited}|${pool.expired}|${pool.avgDaily}|${pool.avgWeekly}|${pool.avgEffective}|${pool.urgentCount}|${vel.toFixed(1)}|${hourlyCount}|${slopeInfo}|${S.switchCount}|${winCount}|${S.cascadeTabCount}|${S.burstMode}|${currentModel}|${lastCapacityResult?.messagesRemaining}|${lastCapacityResult?.hasCapacity}|${probeFailCount}|${S.capacityProbeCount}|${mode}|${threshold}`;
   if (fp === _lastTooltipFingerprint) return;
   _lastTooltipFingerprint = fp;
 
@@ -165,7 +158,6 @@ export function _updatePoolBar() {
     S.cascadeTabCount > 1 ||
     S.burstMode;
   const hasDefense =
-    (isOpusModel(currentModel) && S.activeIndex >= 0) ||
     lastCapacityResult ||
     probeFailCount > 0;
   if (hasRuntime) {
@@ -188,16 +180,6 @@ export function _updatePoolBar() {
   if (hasDefense) {
     L('---');
     L('**防御状态**');
-    if (isOpusModel(currentModel) && S.activeIndex >= 0) {
-      const tier = _getPlanTier(S.activeIndex);
-      const tierBudget = getModelBudgetForTier(currentModel, tier);
-      const tierLabel = isThinking1MModel(currentModel)
-        ? 'T1M'
-        : isThinkingModel(currentModel)
-          ? 'T'
-          : 'R';
-      L(`Opus预算 &nbsp; **${opusCount}/${tierBudget}条** (${tierLabel})`);
-    }
     if (lastCapacityResult) {
       const icon = lastCapacityResult.hasCapacity ? '✓' : '✗';
       const hasNumbers = lastCapacityResult.messagesRemaining >= 0 || lastCapacityResult.maxMessages >= 0;

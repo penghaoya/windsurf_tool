@@ -8,11 +8,10 @@ import {
   CONCURRENT_TAB_SAFE, MSG_RATE_WINDOW, MSG_RATE_LIMIT, BURST_DETECT_THRESHOLD,
   TAB_CHECK_INTERVAL, FULL_SCAN_INTERVAL_NORMAL, FULL_SCAN_INTERVAL_BOOST,
   FULL_SCAN_INTERVAL_BURST, REACTIVE_SWITCH_CD, UFEF_COOLDOWN,
-  VELOCITY_WINDOW, VELOCITY_THRESHOLD, OPUS_VARIANTS, SONNET_FALLBACK,
+  VELOCITY_WINDOW, VELOCITY_THRESHOLD, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR, PREHEAT_FRESHNESS_TTL, PREHEAT_TIMEOUT,
-  isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
-  getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK, isTierFree,
+  getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK,
   L5_ENABLED,
 } from '../shared/config.js';
 import {
@@ -23,9 +22,7 @@ import {
   _logInfo, _logWarn, _logError, _isBoost, _activateBoost, _refreshPanel,
 } from './state.js';
 import {
-  _readCurrentModelUid, _trackOpusMsg, _getOpusMsgCount, _getPreemptAt,
-  _isNearOpusBudget, _getOpusDynamicCooldown, _resetOpusMsgLog,
-  _downgradeFromTrialPressure,
+  _readCurrentModelUid, _downgradeFromTrialPressure,
 } from './model.js';
 import {
   _getOtherWindowAccountEmails, _getActiveWindowCount,
@@ -161,36 +158,13 @@ function _getAdaptivePollMs() {
 
 // ═══ 运行时候选过滤 ═══
 
-export function _filterRuntimeCandidates(candidates, { modelUid = null, opusBudgetFilter = false } = {}) {
+export function _filterRuntimeCandidates(candidates, { modelUid = null } = {}) {
   const trialPoolCooldown = _getTrialPoolCooldown(modelUid);
   return candidates.filter((candidate) => {
     if (_isAccountQuarantined(candidate.email || candidate.index)) return false;
     if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
-    if (opusBudgetFilter && _isTrialLikeAccount(candidate.index)) {
-      const opusCount = _getOpusMsgCount(candidate.index);
-      const preemptAt = _getPreemptAt(modelUid || _readCurrentModelUid(), candidate.index);
-      if (opusCount >= preemptAt) return false;
-    }
     return true;
   });
-}
-
-/** 统计号池中Opus预算仍有余量的Trial账号数 */
-export function _countOpusAvailableTrials(excludeIndex = -1) {
-  const accounts = S.am.getAll();
-  const modelUid = S.currentModelUid || _readCurrentModelUid();
-  if (_getTrialPoolCooldown(modelUid)) return 0;
-  let available = 0;
-  for (let i = 0; i < accounts.length; i++) {
-    if (i === excludeIndex) continue;
-    if (!_isTrialLikeAccount(i)) continue;
-    if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
-    if (_isAccountQuarantined(i)) continue;
-    const opusCount = _getOpusMsgCount(i);
-    const preemptAt = _getPreemptAt(modelUid, i);
-    if (opusCount < preemptAt) available++;
-  }
-  return available;
 }
 
 // ═══ 候选选择 ═══
@@ -201,7 +175,6 @@ export function _getOrderedCandidates({
   targetPolicy = 'same_strategy',
   modelUid = null,
   excludeClaimed = true,
-  opusBudgetFilter = false,
 } = {}) {
   const preferredMode = targetPolicy === 'same_strategy' || targetPolicy === 'same_model'
     ? _getActiveSelectionMode()
@@ -211,12 +184,12 @@ export function _getOrderedCandidates({
   const primary = modelUid
     ? S.am.findBestForModel(modelUid, excludeIndex, threshold, excludedEmails, options)
     : S.am.selectOptimal(excludeIndex, threshold, excludedEmails, options);
-  const filteredPrimary = _filterRuntimeCandidates(primary, { modelUid, opusBudgetFilter });
+  const filteredPrimary = _filterRuntimeCandidates(primary, { modelUid });
   if (filteredPrimary.length > 0 || !excludeClaimed) return filteredPrimary;
   const fallback = modelUid
     ? S.am.findBestForModel(modelUid, excludeIndex, threshold, [], options)
     : S.am.selectOptimal(excludeIndex, threshold, [], options);
-  return _filterRuntimeCandidates(fallback, { modelUid, opusBudgetFilter });
+  return _filterRuntimeCandidates(fallback, { modelUid });
 }
 
 // ═══ 预热验证 ═══
@@ -270,7 +243,6 @@ export async function _performSwitch(context, {
   modelUid = null,
   candidates = null,
   allowThresholdFallback = false,
-  opusBudgetFilter = false,
 } = {}) {
   // v18.0: 切换频率控制 — 防封控
   const now = Date.now();
@@ -287,10 +259,10 @@ export async function _performSwitch(context, {
   }
   if (refreshPool) await deps.refreshAll();
   let ordered = Array.isArray(candidates) && candidates.length > 0
-    ? _filterRuntimeCandidates(candidates, { modelUid, opusBudgetFilter })
-    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true, opusBudgetFilter });
+    ? _filterRuntimeCandidates(candidates, { modelUid })
+    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true });
   if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
-    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false, opusBudgetFilter });
+    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false });
   }
   if (ordered.length === 0 && !modelUid && _getTrialPoolCooldown(_readCurrentModelUid())) {
     const downgraded = await _downgradeFromTrialPressure('Trial候选池冷却中');
@@ -386,17 +358,6 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
     return decision;
   }
 
-  if (curQuota !== null && curQuota > threshold) {
-    const currentModel = _readCurrentModelUid();
-    if (isOpusModel(currentModel) && S.downgradeLockUntil <= Date.now() && _isNearOpusBudget(S.activeIndex)) {
-      const opusCount = _getOpusMsgCount(S.activeIndex);
-      const tierBudget = getModelBudgetForTier(currentModel, _getPlanTier(S.activeIndex));
-      decision.action = 'switch_account';
-      decision.reason = `opus_budget_guard(model=${currentModel},msgs=${opusCount}/${tierBudget},tier=${isThinking1MModel(currentModel) ? 'T1M' : isThinkingModel(currentModel) ? 'T' : 'R'})`;
-      return decision;
-    }
-  }
-
   if (curQuota !== null && curQuota > threshold && Date.now() - S.lastUfefSwitchTs > UFEF_COOLDOWN) {
     const activeUrg = S.am.getExpiryUrgency(S.activeIndex);
     if (activeUrg >= 2 || activeUrg < 0) {
@@ -479,7 +440,6 @@ export async function _seamlessSwitch(context, targetIndex) {
     S.hourlySwitchLog.push(S.lastSwitchTs);
     _dropAccountRuntimeByEmail(prevEmail);
     _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
-    _resetOpusMsgLog(targetIndex);
     _heartbeatWindow();
     // 持久化activeIndex,崩溃恢复时不会回退到旧账号
     if (context?.globalState) context.globalState.update('wam-current-index', targetIndex);
@@ -584,21 +544,6 @@ async function _poolTick(context) {
   if (quotaChanged) {
     _trackMessageRate();
     _trackHourlyMsg();
-    if (curQuota < prevQuota) {
-      const currentModel = _readCurrentModelUid();
-      if (isOpusModel(currentModel)) {
-        // L5已追踪时跳过,避免重复计数 (L5通过messagesRemaining更精确)
-        const capacityState = _getCapacityState(S.activeIndex, false);
-        const l5RecentlyTracked = capacityState?.lastL5OpusTrackTs && (Date.now() - capacityState.lastL5OpusTrackTs < 60000);
-        if (!l5RecentlyTracked) {
-          _trackOpusMsg(S.activeIndex);
-        }
-        const opusCount = _getOpusMsgCount(S.activeIndex);
-        const tierBudget = getModelBudgetForTier(currentModel, _getPlanTier(S.activeIndex));
-        const tierLabel = isThinking1MModel(currentModel) ? 'Thinking-1M' : isThinkingModel(currentModel) ? 'Thinking' : 'Regular';
-        _logInfo('Opus守卫', `#${S.activeIndex + 1} 已发${opusCount}/${tierBudget}条 (${tierLabel})${l5RecentlyTracked ? ' (L5已追踪)' : ''}${opusCount >= tierBudget ? ' → 达到预算上限,即将切号!' : ''}`);
-      }
-    }
     const vel = _getVelocity();
     const acct = S.am.get(S.activeIndex);
     const emailPrefix = acct?.email?.split('@')[0] || '?';
@@ -684,49 +629,12 @@ async function _poolTick(context) {
       const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
       if (decision.action === 'switch_account') {
         if (decision.reason.startsWith('ufef_urgent')) S.lastUfefSwitchTs = Date.now();
-        if (decision.reason.startsWith('opus_budget_guard')) {
-          const currentModel = _readCurrentModelUid();
-          const opusCount = _getOpusMsgCount(S.activeIndex);
-          const tierBudget = getModelBudgetForTier(currentModel, _getPlanTier(S.activeIndex));
-          S.opusGuardSwitchCount++;
-          const dynamicCooldown = _getOpusDynamicCooldown(S.activeIndex);
-          for (const variant of OPUS_VARIANTS) {
-            S.am.markModelRateLimited(S.activeIndex, variant, dynamicCooldown, { trigger: 'opus_budget_guard' });
-          }
-          _pushRateLimitEvent({ type: 'per_model', trigger: 'opus_budget_guard', model: currentModel, msgs: opusCount, budget: tierBudget, tier: isThinking1MModel(currentModel) ? 'T1M' : isThinkingModel(currentModel) ? 'T' : 'R' });
-
-          const opusAvailable = _countOpusAvailableTrials(S.activeIndex);
-          if (opusAvailable === 0) {
-            _logWarn('Opus守卫', `全池Trial Opus预算耗尽(${opusCount}/${tierBudget}条,无候选) → 主动降级到Sonnet`);
-            const downgraded = await _downgradeFromTrialPressure(`[OPUS_GUARD] 全池Opus预算耗尽(已用${opusCount}/${tierBudget}条)`);
-            if (downgraded) {
-              _activateBoost();
-              deps.updatePoolBar?.();
-              _refreshPanel();
-              return;
-            }
-          } else {
-            _logInfo('Opus守卫', `Opus预算触发切号: ${opusCount}/${tierBudget}条, 可用Trial候选=${opusAvailable}个, 冷却=${dynamicCooldown}s`);
-          }
-        }
         _logInfo("调度决策", `预防性切号: ${decision.reason}`);
-        const isOpusGuard = decision.reason.startsWith('opus_budget_guard');
         const switchResult = await _performSwitch(context, {
           threshold,
           targetPolicy: decision.targetPolicy || 'same_strategy',
-          opusBudgetFilter: isOpusGuard,
         });
         if (!switchResult.ok) {
-          if (isOpusGuard) {
-            _logWarn('Opus守卫', '切号失败,降级到Sonnet作为最后防线');
-            const downgraded = await _downgradeFromTrialPressure('[OPUS_GUARD] 切号失败,降级兜底');
-            if (downgraded) {
-              _activateBoost();
-              deps.updatePoolBar?.();
-              _refreshPanel();
-              return;
-            }
-          }
           if (trialPoolActive) S.lastTrialPoolCooldownFailTs = Date.now();
           deps.updatePoolBar?.();
           _logWarn("调度决策", "预防性切号失败: 所有账号额度不足或预热失败");

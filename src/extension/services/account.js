@@ -823,24 +823,6 @@ class AccountManager {
     return result;
   }
 
-  /** Get Opus cooldown info for a specific account (for webview display) */
-  getOpusCooldownInfo(index) {
-    const a = this.get(index);
-    if (!a) return null;
-    let maxUntil = 0;
-    let trigger = null;
-    for (const [key, rl] of this._modelRateLimits) {
-      if (!key.startsWith(a.email + '|')) continue;
-      if (rl.until <= Date.now()) continue;
-      if (rl.until > maxUntil) {
-        maxUntil = rl.until;
-        trigger = rl.trigger || null;
-      }
-    }
-    if (maxUntil <= 0) return null;
-    return { until: maxUntil, trigger, remainingCooldown: Math.ceil((maxUntil - Date.now()) / 1000) };
-  }
-
   /** Get count of currently rate-limited accounts */
   rateLimitedCount() {
     let count = 0;

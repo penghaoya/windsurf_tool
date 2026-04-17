@@ -63,7 +63,6 @@ export const S = {
   lastTrialPoolCooldownFailTs: 0,
   autoDowngradedFromOpus: false,
   preDowngradeModelUid: null,
-  opusGuardSwitchCount: 0,
 
   // L5容量探测
   cachedApiKey: null,
@@ -138,7 +137,6 @@ export function _createAccountRuntime() {
     msgRateLog: [],
     quotaHistory: [],
     velocityLog: [],
-    opusMsgLog: [],
     capacity: {
       lastCheck: 0,
       lastResult: null,

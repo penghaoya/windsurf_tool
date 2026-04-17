@@ -1,15 +1,14 @@
 /**
  * 模型管理器
- * Opus守卫、模型降级/恢复、变体轮转、消息预算追踪
+ * 模型降级/恢复、变体轮转
  */
 import vscode from 'vscode';
 import {
-  OPUS_VARIANTS, SONNET_FALLBACK, SWE_FREE_FALLBACK, OPUS_BUDGET_WINDOW, OPUS_COOLDOWN_DEFAULT,
-  isOpusModel, isThinkingModel, isThinking1MModel, getModelBudget, getModelBudgetForTier,
-  isTierFree,
+  OPUS_VARIANTS, SONNET_FALLBACK, SWE_FREE_FALLBACK,
+  isOpusModel, isTierFree,
 } from '../shared/config.js';
 import {
-  S, _getAccountRuntime, _getCapacityState, _isTrialLikeAccount, _getPlanTier, _logInfo, _logWarn,
+  S, _isTrialLikeAccount, _getPlanTier, _logInfo, _logWarn,
 } from './state.js';
 
 // ═══ 模型UID读取 ═══
@@ -63,58 +62,6 @@ export async function _switchModelUid(targetUid) {
   }
 }
 
-// ═══ Opus消息预算追踪 ═══
-
-/** 追踪Opus消息 — 两条路径调用:
- *  1. _poolTick: quota%下降且当前模型=Opus时 (L5未覆盖时的兜底)
- *  2. L5探测: messagesRemaining下降且模型=Opus时 (更精确) */
-export function _trackOpusMsg(accountIndex) {
-  const runtime = _getAccountRuntime(accountIndex);
-  if (!runtime) return;
-  runtime.opusMsgLog.push({ ts: Date.now() });
-  const cutoff = Date.now() - OPUS_BUDGET_WINDOW;
-  runtime.opusMsgLog = runtime.opusMsgLog.filter((m) => m.ts > cutoff);
-}
-
-/** 获取当前账号在窗口内的Opus消息数 */
-export function _getOpusMsgCount(accountIndex) {
-  const runtime = _getAccountRuntime(accountIndex, false);
-  if (!runtime) return 0;
-  const cutoff = Date.now() - OPUS_BUDGET_WINDOW;
-  return runtime.opusMsgLog.filter((m) => m.ts > cutoff).length;
-}
-
-/** 获取提前切号阈值 — budget>1时提前1条,留buffer完成切号
- *  v17.0: 层级感知 — Max×10 > Pro×3 > Free×1 */
-export function _getPreemptAt(modelUid, accountIndex) {
-  const tier = accountIndex !== undefined ? _getPlanTier(accountIndex) : undefined;
-  const budget = getModelBudgetForTier(modelUid, tier);
-  return budget > 1 ? budget - 1 : budget;
-}
-
-/** 判断是否达到Opus消息预算 */
-export function _isNearOpusBudget(accountIndex) {
-  const modelUid = S.currentModelUid || _readCurrentModelUid();
-  const count = _getOpusMsgCount(accountIndex);
-  return count >= _getPreemptAt(modelUid, accountIndex);
-}
-
-/** 获取动态Opus冷却时间 — L5实际值优先,固定值兜底 */
-export function _getOpusDynamicCooldown(accountIndex) {
-  const capacity = _getCapacityState(accountIndex, false);
-  const lastResult = capacity?.lastResult;
-  if (lastResult && lastResult.resetsInSeconds > 0 && (Date.now() - (capacity?.lastCheck || 0)) < 120000) {
-    return Math.max(lastResult.resetsInSeconds, 300);
-  }
-  return OPUS_COOLDOWN_DEFAULT;
-}
-
-/** 切号后重置该账号的Opus消息计数 */
-export function _resetOpusMsgLog(accountIndex) {
-  const runtime = _getAccountRuntime(accountIndex);
-  if (runtime) runtime.opusMsgLog = [];
-}
-
 // ═══ 模型降级 ═══
 
 /** Free/Trial压力降级: Opus → SWE-1.5(Free账号) 或 Sonnet(付费账号)
@@ -129,7 +76,6 @@ export async function _downgradeFromTrialPressure(reason) {
     S.downgradeLockUntil = Date.now() + 120000;
     S.preDowngradeModelUid = currentModel;
     S.autoDowngradedFromOpus = true;
-    _resetOpusMsgLog(S.activeIndex);
     for (const variant of OPUS_VARIANTS) {
       S.am.clearModelRateLimit && S.am.clearModelRateLimit(S.activeIndex, variant);
     }

@@ -13,7 +13,7 @@ import {
   SONNET_FALLBACK, CAPACITY_CHECK_INTERVAL, CAPACITY_CHECK_FAST,
   CAPACITY_CHECK_THINKING, CAPACITY_PREEMPT_REMAINING, APIKEY_CACHE_TTL,
   L5_NODATA_SLOWDOWN_AFTER, L5_NODATA_MAX_INTERVAL, RATE_LIMIT_CONTEXTS,
-  L5_ENABLED, isOpusModel, getModelBudget, getModelVariants,
+  L5_ENABLED, isOpusModel, getModelVariants,
 } from '../shared/config.js';
 import {
   S, deps, _getAccountRuntime, _getCapacityState,
@@ -23,8 +23,7 @@ import {
   _getAccountEmail,
 } from './state.js';
 import {
-  _readCurrentModelUid, _switchModelUid, _trackOpusMsg,
-  _resetOpusMsgLog, _downgradeFromTrialPressure,
+  _readCurrentModelUid, _switchModelUid, _downgradeFromTrialPressure,
 } from './model.js';
 import {
   _getOtherWindowAccountEmails, _mergeSchedulerFromShared,
@@ -148,7 +147,6 @@ export async function _handlePerModelRateLimit(context, modelUid, resetSeconds) 
     for (const variant of OPUS_VARIANTS) {
       S.am.markModelRateLimited(S.activeIndex, variant, effectiveCooldown, { trigger: 'per_model_rate_limit' });
     }
-    _resetOpusMsgLog(S.activeIndex);
   } else {
     S.am.markModelRateLimited(S.activeIndex, modelUid, effectiveCooldown, { trigger: 'per_model_rate_limit' });
   }
@@ -266,17 +264,6 @@ export async function _probeCapacity() {
       } else {
         capacityState.failCount++;
         capacityState.consecutiveNoData = (capacityState.consecutiveNoData || 0) + 1;
-      }
-      // L5辅助Opus消息追踪: 当messagesRemaining下降且模型=Opus时,补充记录
-      // 解决quota%轮询无法检测到消息消耗的问题
-      const prevResult = capacityState.lastResult;
-      if (hasUsefulData && prevResult && prevResult.messagesRemaining >= 0 && result.messagesRemaining >= 0) {
-        const consumed = prevResult.messagesRemaining - result.messagesRemaining;
-        if (consumed > 0 && isOpusModel(modelUid)) {
-          for (let i = 0; i < consumed; i++) _trackOpusMsg(S.activeIndex);
-          capacityState.lastL5OpusTrackTs = Date.now();
-          _logInfo('L5探测', `Opus消息追踪: 检测到消耗${consumed}条 (${prevResult.messagesRemaining}→${result.messagesRemaining})`);
-        }
       }
 
       capacityState.lastResult = result;
@@ -555,7 +542,6 @@ export function _startQuotaWatcher(context) {
           _logInfo('模型恢复', `Trial池冷却已过期 → 恢复到${S.preDowngradeModelUid}`);
           S.autoDowngradedFromOpus = false;
           S.preDowngradeModelUid = null;
-          _resetOpusMsgLog(S.activeIndex);
           deps.updatePoolBar?.();
           _refreshPanel();
           return;
