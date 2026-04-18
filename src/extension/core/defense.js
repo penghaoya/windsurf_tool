@@ -495,7 +495,10 @@ export function _startQuotaWatcher(context) {
   const checkCachedQuota = async () => {
     if (S.activeIndex < 0 || S.switching || !S.auth) return;
     try {
-      const cached = S.auth.readCachedQuota(S.am?.get(S.activeIndex)?.email);
+      const cached = S.auth.readCachedQuota(S.am?.get(S.activeIndex)?.email, {
+        silent: true,
+        source: 'L3',
+      });
       if (cached && cached.exhausted && !S.switching && Date.now() - _lastTriggered > _getDebounce()) {
         _lastTriggered = Date.now();
         const cooldown = _smartCooldown("quota");

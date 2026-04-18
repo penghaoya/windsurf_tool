@@ -993,14 +993,18 @@ class AuthService {
    * Read real quota % from Windsurf's state.vscdb (cachedPlanInfo).
    * Returns: { daily, weekly, billing, plan, resetTime, weeklyReset, extraBalance } or null
    */
-  readCachedQuota(expectedEmail = null) {
+  readCachedQuota(expectedEmail = null, options = {}) {
     try {
+      const silent = options?.silent === true;
+      const source = options?.source ? `${options.source} ` : '';
       const dbPath = getStateDbPath();
       if (!fs.existsSync(dbPath)) return null;
 
-      const protoQuota = this.readCachedUserStatusProto(dbPath, expectedEmail);
+      const protoQuota = this.readCachedUserStatusProto(dbPath, expectedEmail, options);
       if (protoQuota) {
-        _info('缓存额度', `proto daily=${protoQuota.daily}% weekly=${protoQuota.weekly}% plan=${protoQuota.plan} email=${protoQuota.email || 'n/a'} exhausted=${protoQuota.exhausted}`);
+        if (!silent) {
+          _info('缓存额度', `${source}proto daily=${protoQuota.daily}% weekly=${protoQuota.weekly}% plan=${protoQuota.plan} email=${protoQuota.email || 'n/a'} exhausted=${protoQuota.exhausted}`);
+        }
         return protoQuota;
       }
 
@@ -1029,10 +1033,14 @@ class AuthService {
         planEnd: planEndMs || null,
       };
       if (!this._matchesExpectedEmail(result.email, expectedEmail)) {
-        _warn('缓存额度', `cachedPlanInfo email mismatch: cached=${result.email || 'n/a'} expected=${expectedEmail}`);
+        if (!silent) {
+          _warn('缓存额度', `${source}cachedPlanInfo email mismatch: cached=${result.email || 'n/a'} expected=${expectedEmail}`);
+        }
         return null;
       }
-      _info('缓存额度', `daily=${result.daily}% weekly=${result.weekly}% billing=${result.billing} plan=${result.plan} planEnd=${result.planEnd ? new Date(result.planEnd).toLocaleDateString() : 'n/a'} exhausted=${result.exhausted}`);
+      if (!silent) {
+        _info('缓存额度', `${source}daily=${result.daily}% weekly=${result.weekly}% billing=${result.billing} plan=${result.plan} planEnd=${result.planEnd ? new Date(result.planEnd).toLocaleDateString() : 'n/a'} exhausted=${result.exhausted}`);
+      }
       return result;
     } catch (e) {
       _warn('缓存额度', `readCachedQuota error: ${e.message}`);
@@ -1110,7 +1118,7 @@ class AuthService {
    * Read realtime quota from windsurfAuthStatus.userStatusProtoBinaryBase64.
    * This local channel is fresher than cachedPlanInfo and does not require network.
    */
-  readCachedUserStatusProto(dbPath = getStateDbPath(), expectedEmail = null) {
+  readCachedUserStatusProto(dbPath = getStateDbPath(), expectedEmail = null, options = {}) {
     try {
       if (!fs.existsSync(dbPath)) return null;
       const raw = dbReadKey(dbPath, 'windsurfAuthStatus');
@@ -1122,7 +1130,10 @@ class AuthService {
       const outer = parseProtoMsg(Buffer.from(b64, 'base64'));
       const email = this._protoEntryString(outer, 7) || this._protoEntryString(outer, 3) || status.userEmail || null;
       if (!this._matchesExpectedEmail(email, expectedEmail)) {
-        _warn('缓存额度', `userStatusProto email mismatch: cached=${email || 'n/a'} expected=${expectedEmail}`);
+        if (options?.silent !== true) {
+          const source = options?.source ? `${options.source} ` : '';
+          _warn('缓存额度', `${source}userStatusProto email mismatch: cached=${email || 'n/a'} expected=${expectedEmail}`);
+        }
         return null;
       }
       const planStatus = this._protoEntrySub(outer, 13);
