@@ -94,20 +94,31 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
     const unique = [...new Set((indexes || []).filter((index) => Number.isInteger(index) && index >= 0))];
     const total = unique.length;
     let done = 0;
-    const tasks = unique.map((index) =>
-      enqueue(index, options).then((result) => {
-        done++;
-        try { options.progressFn?.(done - 1, total, result); } catch {}
-        try { options.onSettledIndex?.(index, result); } catch {}
-        return result;
-      })
-    );
-    const completion = Promise.allSettled(tasks).then((settled) => ({
-      total,
-      settled,
-      ok: settled.filter((item) => item.status === 'fulfilled' && item.value?.ok).length,
-      failed: settled.filter((item) => item.status === 'fulfilled' && !item.value?.ok).length,
-    }));
+    const startedAt = Date.now();
+    const enqueueDelayMs = Math.max(0, Number(options.enqueueDelayMs || 0));
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const run = async () => {
+      const tasks = [];
+      for (let i = 0; i < unique.length; i++) {
+        if (i > 0 && enqueueDelayMs > 0) await delay(enqueueDelayMs);
+        const index = unique[i];
+        tasks.push(enqueue(index, options).then((result) => {
+          done++;
+          try { options.progressFn?.(done - 1, total, result); } catch {}
+          try { options.onSettledIndex?.(index, result); } catch {}
+          return result;
+        }));
+      }
+      const settled = await Promise.allSettled(tasks);
+      return {
+        total,
+        settled,
+        ok: settled.filter((item) => item.status === 'fulfilled' && item.value?.ok).length,
+        failed: settled.filter((item) => item.status === 'fulfilled' && !item.value?.ok).length,
+        elapsedMs: Date.now() - startedAt,
+      };
+    };
+    const completion = run();
     if (options.wait === false) {
       completion.catch(() => {});
     }

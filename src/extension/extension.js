@@ -334,10 +334,12 @@ async function _refreshOne(index) {
 async function _refreshAll(progressFn, options = {}) {
   const accounts = S.am.getAll();
   const indexes = accounts.map((_, index) => index);
+  const priority = options.priority || 'normal';
   return enqueueRefreshAll(indexes, {
-    priority: options.priority || 'normal',
+    priority,
     reason: options.reason || 'refresh_all',
     wait: options.wait !== false,
+    enqueueDelayMs: options.enqueueDelayMs ?? (priority === 'low' ? 500 : 0),
     progressFn,
     onSettledIndex: options.onSettledIndex,
   });

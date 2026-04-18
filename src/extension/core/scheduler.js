@@ -720,6 +720,7 @@ async function _poolTick(context) {
   const fullScanInterval = S.burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
   if (Date.now() - S.lastFullScanTs > fullScanInterval) {
     S.lastFullScanTs = Date.now();
+    const scanStartedAt = Date.now();
     _logInfo("全池扫描", `后台刷新全部${accounts.length}个账号额度...`);
     const updateSnapshot = (i) => {
       const rem = S.am.effectiveRemaining(i);
@@ -743,7 +744,14 @@ async function _poolTick(context) {
         deps.updatePoolBar?.();
         _refreshPanel();
       },
-    }).catch(() => {});
+    }).then((result) => {
+      _logInfo(
+        "全池扫描",
+        `后台完成 total=${result?.total ?? accounts.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0} (${result?.elapsedMs ?? (Date.now() - scanStartedAt)}ms)`,
+      );
+    }).catch((e) => {
+      _logWarn("全池扫描", `后台刷新异常: ${e.message}`);
+    });
     _refreshPanel();
   }
 
