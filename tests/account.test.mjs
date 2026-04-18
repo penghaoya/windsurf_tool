@@ -79,3 +79,35 @@ test('AccountManager onChange ignores lastChecked-only usage updates', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('AccountManager updateUsage skips save when only lastChecked changes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wam-account-'));
+  const am = new AccountManager(dir, { isolated: true });
+  try {
+    assert.equal(am.add('fresh@example.com', 'fresh-pass'), true);
+
+    let saves = 0;
+    am._save = () => { saves++; };
+
+    const usage = {
+      mode: 'quota',
+      billingStrategy: 'quota',
+      daily: { remaining: 66 },
+      weekly: { remaining: 55 },
+      plan: 'Trial',
+      resetTime: 111,
+      weeklyReset: 222,
+    };
+
+    am.updateUsage(0, usage);
+    const firstChecked = am.get(0).usage.lastChecked;
+    await new Promise(resolve => setTimeout(resolve, 2));
+    am.updateUsage(0, usage);
+
+    assert.equal(saves, 1);
+    assert.ok(am.get(0).usage.lastChecked > firstChecked);
+  } finally {
+    am.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

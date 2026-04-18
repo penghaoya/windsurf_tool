@@ -337,7 +337,9 @@ class AccountManager {
   updateUsage(index, usageInfo) {
     if (index < 0 || index >= this._accounts.length || !usageInfo) return;
     const a = this._accounts[index];
-    a.usage = {
+    const previousFingerprint = this._getUsageFingerprint(a.usage);
+    const previousCredits = a.credits;
+    const nextUsage = {
       mode: usageInfo.mode || 'unknown',
       billingStrategy: usageInfo.billingStrategy || null,
       daily: usageInfo.daily || null,
@@ -351,18 +353,27 @@ class AccountManager {
       lastChecked: Date.now(),
     };
     // v7.4: Estimate planEnd for Trial accounts if only planStart is known
-    if (!a.usage.planEnd && a.usage.planStart && a.usage.plan) {
-      const planName = (a.usage.plan || '').toLowerCase();
+    if (!nextUsage.planEnd && nextUsage.planStart && nextUsage.plan) {
+      const planName = (nextUsage.plan || '').toLowerCase();
       if (planName.includes('trial') || planName === 'free') {
-        a.usage.planEnd = a.usage.planStart + (14 * 24 * 3600 * 1000); // 14-day trial
+        nextUsage.planEnd = nextUsage.planStart + (14 * 24 * 3600 * 1000); // 14-day trial
       }
     }
+    a.usage = nextUsage;
     // Keep legacy credits field in sync
     if (usageInfo.credits !== null && usageInfo.credits !== undefined) {
       a.credits = usageInfo.credits;
     }
+    const nextFingerprint = this._getUsageFingerprint(a.usage);
+    if (previousFingerprint === nextFingerprint && previousCredits === a.credits) {
+      return;
+    }
     this._save();
     this._notify();
+  }
+
+  _getUsageFingerprint(usage) {
+    return JSON.stringify(usage ? { ...usage, lastChecked: undefined } : null);
   }
 
   /**
