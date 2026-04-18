@@ -728,6 +728,7 @@ class AuthService {
         _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
       }
     } else {
+      _info('登录', `${_emailPrefix} → provider cached(${cachedProvider}), skip devin-auth`);
       errors.push(`devin-auth: skipped(${cachedProvider})`);
     }
 
