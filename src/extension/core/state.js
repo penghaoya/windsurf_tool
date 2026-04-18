@@ -60,6 +60,8 @@ export const S = {
   // 全池监控
   allQuotaSnapshot: new Map(),
   lastFullScanTs: 0,
+  fullScanDeferredUntil: 0,
+  startupPreheatDone: false,
   lastReactiveSwitchTs: 0,
   lastUfefSwitchTs: 0,
 

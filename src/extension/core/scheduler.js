@@ -34,6 +34,8 @@ import {
 } from './defense.js';
 
 const ACTIVE_NETWORK_REFRESH_TTL = 3 * 60 * 1000;
+const STARTUP_FULL_SCAN_DELAY = 60 * 1000;
+const STARTUP_PREHEAT_COUNT = 3;
 const _activeNetworkRefreshTs = new Map();
 
 // ═══ 并发Tab感知 ═══
@@ -554,6 +556,8 @@ export function _roundRobinFallback() {
 
 /** 启动号池引擎 */
 export function _startPoolEngine(context) {
+  S.fullScanDeferredUntil = Date.now() + STARTUP_FULL_SCAN_DELAY;
+  S.startupPreheatDone = false;
   const scheduleNext = () => {
     const ms = _getAdaptivePollMs();
     S.poolTimer = setTimeout(async () => {
@@ -614,6 +618,35 @@ async function _refreshActiveSnapshot(index) {
   return { source: 'network' };
 }
 
+function _preheatStartupCandidates(threshold) {
+  if (S.startupPreheatDone) return;
+  S.startupPreheatDone = true;
+
+  const candidates = _getOrderedCandidates({
+    threshold,
+    targetPolicy: 'quota_first',
+    excludeClaimed: true,
+  })
+    .filter((candidate) => candidate.index !== S.activeIndex)
+    .slice(0, STARTUP_PREHEAT_COUNT);
+
+  if (candidates.length === 0) return;
+  _logInfo('预热', `启动候选预热 Top-${candidates.length}: ${candidates.map((c) => `#${c.index + 1}`).join(', ')}`);
+  Promise.allSettled(
+    candidates.map((candidate) =>
+      deps.refreshOne?.(candidate.index, {
+        priority: 'high',
+        reason: 'startup_top_candidate',
+      })
+    ),
+  ).then((results) => {
+    const ok = results.filter((item) => item.status === 'fulfilled' && item.value?.ok !== false).length;
+    _logInfo('预热', `启动候选预热完成 ok=${ok}/${candidates.length}`);
+    deps.updatePoolBar?.();
+    _refreshPanel();
+  }).catch(() => {});
+}
+
 /** 号池心跳 — 每次tick检查活跃账号，必要时自动轮转 */
 async function _poolTick(context) {
   const accounts = S.am.getAll();
@@ -647,6 +680,7 @@ async function _poolTick(context) {
 
   const prevQuota = S.lastQuota;
   await _refreshActiveSnapshot(S.activeIndex);
+  _preheatStartupCandidates(threshold);
   const curQuota = S.am.effectiveRemaining(S.activeIndex);
   S.lastQuota = curQuota;
   S.lastCheckTs = Date.now();
@@ -718,7 +752,8 @@ async function _poolTick(context) {
 
   // ═══ 全池扫描 ═══
   const fullScanInterval = S.burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
-  if (Date.now() - S.lastFullScanTs > fullScanInterval) {
+  const fullScanAllowed = Date.now() >= (S.fullScanDeferredUntil || 0);
+  if (fullScanAllowed && Date.now() - S.lastFullScanTs > fullScanInterval) {
     S.lastFullScanTs = Date.now();
     const scanStartedAt = Date.now();
     _logInfo("全池扫描", `后台刷新全部${accounts.length}个账号额度...`);
