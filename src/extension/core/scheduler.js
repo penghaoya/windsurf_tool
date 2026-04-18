@@ -33,6 +33,9 @@ import {
   _invalidateApiKeyCache, _pushRateLimitEvent, _startQuotaWatcher,
 } from './defense.js';
 
+const ACTIVE_NETWORK_REFRESH_TTL = 3 * 60 * 1000;
+const _activeNetworkRefreshTs = new Map();
+
 // ═══ 并发Tab感知 ═══
 
 /** 探测当前窗口活跃Cascade对话数 */
@@ -569,6 +572,48 @@ export function _startPoolEngine(context) {
   _startQuotaWatcher(context);
 }
 
+function _usageFromCachedQuota(cached, existingUsage = {}) {
+  const daily = cached.daily !== null && cached.daily !== undefined
+    ? { used: Math.max(0, 100 - cached.daily), total: 100, remaining: cached.daily }
+    : existingUsage.daily || null;
+  const weekly = cached.weekly !== null && cached.weekly !== undefined
+    ? { used: Math.max(0, 100 - cached.weekly), total: 100, remaining: cached.weekly }
+    : existingUsage.weekly || null;
+
+  return {
+    mode: cached.billing === 'credits' ? 'credits' : 'quota',
+    billingStrategy: cached.billing || existingUsage.billingStrategy || 'quota',
+    daily,
+    weekly,
+    plan: cached.plan || existingUsage.plan || null,
+    resetTime: cached.resetTime || existingUsage.resetTime || null,
+    weeklyReset: cached.weeklyReset || existingUsage.weeklyReset || null,
+    extraBalance: cached.extraBalance ?? existingUsage.extraBalance ?? null,
+    planStart: cached.planStart || existingUsage.planStart || null,
+    planEnd: cached.planEnd || existingUsage.planEnd || null,
+  };
+}
+
+async function _refreshActiveSnapshot(index) {
+  const account = S.am.get(index);
+  const email = _normalizeEmail(account?.email);
+  const networkFresh = email && (Date.now() - (_activeNetworkRefreshTs.get(email) || 0)) < ACTIVE_NETWORK_REFRESH_TTL;
+  if (networkFresh && S.auth?.readCachedQuota) {
+    const cached = S.auth.readCachedQuota(account.email, {
+      silent: true,
+      source: 'active_tick',
+    });
+    if (cached) {
+      S.am.updateUsage(index, _usageFromCachedQuota(cached, account.usage));
+      return { source: 'local_cache' };
+    }
+  }
+
+  await deps.refreshOne(index, { priority: 'high', reason: 'active_tick' });
+  if (email) _activeNetworkRefreshTs.set(email, Date.now());
+  return { source: 'network' };
+}
+
 /** 号池心跳 — 每次tick检查活跃账号，必要时自动轮转 */
 async function _poolTick(context) {
   const accounts = S.am.getAll();
@@ -601,7 +646,7 @@ async function _poolTick(context) {
   }
 
   const prevQuota = S.lastQuota;
-  await deps.refreshOne(S.activeIndex, { priority: 'high', reason: 'active_tick' });
+  await _refreshActiveSnapshot(S.activeIndex);
   const curQuota = S.am.effectiveRemaining(S.activeIndex);
   S.lastQuota = curQuota;
   S.lastCheckTs = Date.now();
