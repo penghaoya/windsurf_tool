@@ -598,6 +598,19 @@ function _usageFromCachedQuota(cached, existingUsage = {}) {
   };
 }
 
+function _cachedQuotaChanged(cached, existingUsage = {}) {
+  const daily = existingUsage.daily?.remaining ?? null;
+  const weekly = existingUsage.weekly?.remaining ?? null;
+  return (
+    daily !== (cached.daily ?? null) ||
+    weekly !== (cached.weekly ?? null) ||
+    (existingUsage.plan || null) !== (cached.plan || null) ||
+    (existingUsage.resetTime || null) !== (cached.resetTime || null) ||
+    (existingUsage.weeklyReset || null) !== (cached.weeklyReset || null) ||
+    (existingUsage.planEnd || null) !== (cached.planEnd || null)
+  );
+}
+
 async function _refreshActiveSnapshot(index) {
   const account = S.am.get(index);
   const email = _normalizeEmail(account?.email);
@@ -608,8 +621,11 @@ async function _refreshActiveSnapshot(index) {
       source: 'active_tick',
     });
     if (cached) {
-      S.am.updateUsage(index, _usageFromCachedQuota(cached, account.usage));
-      return { source: 'local_cache' };
+      if (_cachedQuotaChanged(cached, account.usage)) {
+        S.am.updateUsage(index, _usageFromCachedQuota(cached, account.usage));
+        return { source: 'local_cache' };
+      }
+      return { source: 'local_cache_unchanged' };
     }
   }
 
