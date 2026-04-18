@@ -50,3 +50,32 @@ test('AccountManager onChange disposer removes listener', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('AccountManager onChange ignores lastChecked-only usage updates', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wam-account-'));
+  const am = new AccountManager(dir, { isolated: true });
+  try {
+    assert.equal(am.add('quota@example.com', 'quota-pass'), true);
+
+    let calls = 0;
+    am.onChange(() => { calls++; });
+
+    const usage = {
+      mode: 'quota',
+      billingStrategy: 'quota',
+      daily: { remaining: 80 },
+      weekly: { remaining: 70 },
+      plan: 'Trial',
+      resetTime: 123,
+      weeklyReset: 456,
+    };
+
+    am.updateUsage(0, usage);
+    am.updateUsage(0, usage);
+
+    assert.equal(calls, 1);
+  } finally {
+    am.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -20,6 +20,7 @@ class AccountManager {
     this._watcher = null;
     this._writing = false;
     this._listeners = [];
+    this._lastNotifyFingerprint = '';
     this._rateLimits = new Map(); // email -> { until: timestamp, model, resetsIn, maxMessages, messagesRemaining }
     this._modelRateLimits = new Map(); // "email|modelUid" -> { until, resetsIn, hitAt } — per-(account,model) bucket
     this._lastUsedTs = new Map(); // index → timestamp, 均匀消耗追踪
@@ -266,10 +267,26 @@ class AccountManager {
     };
   }
   _notify() {
+    const fingerprint = this._getNotifyFingerprint();
+    if (fingerprint === this._lastNotifyFingerprint) return;
+    this._lastNotifyFingerprint = fingerprint;
     // Snapshot listeners so unsubscribing during notification cannot skip later listeners.
     for (const fn of [...this._listeners]) {
       try { fn(this._accounts); } catch {}
     }
+  }
+
+  _getNotifyFingerprint() {
+    return JSON.stringify(this._accounts.map(a => ({
+      email: a.email,
+      password: a.password,
+      credits: a.credits,
+      loginCount: a.loginCount || 0,
+      addedAt: a.addedAt || null,
+      rateLimit: a.rateLimit || null,
+      fingerprint: a.fingerprint || null,
+      usage: a.usage ? { ...a.usage, lastChecked: undefined } : null,
+    })));
   }
 
   // ========== CRUD ==========
@@ -1030,6 +1047,7 @@ class AccountManager {
     this._flushSave();
     this.stopWatching();
     this._listeners = [];
+    this._lastNotifyFingerprint = '';
   }
 }
 
