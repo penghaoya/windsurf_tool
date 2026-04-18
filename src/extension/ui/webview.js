@@ -25,10 +25,15 @@ class AccountViewProvider {
     this._onAction = onAction;
     this._view = null;
     this._ready = false;
+    this._statePushTimer = null;
+    this._lastStateFingerprint = '';
+    this._statePushDelay = 80;
   }
 
   resolveWebviewView(webviewView) {
     this._view = webviewView;
+    this._lastStateFingerprint = '';
+    this._clearStatePushTimer();
     const distUri = vscode.Uri.joinPath(this._extensionUri, 'dist/webview');
     webviewView.webview.options = {
       enableScripts: true,
@@ -48,8 +53,11 @@ class AccountViewProvider {
     // 切换 tab 回来时自动推送状态
     if (webviewView.onDidChangeVisibility) {
       webviewView.onDidChangeVisibility(() => {
-        if (webviewView.visible) this._pushState();
+        if (webviewView.visible) this._pushState({ force: true });
       });
+    }
+    if (webviewView.onDidDispose) {
+      webviewView.onDidDispose(() => this._disposeView());
     }
   }
 
@@ -86,14 +94,29 @@ class AccountViewProvider {
 
     // 首次推送状态 (多次延迟确保 Vue 挂载完成后收到数据)
     this._ready = true;
-    setTimeout(() => this._pushState(), 50);
-    setTimeout(() => this._pushState(), 300);
-    setTimeout(() => this._pushState(), 800);
+    setTimeout(() => this._pushState({ force: true }), 50);
+    setTimeout(() => this._pushState({ force: true }), 300);
+    setTimeout(() => this._pushState({ force: true }), 800);
   }
 
   // ═══ 状态推送 (Extension Host → Vue) ═══
 
-  _pushState() {
+  _pushState(options = {}) {
+    const force = options.force === true;
+    if (!this._view || !this._ready) return;
+    if (force) {
+      this._clearStatePushTimer();
+      this._emitState(true);
+      return;
+    }
+    if (this._statePushTimer) return;
+    this._statePushTimer = setTimeout(() => {
+      this._statePushTimer = null;
+      this._emitState(false);
+    }, this._statePushDelay);
+  }
+
+  _emitState(force = false) {
     if (!this._view || !this._ready) return;
     const accounts = this._am.getAll();
     const currentIndex = this._onAction ? this._onAction('getCurrentIndex') : -1;
@@ -131,7 +154,7 @@ class AccountViewProvider {
       activeQuota.urgency = this._am.getExpiryUrgency ? this._am.getExpiryUrgency(currentIndex) : -1;
     }
 
-    this._view.webview.postMessage({
+    const payload = {
       type: MSG.STATE,
       accounts: enriched,
       currentIndex,
@@ -140,7 +163,24 @@ class AccountViewProvider {
       threshold,
       switchCount,
       switchStatus,
-    });
+    };
+    const fingerprint = JSON.stringify(payload);
+    if (!force && fingerprint === this._lastStateFingerprint) return;
+    this._lastStateFingerprint = fingerprint;
+    this._view.webview.postMessage(payload);
+  }
+
+  _clearStatePushTimer() {
+    if (!this._statePushTimer) return;
+    clearTimeout(this._statePushTimer);
+    this._statePushTimer = null;
+  }
+
+  _disposeView() {
+    this._clearStatePushTimer();
+    this._view = null;
+    this._ready = false;
+    this._lastStateFingerprint = '';
   }
 
   // ═══ 消息路由 (Vue → Extension Host) ═══
@@ -149,7 +189,7 @@ class AccountViewProvider {
     const act = this._onAction;
     switch (msg.type) {
       case ACTION.REQUEST_STATE:
-        this._pushState();
+        this._pushState({ force: true });
         break;
       case ACTION.REMOVE:
         if (msg.index !== undefined) {
@@ -337,7 +377,7 @@ function openAccountPanel(context, am, auth, onAction, existingPanel) {
   const fakeView = { webview: panel.webview };
   Object.defineProperty(fakeView.webview, 'options', { set() {}, get() { return { enableScripts: true }; } });
   provider.resolveWebviewView(fakeView);
-  panel.onDidDispose(() => { provider._view = null; });
+  panel.onDidDispose(() => provider._disposeView());
   return { panel, provider };
 }
 
