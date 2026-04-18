@@ -8,7 +8,6 @@
 import vscode from 'vscode';
 import path from 'path';
 import fs from 'fs';
-import { AccountManager } from '../services/account.js';
 import { ACTION, MSG } from '../shared/messageTypes.js';
 
 function _getNonce() {
@@ -166,14 +165,6 @@ class AccountViewProvider {
       case ACTION.LOGIN:
         if (msg.index !== undefined && act) {
           await this._runRequest(msg, () => act('login', msg.index));
-        }
-        break;
-      case ACTION.PREVIEW:
-        if (msg.text) {
-          const accounts = AccountManager.parseAccounts(msg.text);
-          if (this._view) {
-            this._view.webview.postMessage({ type: MSG.PREVIEW_RESULT, accounts });
-          }
         }
         break;
       case ACTION.BATCH_ADD:

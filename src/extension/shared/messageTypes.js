@@ -3,7 +3,6 @@ export const MSG = {
   TOAST: 'toast',
   LOADING: 'loading',
   ACTION_RESULT: 'actionResult',
-  PREVIEW_RESULT: 'previewResult',
   PWD_RESULT: 'pwdResult',
 };
 
@@ -11,7 +10,6 @@ export const ACTION = {
   REQUEST_STATE: 'requestState',
   REMOVE: 'remove',
   LOGIN: 'login',
-  PREVIEW: 'preview',
   BATCH_ADD: 'batchAdd',
   REFRESH: 'refresh',
   REFRESH_ALL_AND_ROTATE: 'refreshAllAndRotate',

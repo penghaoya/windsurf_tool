@@ -40,9 +40,6 @@ export const toasts = ref([])
 /** 加载状态 */
 export const isLoading = ref(false)
 
-/** 预览结果 */
-export const previewAccounts = ref([])
-
 /** 密码复制回调 (index → { email, pwd }) */
 export const pwdResults = reactive({})
 
@@ -102,9 +99,6 @@ export function initMessageListener() {
             error: m.error || null,
           }
         }
-        break
-      case MSG.PREVIEW_RESULT:
-        previewAccounts.value = m.accounts || []
         break
       case MSG.PWD_RESULT:
         if (m.index !== undefined) {
