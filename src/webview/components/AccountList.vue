@@ -38,16 +38,22 @@
         </div>
         <div v-if="filteredAccounts.length > 0" class="virtual-list" :style="{ height: `${virtualWindow.totalHeight}px` }">
           <div class="virtual-offset" :style="{ transform: `translateY(${virtualWindow.offsetTop}px)` }">
-            <AccountCard
+            <div
               v-for="{ account, index } in visibleAccounts"
               :key="account.email || index"
-              :account="account"
-              :index="index"
-              :isCurrent="index === currentIndex"
-              :threshold="threshold"
-              :switchStatus="switchStatus"
-              :now="now"
-            />
+              class="virtual-row"
+              :data-row-key="rowKey(account, index)"
+              :ref="(el) => setRowRef(el, rowKey(account, index))"
+            >
+              <AccountCard
+                :account="account"
+                :index="index"
+                :isCurrent="index === currentIndex"
+                :threshold="threshold"
+                :switchStatus="switchStatus"
+                :now="now"
+              />
+            </div>
           </div>
         </div>
         <div v-else class="empty">
@@ -83,8 +89,11 @@ const sortMode = ref('default')
 const now = ref(Date.now())
 const toolsEl = ref(null)
 const toolsHeight = ref(0)
+const rowRefs = new Map()
+const rowHeights = ref(new Map())
 let clockTimer = null
 let resizeObserver = null
+let rowResizeObserver = null
 
 const normalizedQuery = computed(() => query.value.trim().toLowerCase())
 
@@ -143,20 +152,54 @@ const filteredAccounts = computed(() =>
     .sort(compareAccounts)
 )
 
+const measuredHeights = computed(() => rowHeights.value)
+
+function rowKey(account, index) {
+  return account.email || `index:${index}`
+}
+
+function getRowHeight(item) {
+  return measuredHeights.value.get(rowKey(item.account, item.index)) || ITEM_HEIGHT
+}
+
+const heightOffsets = computed(() => {
+  const offsets = [0]
+  let total = 0
+  for (const item of filteredAccounts.value) {
+    total += getRowHeight(item)
+    offsets.push(total)
+  }
+  return offsets
+})
+
+function findStartIndex(offsets, scrollTop) {
+  let lo = 0
+  let hi = Math.max(0, offsets.length - 2)
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (offsets[mid + 1] <= scrollTop) lo = mid + 1
+    else hi = mid - 1
+  }
+  return Math.max(0, Math.min(lo, offsets.length - 2))
+}
+
 const virtualWindow = computed(() => {
   const total = filteredAccounts.value.length
   if (total === 0) return { start: 0, end: -1, offsetTop: 0, totalHeight: 0 }
 
+  const offsets = heightOffsets.value
   const localScrollTop = Math.max(0, props.scrollTop - toolsHeight.value)
-  const visibleCount = Math.max(1, Math.ceil((props.viewportHeight || ITEM_HEIGHT * 6) / ITEM_HEIGHT))
-  const start = Math.max(0, Math.floor(localScrollTop / ITEM_HEIGHT) - OVERSCAN)
-  const end = Math.min(total - 1, start + visibleCount + OVERSCAN * 2)
+  const viewportBottom = localScrollTop + (props.viewportHeight || ITEM_HEIGHT * 6)
+  const start = Math.max(0, findStartIndex(offsets, localScrollTop) - OVERSCAN)
+  let end = start
+  while (end < total - 1 && offsets[end] < viewportBottom) end++
+  end = Math.min(total - 1, end + OVERSCAN)
 
   return {
     start,
     end,
-    offsetTop: start * ITEM_HEIGHT,
-    totalHeight: total * ITEM_HEIGHT,
+    offsetTop: offsets[start] || 0,
+    totalHeight: offsets[offsets.length - 1] || 0,
   }
 })
 
@@ -168,20 +211,57 @@ function updateToolsHeight() {
   toolsHeight.value = toolsEl.value?.offsetHeight || 0
 }
 
+function updateRowHeight(key, height) {
+  if (!key || !height) return
+  const nextHeight = Math.ceil(height)
+  if (rowHeights.value.get(key) === nextHeight) return
+  const next = new Map(rowHeights.value)
+  next.set(key, nextHeight)
+  rowHeights.value = next
+}
+
+function setRowRef(el, key) {
+  if (!key || !rowResizeObserver) return
+  const previous = rowRefs.get(key)
+  if (previous && previous !== el) rowResizeObserver.unobserve(previous)
+  if (!el) {
+    if (previous) rowResizeObserver.unobserve(previous)
+    rowRefs.delete(key)
+    return
+  }
+  rowRefs.set(key, el)
+  rowResizeObserver.observe(el)
+  updateRowHeight(key, el.offsetHeight)
+}
+
 onMounted(() => {
   clockTimer = setInterval(() => {
     now.value = Date.now()
   }, 1000)
   resizeObserver = new ResizeObserver(updateToolsHeight)
+  rowResizeObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      updateRowHeight(entry.target.dataset.rowKey, entry.contentRect.height)
+    }
+  })
   if (toolsEl.value) resizeObserver.observe(toolsEl.value)
   nextTick(updateToolsHeight)
 })
 
-watch([query, filterMode, sortMode], () => nextTick(updateToolsHeight))
+watch([query, filterMode, sortMode, filteredAccounts], () => {
+  const allowed = new Set(filteredAccounts.value.map((item) => rowKey(item.account, item.index)))
+  const next = new Map()
+  for (const [key, height] of rowHeights.value) {
+    if (allowed.has(key)) next.set(key, height)
+  }
+  rowHeights.value = next
+  nextTick(updateToolsHeight)
+})
 
 onBeforeUnmount(() => {
   clearInterval(clockTimer)
   resizeObserver?.disconnect()
+  rowResizeObserver?.disconnect()
 })
 </script>
 
@@ -191,6 +271,7 @@ onBeforeUnmount(() => {
 .sbox.open{max-height:9999px;opacity:1;padding:2px 0}
 .virtual-list{position:relative;width:100%}
 .virtual-offset{position:absolute;left:0;right:0;top:0}
+.virtual-row{width:100%}
 .list-tools{display:flex;flex-direction:column;gap:5px;margin:3px 0 6px}
 .search-row{display:flex;align-items:center;gap:4px}
 .search-input{flex:1;min-width:0;height:26px;background:var(--input-bg);color:var(--tx);border:1px solid var(--input-bd);border-radius:var(--R3);padding:0 8px;font:inherit;font-size:12px;outline:none}
