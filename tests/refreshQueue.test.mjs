@@ -60,3 +60,44 @@ test('refresh queue reports enqueueMany progress and completion', async () => {
   assert.equal(result.ok, 3);
   assert.deepEqual(progress, [[0, 3], [1, 3], [2, 3]]);
 });
+
+test('refresh queue dedupes by stable key when indexes differ', async () => {
+  let calls = 0;
+  const queue = createRefreshQueue({
+    concurrency: 1,
+    worker: async (index, job) => {
+      calls++;
+      return { index, key: job.key };
+    },
+  });
+
+  const [a, b] = await Promise.all([
+    queue.enqueue(1, { key: 'same@email.test', priority: 'low' }),
+    queue.enqueue(4, { key: 'same@email.test', priority: 'high' }),
+  ]);
+
+  assert.equal(calls, 1);
+  assert.equal(a.key, 'same@email.test');
+  assert.equal(b.key, 'same@email.test');
+});
+
+test('refresh queue applies per-item options for enqueueMany', async () => {
+  const keys = [];
+  const settled = [];
+  const queue = createRefreshQueue({
+    concurrency: 1,
+    worker: async (_index, job) => {
+      keys.push(job.key);
+      return { index: job.index };
+    },
+  });
+
+  const result = await queue.enqueueMany([1, 2, 3], {
+    itemOptions: (index) => ({ key: index >= 2 ? 'two' : String(index) }),
+    onSettledIndex: (index) => settled.push(index),
+  });
+
+  assert.equal(result.total, 2);
+  assert.deepEqual(keys, ['1', 'two']);
+  assert.deepEqual(settled, [1, 2]);
+});

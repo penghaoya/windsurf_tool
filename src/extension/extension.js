@@ -72,6 +72,30 @@ const authInjector = createAuthInjector({
 
 const { injectAuth, _checkAccount, _loginToAccount } = authInjector;
 
+function _refreshJobOptions(index, options = {}) {
+  const account = S.am?.get(index);
+  const email = account?.email ? account.email.trim() : null;
+  return {
+    ...options,
+    key: email ? email.toLowerCase() : `index:${index}`,
+    email,
+  };
+}
+
+async function _runRefreshJob(index, job = {}) {
+  if (job.email) {
+    const current = S.am.findByEmail(job.email);
+    if (!current) {
+      _logWarn('刷新队列', `账号已不存在，跳过 ${job.email}`);
+      return { skipped: true, reason: 'account_missing', index: -1, email: job.email };
+    }
+    const result = await _refreshOne(current.index);
+    return { ...result, index: current.index, email: job.email };
+  }
+  const result = await _refreshOne(index);
+  return { ...result, index };
+}
+
 const _handleAction = createActionHandler({
   checkAccount: _checkAccount,
   doBatchAdd: _doBatchAdd,
@@ -79,7 +103,7 @@ const _handleAction = createActionHandler({
   doImport: _doImport,
   doRefreshPool: _doRefreshPool,
   doResetFingerprint: _doResetFingerprint,
-  refreshOne: (index) => enqueueRefresh(index, { priority: 'high', reason: 'manual_refresh_one' }),
+  refreshOne: (index) => enqueueRefresh(index, _refreshJobOptions(index, { priority: 'high', reason: 'manual_refresh_one' })),
   refreshPanel: _refreshPanel,
   updatePoolBar: renderStatusBar,
 });
@@ -87,7 +111,7 @@ const _handleAction = createActionHandler({
 // ═══ deps 注册 (打破循环依赖) ═══
 function _wireDeps() {
   configureRefreshQueue({
-    worker: _refreshOne,
+    worker: _runRefreshJob,
     concurrency: 3,
     logger: (event, data) => {
       if (event === 'enqueue' && data.priority === 'high') {
@@ -96,7 +120,7 @@ function _wireDeps() {
     },
   });
   deps.loginToAccount = _loginToAccount;
-  deps.refreshOne = (index, options) => enqueueRefresh(index, options);
+  deps.refreshOne = (index, options) => enqueueRefresh(index, _refreshJobOptions(index, options));
   deps.refreshAll = _refreshAll;
   deps.getRefreshQueueStatus = getRefreshQueueStatus;
   deps.doPoolRotate = _doPoolRotate;
@@ -340,6 +364,7 @@ async function _refreshAll(progressFn, options = {}) {
     reason: options.reason || 'refresh_all',
     wait: options.wait !== false,
     enqueueDelayMs: options.enqueueDelayMs ?? (priority === 'low' ? 500 : 0),
+    itemOptions: (index) => _refreshJobOptions(index),
     progressFn,
     onSettledIndex: options.onSettledIndex,
   });

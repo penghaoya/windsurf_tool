@@ -6,7 +6,7 @@ const PRIORITY_WEIGHT = {
 
 export function createRefreshQueue({ worker, concurrency = 3, logger = null } = {}) {
   const pending = [];
-  const jobsByIndex = new Map();
+  const jobsByKey = new Map();
   let running = 0;
   let completed = 0;
   let failed = 0;
@@ -26,6 +26,9 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
 
   let seq = 0;
 
+  const getJobKey = (index, options = {}) =>
+    options.key !== undefined && options.key !== null ? String(options.key) : String(index);
+
   const drain = () => {
     while (running < concurrency && pending.length > 0) {
       const job = pending.shift();
@@ -35,15 +38,15 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
         .then(() => worker(job.index, job))
         .then((value) => {
           completed++;
-          job.resolve({ ok: true, index: job.index, value });
+          job.resolve({ ok: true, index: job.index, key: job.key, value });
         })
         .catch((error) => {
           failed++;
-          job.resolve({ ok: false, index: job.index, error });
+          job.resolve({ ok: false, index: job.index, key: job.key, error });
         })
         .finally(() => {
           running--;
-          jobsByIndex.delete(job.index);
+          jobsByKey.delete(job.key);
           drain();
         });
     }
@@ -58,7 +61,8 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
     }
 
     const priority = normalizePriority(options.priority || 'normal');
-    const existing = jobsByIndex.get(index);
+    const key = getJobKey(index, options);
+    const existing = jobsByKey.get(key);
     if (existing) {
       if (
         existing.status === 'pending' &&
@@ -66,6 +70,8 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
       ) {
         existing.priority = priority;
         existing.reason = options.reason || existing.reason;
+        existing.index = index;
+        existing.email = options.email || existing.email;
         sortPending();
       }
       return existing.promise;
@@ -75,6 +81,8 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
     const promise = new Promise((r) => { resolve = r; });
     const job = {
       index,
+      key,
+      email: options.email || null,
       priority,
       reason: options.reason || 'refresh',
       status: 'pending',
@@ -82,16 +90,25 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
       resolve,
       promise,
     };
-    jobsByIndex.set(index, job);
+    jobsByKey.set(key, job);
     pending.push(job);
     sortPending();
-    logger?.('enqueue', { index, priority, reason: job.reason, pending: pending.length, running });
+    logger?.('enqueue', { index, key, email: job.email, priority, reason: job.reason, pending: pending.length, running });
     drain();
     return promise;
   };
 
   const enqueueMany = (indexes, options = {}) => {
-    const unique = [...new Set((indexes || []).filter((index) => Number.isInteger(index) && index >= 0))];
+    const unique = [];
+    const seen = new Set();
+    for (const index of (indexes || [])) {
+      if (!Number.isInteger(index) || index < 0) continue;
+      const itemOptions = options.itemOptions ? (options.itemOptions(index) || {}) : {};
+      const key = getJobKey(index, { ...options, ...itemOptions });
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push({ index, itemOptions });
+    }
     const total = unique.length;
     let done = 0;
     const startedAt = Date.now();
@@ -101,11 +118,14 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
       const tasks = [];
       for (let i = 0; i < unique.length; i++) {
         if (i > 0 && enqueueDelayMs > 0) await delay(enqueueDelayMs);
-        const index = unique[i];
-        tasks.push(enqueue(index, options).then((result) => {
+        const { index, itemOptions } = unique[i];
+        tasks.push(enqueue(index, { ...options, ...itemOptions }).then((result) => {
           done++;
+          const settledIndex = Number.isInteger(result?.value?.index) ? result.value.index : index;
           try { options.progressFn?.(done - 1, total, result); } catch {}
-          try { options.onSettledIndex?.(index, result); } catch {}
+          if (settledIndex >= 0) {
+            try { options.onSettledIndex?.(settledIndex, result); } catch {}
+          }
           return result;
         }));
       }
@@ -128,7 +148,8 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
   const getStatus = () => ({
     pending: pending.length,
     running,
-    queuedIndexes: [...jobsByIndex.keys()],
+    queuedIndexes: [...jobsByKey.values()].map((job) => job.index),
+    queuedKeys: [...jobsByKey.keys()],
     completed,
     failed,
   });
