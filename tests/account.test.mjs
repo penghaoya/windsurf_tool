@@ -111,3 +111,65 @@ test('AccountManager updateUsage skips save when only lastChecked changes', asyn
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('AccountManager isRateLimited does not write while reading expired limits', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wam-account-'));
+  const am = new AccountManager(dir, { isolated: true });
+  try {
+    assert.equal(am.add('limited@example.com', 'limited-pass'), true);
+    am._accounts[0].rateLimit = {
+      until: Date.now() - 1000,
+      resetsIn: 60,
+      type: 'quota',
+      model: null,
+    };
+
+    let saves = 0;
+    am._save = () => { saves++; };
+
+    assert.equal(am.isRateLimited(0), false);
+    assert.ok(am._accounts[0].rateLimit);
+    assert.equal(saves, 0);
+
+    assert.deepEqual(am.sweepExpiredRateLimits(), { changed: true, saved: true });
+    assert.equal(am._accounts[0].rateLimit, undefined);
+    assert.equal(saves, 1);
+  } finally {
+    am.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AccountManager sweep removes recoverable message rate limits explicitly', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wam-account-'));
+  const am = new AccountManager(dir, { isolated: true });
+  try {
+    assert.equal(am.add('recover@example.com', 'recover-pass'), true);
+    am.updateUsage(0, {
+      mode: 'quota',
+      billingStrategy: 'quota',
+      daily: { remaining: 90 },
+      weekly: { remaining: 90 },
+      plan: 'Trial',
+    });
+    am._accounts[0].rateLimit = {
+      until: Date.now() + 1000,
+      resetsIn: 600,
+      type: 'message_rate',
+      model: null,
+    };
+
+    let saves = 0;
+    am._save = () => { saves++; };
+
+    assert.equal(am.isRateLimited(0), false);
+    assert.ok(am._accounts[0].rateLimit);
+
+    assert.deepEqual(am.sweepExpiredRateLimits(), { changed: true, saved: true });
+    assert.equal(am._accounts[0].rateLimit, undefined);
+    assert.equal(saves, 1);
+  } finally {
+    am.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

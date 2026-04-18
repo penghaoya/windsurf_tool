@@ -668,6 +668,7 @@ async function _poolTick(context) {
   const accounts = S.am.getAll();
   if (accounts.length === 0) return;
 
+  S.am.sweepExpiredRateLimits?.();
   _mergeSchedulerFromShared();
   _detectCascadeTabs();
 

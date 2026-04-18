@@ -656,63 +656,62 @@ class AccountManager {
   isRateLimited(index) {
     const a = this.get(index);
     if (!a) return false;
-    const rl = this._rateLimits.get(a.email);
-    if (!rl) {
-      // Check persisted state
-      if (a.rateLimit && a.rateLimit.until > Date.now()) {
-        // v6.8: message_rate提前恢复 — 已过25%冷却期(min 60s)且额度>0
-        if (a.rateLimit.type === 'message_rate') {
-          const totalCooldown = (a.rateLimit.resetsIn || 1200) * 1000;
-          const elapsed = totalCooldown - (a.rateLimit.until - Date.now());
-          const minRecoveryMs = Math.max(60000, totalCooldown * 0.25); // 25% of cooldown, min 60s
-          if (elapsed >= minRecoveryMs) {
-            const rem = this.effectiveRemaining(index);
-            if (rem !== null && rem > 0) {
-              delete this._accounts[index].rateLimit;
-              this._save();
-              return false;
-            }
-          }
-        }
-        return true;
+    return this._isRateLimitActive(index, this._getRateLimitEntry(a));
+  }
+
+  _getRateLimitEntry(account) {
+    const memory = this._rateLimits.get(account.email);
+    const persisted = account.rateLimit || null;
+    if (memory && persisted && persisted.until > memory.until) return persisted;
+    return memory || persisted;
+  }
+
+  _isRateLimitActive(index, rl) {
+    if (!rl || rl.until <= Date.now()) return false;
+    return !this._isRateLimitRecoverable(index, rl);
+  }
+
+  _isRateLimitRecoverable(index, rl) {
+    if (rl.type !== 'message_rate') return false;
+    const totalCooldown = (rl.resetsIn || 1200) * 1000;
+    const elapsed = rl.hitAt
+      ? Date.now() - rl.hitAt
+      : totalCooldown - (rl.until - Date.now());
+    const minRecoveryMs = Math.max(60000, totalCooldown * 0.25);
+    if (elapsed < minRecoveryMs) return false;
+    const rem = this.effectiveRemaining(index);
+    return rem !== null && rem > 0;
+  }
+
+  /** Clear expired/recoverable rate-limit records outside read paths. */
+  sweepExpiredRateLimits() {
+    let changed = false;
+    let shouldSave = false;
+    for (let i = 0; i < this._accounts.length; i++) {
+      const a = this._accounts[i];
+      const memory = this._rateLimits.get(a.email);
+      if (memory && !this._isRateLimitActive(i, memory)) {
+        this._rateLimits.delete(a.email);
+        changed = true;
       }
-      return false;
-    }
-    if (rl.until <= Date.now()) {
-      this._rateLimits.delete(a.email);
-      if (index >= 0 && index < this._accounts.length) {
-        delete this._accounts[index].rateLimit;
-        this._save();
-      }
-      return false;
-    }
-    // v6.8: message_rate提前恢复探测 — 已过25%冷却期(min 60s)且额度>0
-    if (rl.type === 'message_rate' && rl.hitAt) {
-      const elapsed = Date.now() - rl.hitAt;
-      const totalCooldown = (rl.resetsIn || 1200) * 1000;
-      const minRecoveryMs = Math.max(60000, totalCooldown * 0.25);
-      if (elapsed >= minRecoveryMs) {
-        const rem = this.effectiveRemaining(index);
-        if (rem !== null && rem > 0) {
-          this._rateLimits.delete(a.email);
-          if (index >= 0 && index < this._accounts.length) {
-            delete this._accounts[index].rateLimit;
-            this._save();
-          }
-          console.log(`WAM: [限流] #${index+1} 提前恢复(已过${Math.round(elapsed/1000)}s/${Math.round(totalCooldown/1000)}s, 剩余=${rem})`);
-          return false;
-        }
+      if (a.rateLimit && !this._isRateLimitActive(i, a.rateLimit)) {
+        delete a.rateLimit;
+        changed = true;
+        shouldSave = true;
       }
     }
-    return true;
+    if (!changed) return { changed: false, saved: false };
+    if (shouldSave) this._save();
+    this._notify();
+    return { changed: true, saved: shouldSave };
   }
 
   /** Get rate limit info for an account */
   getRateLimitInfo(index) {
     const a = this.get(index);
     if (!a) return null;
-    const rl = this._rateLimits.get(a.email) || a.rateLimit;
-    if (!rl || rl.until <= Date.now()) return null;
+    const rl = this._getRateLimitEntry(a);
+    if (!this._isRateLimitActive(index, rl)) return null;
     return { ...rl, remainingCooldown: Math.ceil((rl.until - Date.now()) / 1000) };
   }
 
