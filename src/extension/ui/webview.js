@@ -28,6 +28,7 @@ class AccountViewProvider {
     this._statePushTimer = null;
     this._lastStateFingerprint = '';
     this._statePushDelay = 80;
+    this._disposeAccountChange = null;
   }
 
   resolveWebviewView(webviewView) {
@@ -48,7 +49,7 @@ class AccountViewProvider {
       }
     });
 
-    this._am.onChange(() => this._pushState());
+    this._bindAccountChange();
 
     // 切换 tab 回来时自动推送状态
     if (webviewView.onDidChangeVisibility) {
@@ -178,9 +179,18 @@ class AccountViewProvider {
 
   _disposeView() {
     this._clearStatePushTimer();
+    if (this._disposeAccountChange) {
+      this._disposeAccountChange();
+      this._disposeAccountChange = null;
+    }
     this._view = null;
     this._ready = false;
     this._lastStateFingerprint = '';
+  }
+
+  _bindAccountChange() {
+    if (this._disposeAccountChange) this._disposeAccountChange();
+    this._disposeAccountChange = this._am.onChange(() => this._pushState());
   }
 
   // ═══ 消息路由 (Vue → Extension Host) ═══

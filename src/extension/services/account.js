@@ -258,8 +258,19 @@ class AccountManager {
     }
   }
 
-  onChange(fn) { this._listeners.push(fn); }
-  _notify() { this._listeners.forEach(fn => { try { fn(this._accounts); } catch {} }); }
+  onChange(fn) {
+    if (typeof fn !== 'function') return () => {};
+    this._listeners.push(fn);
+    return () => {
+      this._listeners = this._listeners.filter(listener => listener !== fn);
+    };
+  }
+  _notify() {
+    // Snapshot listeners so unsubscribing during notification cannot skip later listeners.
+    for (const fn of [...this._listeners]) {
+      try { fn(this._accounts); } catch {}
+    }
+  }
 
   // ========== CRUD ==========
 
