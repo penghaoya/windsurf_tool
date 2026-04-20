@@ -75,13 +75,16 @@ function _formatRawForLog(value) {
   }
   const compact = raw.replace(/\s+/g, ' ').trim();
   if (!compact) return '<empty>';
-  return compact.length > HTTP_RAW_LOG_MAX
-    ? `${compact.slice(0, HTTP_RAW_LOG_MAX)}...<truncated:${compact.length}>`
+  const visible = /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(compact)
+    ? JSON.stringify(compact)
     : compact;
+  return visible.length > HTTP_RAW_LOG_MAX
+    ? `${visible.slice(0, HTTP_RAW_LOG_MAX)}...<truncated:${visible.length}>`
+    : visible;
 }
 
-function _warnUnauthorizedRaw(kind, hostname, pathLabel, body) {
-  _warn('HTTP_RAW', `${kind} ${hostname}${pathLabel} → 401 raw=${_formatRawForLog(body)}`);
+function _warnHttpErrorRaw(kind, hostname, pathLabel, status, body) {
+  _warn('HTTP_RAW', `${kind} ${hostname}${pathLabel} → ${status} raw=${_formatRawForLog(body)}`);
 }
 
 class AuthService {
@@ -387,6 +390,13 @@ class AuthService {
     this._saveProviderCache();
   }
 
+  _clearAuthProviderCache(email) {
+    const key = (email || '').trim().toLowerCase();
+    if (key) this._providerCache.delete(key);
+    else this._providerCache.clear();
+    this._saveProviderCache();
+  }
+
   // ========== HTTP Helpers (with proxy support for China) ==========
 
   _needsProxy(hostname) {
@@ -486,7 +496,7 @@ class AuthService {
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
           const rawText = resp.bodyBuffer.toString('utf8');
           _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms)`);
-          if (resp.status === 401) _warnUnauthorizedRaw('JSON', u.hostname, u.pathname, rawText);
+          if (!resp.ok) _warnHttpErrorRaw('JSON', u.hostname, u.pathname, resp.status, rawText);
           try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText }); }
           catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
         } catch (e) { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
@@ -501,7 +511,7 @@ class AuthService {
           res.on('end', () => {
             agent.destroy();
             _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms)`);
-            if (res.statusCode === 401) _warnUnauthorizedRaw('JSON', u.hostname, u.pathname, buf);
+            if (res.statusCode !== 200) _warnHttpErrorRaw('JSON', u.hostname, u.pathname, res.statusCode, buf);
             try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
             catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
           });
@@ -534,7 +544,7 @@ class AuthService {
           };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
           _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms)`);
-          if (resp.status === 401) _warnUnauthorizedRaw('BIN', u.hostname, u.pathname.split('/').pop(), resp.bodyBuffer);
+          if (!resp.ok) _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), resp.status, resp.bodyBuffer);
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
@@ -554,7 +564,7 @@ class AuthService {
             agent.destroy();
             const buf = Buffer.concat(chunks);
             _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms)`);
-            if (res.statusCode === 401) _warnUnauthorizedRaw('BIN', u.hostname, u.pathname.split('/').pop(), buf);
+            if (res.statusCode !== 200) _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), res.statusCode, buf);
             resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
           });
           res.on('error', () => { agent.destroy(); reject(new Error('response error')); });
@@ -579,24 +589,43 @@ class AuthService {
     return null;
   }
 
+  _recordHttpError(errors, source, status, body) {
+    if (!Array.isArray(errors)) return;
+    errors.push({ source, status, body });
+  }
+
+  _isMigratedAuthBody(body) {
+    return /account\s+has\s+been\s+migrated|please\s+log\s+in\s+again/i.test(_formatRawForLog(body));
+  }
+
+  _hasMigratedAuthError(errors) {
+    return (errors || []).some((error) => error?.status === 401 && this._isMigratedAuthBody(error.body));
+  }
+
   /** Try all relays for binary endpoint, return first success */
-  async _tryRelaysBinary(path, bodyBuffer) {
+  async _tryRelaysBinary(path, bodyBuffer, options = {}) {
+    const errors = options.errors || null;
     for (const relay of RELAYS) {
       try {
         const r = await this._httpsBinary(`${relay}${path}`, 'POST', bodyBuffer, false);
         if (r && r.ok) return r;
+        this._recordHttpError(errors, `${relay}${path}`, r?.status || 0, r?.buffer || null);
         _warn('中转', `BIN ${relay}${path} → ${r?.status || 'null'} (non-ok)`);
+        if (options.stopOnMigrated && this._hasMigratedAuthError(errors)) return null;
       } catch (e) { _warn('中转', `BIN ${relay}${path} → ERR ${e.message}`); }
     }
     return null;
   }
 
   /** Try request on multiple URLs, return first success */
-  async _raceUrls(urls, bodyBuffer) {
+  async _raceUrls(urls, bodyBuffer, options = {}) {
+    const errors = options.errors || null;
     for (const url of urls) {
       try {
         const resp = await this._httpsBinary(url, 'POST', bodyBuffer);
         if (resp.ok) return resp;
+        this._recordHttpError(errors, url, resp?.status || 0, resp?.buffer || null);
+        if (options.stopOnMigrated && this._hasMigratedAuthError(errors)) return null;
       } catch (e) { _warn('RACE', `${new URL(url).hostname} → ERR ${e.message}`); }
     }
     return null;
@@ -843,8 +872,23 @@ class AuthService {
     const _t1 = Date.now();
 
     const reqData = encodeProtoString(loginResult.idToken);
-    let resp = await this._fetchPlanStatus(reqData);
+    let planErrors = [];
+    let resp = await this._fetchPlanStatus(reqData, { errors: planErrors });
     let jsonUsage = null;
+
+    if (!resp && this._hasMigratedAuthError(planErrors)) {
+      _warn('额度', `${_emailPrefix} → account migrated, clearing firebase provider cache and retrying devin-auth`);
+      this.clearTokenCache(email);
+      this._clearAuthProviderCache(email);
+      const devin = await this.login(email, password, true);
+      if (devin.ok) {
+        planErrors = [];
+        resp = await this._fetchPlanStatus(encodeProtoString(devin.idToken), { errors: planErrors });
+        if (!resp && !this._hasMigratedAuthError(planErrors)) {
+          jsonUsage = await this._fetchPlanStatusJson(devin.idToken);
+        }
+      }
+    }
 
     if (!resp && loginResult.cached) {
       _warn('额度', `${_emailPrefix} → cached token failed, retrying fresh`);
@@ -852,8 +896,21 @@ class AuthService {
       const fresh = await this.login(email, password, true);
       if (fresh.ok) {
         const freshReq = encodeProtoString(fresh.idToken);
-        resp = await this._fetchPlanStatus(freshReq);
-        if (!resp) jsonUsage = await this._fetchPlanStatusJson(fresh.idToken);
+        planErrors = [];
+        resp = await this._fetchPlanStatus(freshReq, { errors: planErrors });
+        if (!resp && this._hasMigratedAuthError(planErrors)) {
+          _warn('额度', `${_emailPrefix} → fresh firebase still migrated, retrying devin-auth`);
+          this.clearTokenCache(email);
+          this._clearAuthProviderCache(email);
+          const devin = await this.login(email, password, true);
+          if (devin.ok) {
+            planErrors = [];
+            resp = await this._fetchPlanStatus(encodeProtoString(devin.idToken), { errors: planErrors });
+            if (!resp && !this._hasMigratedAuthError(planErrors)) {
+              jsonUsage = await this._fetchPlanStatusJson(devin.idToken);
+            }
+          }
+        } else if (!resp) jsonUsage = await this._fetchPlanStatusJson(fresh.idToken);
       }
     }
 
@@ -865,14 +922,18 @@ class AuthService {
   }
 
   /** Fetch PlanStatus from multi-endpoint (extracted for reuse) */
-  async _fetchPlanStatus(reqData) {
+  async _fetchPlanStatus(reqData, options = {}) {
+    const requestOptions = {
+      errors: options.errors || null,
+      stopOnMigrated: true,
+    };
     let resp = null;
     if (ACTIVE_MODE === 'relay') {
-      resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData);
-      if (!resp) resp = await this._raceUrls(PLAN_STATUS_URLS, reqData);
+      resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData, requestOptions);
+      if (!resp && !this._hasMigratedAuthError(requestOptions.errors)) resp = await this._raceUrls(PLAN_STATUS_URLS, reqData, requestOptions);
     } else {
-      resp = await this._raceUrls(PLAN_STATUS_URLS, reqData);
-      if (!resp) resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData);
+      resp = await this._raceUrls(PLAN_STATUS_URLS, reqData, requestOptions);
+      if (!resp && !this._hasMigratedAuthError(requestOptions.errors)) resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData, requestOptions);
     }
     return resp;
   }
