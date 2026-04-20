@@ -86,16 +86,17 @@ function _refreshJobOptions(index, options = {}) {
 }
 
 async function _runRefreshJob(index, job = {}) {
+  const cacheOnly = job.reason === 'full_scan';
   if (job.email) {
     const current = S.am.findByEmail(job.email);
     if (!current) {
       _logWarn('刷新队列', `账号已不存在，跳过 ${job.email}`);
       return { skipped: true, reason: 'account_missing', index: -1, email: job.email };
     }
-    const result = await _refreshOne(current.index);
+    const result = await _refreshOne(current.index, { cacheOnly });
     return { ...result, index: current.index, email: job.email };
   }
-  const result = await _refreshOne(index);
+  const result = await _refreshOne(index, { cacheOnly });
   return { ...result, index };
 }
 
@@ -306,12 +307,15 @@ function _activate(context) {
 
 /** Refresh one account's usage/credits. Returns { credits, usageInfo }
  *  v5.11.0: Supplements QUOTA data from cachedPlanInfo when API doesn't return daily% */
-async function _refreshOne(index) {
+async function _refreshOne(index, options = {}) {
   const account = S.am.get(index);
   if (!account) return { ok: false, credits: undefined, errorType: 'account_missing' };
   try {
-    const usageInfo = await S.auth.getUsageInfo(account.email, account.password);
+    const usageInfo = await S.auth.getUsageInfo(account.email, account.password, options);
     if (usageInfo?.ok === false) {
+      if (usageInfo.cacheOnly) {
+        return { ok: true, skipped: true, errorType: 'cache_miss' };
+      }
       if (usageInfo.errorType === 'invalid_credentials') {
         S.am.markAuthError(index, 'invalid_credentials', usageInfo.error);
         _logWarn('账号验证', `#${index + 1} 登录凭据无效，已标记坏号`);

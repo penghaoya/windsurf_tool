@@ -17,7 +17,6 @@
                 :isCurrent="index === currentIndex"
                 :threshold="threshold"
                 :switchStatus="switchStatus"
-                :now="now"
               />
             </div>
           </div>
@@ -49,11 +48,11 @@ const props = defineProps({
   viewportHeight: { type: Number, default: 0 },
 })
 
-const now = ref(Date.now())
 const rowRefs = new Map()
 const rowHeights = ref(new Map())
-let clockTimer = null
 let rowResizeObserver = null
+let pendingHeightUpdates = null
+let heightUpdateRaf = null
 
 const accountItems = computed(() =>
   props.accounts
@@ -115,13 +114,28 @@ const visibleAccounts = computed(() =>
   accountItems.value.slice(virtualWindow.value.start, virtualWindow.value.end + 1)
 )
 
-function updateRowHeight(key, height) {
+function scheduleHeightUpdate(key, height) {
   if (!key || !height) return
   const nextHeight = Math.ceil(height)
   if (rowHeights.value.get(key) === nextHeight) return
+  if (!pendingHeightUpdates) pendingHeightUpdates = new Map()
+  pendingHeightUpdates.set(key, nextHeight)
+  if (!heightUpdateRaf) {
+    heightUpdateRaf = requestAnimationFrame(flushHeightUpdates)
+  }
+}
+
+function flushHeightUpdates() {
+  heightUpdateRaf = null
+  if (!pendingHeightUpdates) return
+  const batch = pendingHeightUpdates
+  pendingHeightUpdates = null
   const next = new Map(rowHeights.value)
-  next.set(key, nextHeight)
-  rowHeights.value = next
+  let changed = false
+  for (const [k, h] of batch) {
+    if (next.get(k) !== h) { next.set(k, h); changed = true }
+  }
+  if (changed) rowHeights.value = next
 }
 
 function setRowRef(el, key) {
@@ -135,17 +149,13 @@ function setRowRef(el, key) {
   }
   rowRefs.set(key, el)
   rowResizeObserver.observe(el)
-  updateRowHeight(key, el.offsetHeight)
+  scheduleHeightUpdate(key, el.offsetHeight)
 }
 
 onMounted(() => {
-  clockTimer = setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
-  resizeObserver = new ResizeObserver(updateToolsHeight)
   rowResizeObserver = new ResizeObserver((entries) => {
     for (const entry of entries) {
-      updateRowHeight(entry.target.dataset.rowKey, entry.contentRect.height)
+      scheduleHeightUpdate(entry.target.dataset.rowKey, entry.target.offsetHeight)
     }
   })
 })
@@ -160,8 +170,8 @@ watch(accountItems, () => {
 })
 
 onBeforeUnmount(() => {
-  clearInterval(clockTimer)
   rowResizeObserver?.disconnect()
+  if (heightUpdateRaf) cancelAnimationFrame(heightUpdateRaf)
 })
 </script>
 
@@ -171,7 +181,7 @@ onBeforeUnmount(() => {
 .sbox.open{max-height:9999px;opacity:1;padding:2px 0}
 .virtual-list{position:relative;width:100%}
 .virtual-offset{position:absolute;left:0;right:0;top:0}
-.virtual-row{width:100%}
+.virtual-row{width:100%;padding-bottom:3px}
 .empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
 .empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
 </style>

@@ -147,8 +147,19 @@ const props = defineProps({
   isCurrent: { type: Boolean, default: false },
   threshold: { type: Number, default: 5 },
   switchStatus: { type: Object, default: null },
-  now: { type: Number, default: () => Date.now() },
 })
+
+const now = ref(Date.now())
+let clockTimer = null
+function startClock() {
+  if (clockTimer) return
+  clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
+}
+function stopClock() {
+  if (!clockTimer) return
+  clearInterval(clockTimer)
+  clockTimer = null
+}
 
 const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
@@ -163,7 +174,7 @@ const rateLimitUntil = computed(() =>
 
 const remainingCooldown = computed(() => {
   if (!rateLimitUntil.value) return 0
-  return Math.max(0, Math.ceil((rateLimitUntil.value - props.now) / 1000))
+  return Math.max(0, Math.ceil((rateLimitUntil.value - now.value) / 1000))
 })
 
 const isRateLimited = computed(() => remainingCooldown.value > 0)
@@ -176,16 +187,23 @@ const poolCoolUntil = computed(() => props.account.schedulerBlocked?.poolCooled?
 
 const quarantineRemaining = computed(() => {
   if (!quarantineUntil.value) return 0
-  return Math.max(0, Math.ceil((quarantineUntil.value - props.now) / 1000))
+  return Math.max(0, Math.ceil((quarantineUntil.value - now.value) / 1000))
 })
 const poolCoolRemaining = computed(() => {
   if (!poolCoolUntil.value) return 0
-  return Math.max(0, Math.ceil((poolCoolUntil.value - props.now) / 1000))
+  return Math.max(0, Math.ceil((poolCoolUntil.value - now.value) / 1000))
 })
 
 const quarantineLabel = computed(() => formatCooldown(quarantineRemaining.value))
 const poolCoolLabel = computed(() => formatCooldown(poolCoolRemaining.value))
 const isBlocked = computed(() => quarantineRemaining.value > 0 || poolCoolRemaining.value > 0)
+
+const needsClock = computed(() => {
+  const maxUntil = Math.max(rateLimitUntil.value || 0, quarantineUntil.value || 0, poolCoolUntil.value || 0)
+  return maxUntil > now.value
+})
+watch(needsClock, (v) => v ? startClock() : stopClock(), { immediate: true })
+
 const isDailyDepleted = computed(() => props.account.dailyDepleted === true)
 const isInvalidAuth = computed(() => props.account.invalidAuth === true)
 
@@ -297,11 +315,12 @@ function formatCooldown(totalSeconds) {
 onBeforeUnmount(() => {
   clearTimeout(confirmTimer)
   clearTimeout(copyTimer)
+  stopClock()
 })
 </script>
 
 <style scoped>
-.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;margin-bottom:3px;transition:all .15s ease}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;transition:all .15s ease}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
 .ac.dep{opacity:.35;filter:grayscale(.6)}

@@ -825,9 +825,11 @@ async function _poolTick(context) {
           _refreshPanel();
         },
       }).then((result) => {
+        const skipped = (result?.settled || []).filter(s => s.status === 'fulfilled' && s.value?.value?.skipped).length;
+        const skipStr = skipped > 0 ? ` skipped=${skipped}(token未缓存)` : '';
         _logInfo(
           "全池扫描",
-          `后台完成 total=${result?.total ?? scanIndexes.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0} (${result?.elapsedMs ?? (Date.now() - scanStartedAt)}ms)`,
+          `后台完成 total=${result?.total ?? scanIndexes.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0}${skipStr} (${result?.elapsedMs ?? (Date.now() - scanStartedAt)}ms)`,
         );
       }).catch((e) => {
         _logWarn("全池扫描", `后台刷新异常: ${e.message}`);

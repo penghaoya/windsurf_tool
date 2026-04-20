@@ -760,7 +760,7 @@ class AuthService {
 
   // ========== Firebase Login (双模式: relay优先 or local代理优先) ==========
 
-  async login(email, password, forceFresh = false) {
+  async login(email, password, forceFresh = false, cacheOnly = false) {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
     if (!PROXY_CHECKED) await this._probeProxy();
@@ -768,6 +768,10 @@ class AuthService {
     if (!forceFresh) {
       const cached = this._getCachedToken(email);
       if (cached) { _info('登录', `${_emailPrefix} → cached (0ms)`); return { ok: true, idToken: cached, email, cached: true }; }
+    }
+
+    if (cacheOnly) {
+      return { ok: false, cacheOnly: true };
     }
 
     const payload = { returnSecureToken: true, email, password, clientType: 'CLIENT_TYPE_WEB' };
@@ -864,11 +868,14 @@ class AuthService {
    * Get comprehensive usage info — tries new quota format, falls back to credits
    * Returns: { mode, credits, daily, weekly, plan, resetTime, ... }
    */
-  async getUsageInfo(email, password) {
+  async getUsageInfo(email, password, options = {}) {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
-    const loginResult = await this.login(email, password);
+    const loginResult = await this.login(email, password, false, !!options.cacheOnly);
     if (!loginResult.ok) {
+      if (loginResult.cacheOnly) {
+        return { ok: false, errorType: 'cache_miss', cacheOnly: true };
+      }
       const error = loginResult.error || 'login_failed';
       const errorType = this._isFatalFirebaseAuthError(error) ? 'invalid_credentials' : 'login_failed';
       _warn('额度', `${_emailPrefix} → login failed (${Date.now() - _t0}ms)`);

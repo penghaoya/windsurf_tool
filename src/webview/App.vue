@@ -57,8 +57,13 @@ function updateViewport() {
   viewportHeight.value = scrollEl.value?.clientHeight || 0
 }
 
+let scrollRaf = null
 function onScroll() {
-  scrollTop.value = scrollEl.value?.scrollTop || 0
+  if (scrollRaf) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollTop.value = scrollEl.value?.scrollTop || 0
+    scrollRaf = null
+  })
 }
 
 onMounted(() => {
