@@ -62,6 +62,27 @@ let ACTIVE_MODE = 'local';
 // 可注入日志函数 — setLogger() 注入后写入 outputChannel, 否则降级 console.log
 let _info = (tag, msg) => console.log(`WAM: [${tag}] ${msg}`);
 let _warn = (tag, msg) => console.log(`WAM: [WARN][${tag}] ${msg}`);
+const HTTP_RAW_LOG_MAX = 1600;
+
+function _formatRawForLog(value) {
+  let raw = '';
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    raw = Buffer.from(value).toString('utf8');
+  } else if (typeof value === 'string') {
+    raw = value;
+  } else {
+    try { raw = JSON.stringify(value); } catch { raw = String(value); }
+  }
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  if (!compact) return '<empty>';
+  return compact.length > HTTP_RAW_LOG_MAX
+    ? `${compact.slice(0, HTTP_RAW_LOG_MAX)}...<truncated:${compact.length}>`
+    : compact;
+}
+
+function _warnUnauthorizedRaw(kind, hostname, pathLabel, body) {
+  _warn('HTTP_RAW', `${kind} ${hostname}${pathLabel} → 401 raw=${_formatRawForLog(body)}`);
+}
 
 class AuthService {
   constructor(storagePath) {
@@ -463,9 +484,11 @@ class AuthService {
         try {
           const sock = await this._proxyTunnel(u.hostname);
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
+          const rawText = resp.bodyBuffer.toString('utf8');
           _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms)`);
-          try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(resp.bodyBuffer.toString('utf8')) }); }
-          catch { resolve({ ok: resp.ok, status: resp.status, data: {} }); }
+          if (resp.status === 401) _warnUnauthorizedRaw('JSON', u.hostname, u.pathname, rawText);
+          try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText }); }
+          catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
         } catch (e) { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
         const agent = new https.Agent({ keepAlive: false });
@@ -477,8 +500,10 @@ class AuthService {
           res.on('data', c => buf += c);
           res.on('end', () => {
             agent.destroy();
-            try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf) }); }
-            catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {} }); }
+            _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms)`);
+            if (res.statusCode === 401) _warnUnauthorizedRaw('JSON', u.hostname, u.pathname, buf);
+            try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
+            catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
           });
           res.on('error', () => { agent.destroy(); reject(new Error('response error')); });
         });
@@ -509,6 +534,7 @@ class AuthService {
           };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
           _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms)`);
+          if (resp.status === 401) _warnUnauthorizedRaw('BIN', u.hostname, u.pathname.split('/').pop(), resp.bodyBuffer);
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
@@ -524,7 +550,13 @@ class AuthService {
         }, (res) => {
           const chunks = [];
           res.on('data', c => chunks.push(c));
-          res.on('end', () => { agent.destroy(); const buf = Buffer.concat(chunks); _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms)`); resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf }); });
+          res.on('end', () => {
+            agent.destroy();
+            const buf = Buffer.concat(chunks);
+            _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms)`);
+            if (res.statusCode === 401) _warnUnauthorizedRaw('BIN', u.hostname, u.pathname.split('/').pop(), buf);
+            resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
+          });
           res.on('error', () => { agent.destroy(); reject(new Error('response error')); });
         });
         req.on('error', e => { agent.destroy(); _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });

@@ -101,3 +101,44 @@ test('refresh queue applies per-item options for enqueueMany', async () => {
   assert.deepEqual(keys, ['1', 'two']);
   assert.deepEqual(settled, [1, 2]);
 });
+
+test('refresh queue limits concurrency inside the same lane', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const queue = createRefreshQueue({
+    concurrency: 3,
+    worker: async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active--;
+    },
+  });
+
+  await queue.enqueueMany([1, 2, 3], {
+    lane: 'batch-import',
+    laneConcurrency: 1,
+  });
+
+  assert.equal(maxActive, 1);
+});
+
+test('refresh queue spaces starts inside the same lane', async () => {
+  const starts = [];
+  const queue = createRefreshQueue({
+    concurrency: 3,
+    worker: async () => {
+      starts.push(Date.now());
+    },
+  });
+
+  await queue.enqueueMany([1, 2, 3], {
+    lane: 'batch-import',
+    laneConcurrency: 1,
+    minStartGapMs: 25,
+  });
+
+  assert.equal(starts.length, 3);
+  assert.ok(starts[1] - starts[0] >= 20);
+  assert.ok(starts[2] - starts[1] >= 20);
+});

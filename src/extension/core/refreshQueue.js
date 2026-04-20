@@ -7,9 +7,11 @@ const PRIORITY_WEIGHT = {
 export function createRefreshQueue({ worker, concurrency = 3, logger = null } = {}) {
   const pending = [];
   const jobsByKey = new Map();
+  const laneState = new Map();
   let running = 0;
   let completed = 0;
   let failed = 0;
+  let drainTimer = null;
 
   const normalizePriority = (priority) =>
     Object.prototype.hasOwnProperty.call(PRIORITY_WEIGHT, priority)
@@ -29,26 +31,86 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
   const getJobKey = (index, options = {}) =>
     options.key !== undefined && options.key !== null ? String(options.key) : String(index);
 
+  const getLaneState = (lane) => {
+    if (!laneState.has(lane)) laneState.set(lane, { running: 0, lastStart: 0 });
+    return laneState.get(lane);
+  };
+
+  const getStartWaitMs = (job, now = Date.now()) => {
+    if (!job.lane || job.minStartGapMs <= 0) return 0;
+    const state = getLaneState(job.lane);
+    if (!state.lastStart) return 0;
+    return Math.max(0, job.minStartGapMs - (now - state.lastStart));
+  };
+
+  const canStartJob = (job, now = Date.now()) => {
+    if (!job.lane) return true;
+    const state = getLaneState(job.lane);
+    if (state.running >= job.laneConcurrency) return false;
+    return getStartWaitMs(job, now) === 0;
+  };
+
+  const scheduleDrain = (delayMs) => {
+    if (!Number.isFinite(delayMs) || delayMs < 0) return;
+    if (drainTimer) return;
+    drainTimer = setTimeout(() => {
+      drainTimer = null;
+      drain();
+    }, delayMs);
+  };
+
+  const findNextJobIndex = () => {
+    const now = Date.now();
+    let waitMs = Infinity;
+    for (let i = 0; i < pending.length; i++) {
+      const job = pending[i];
+      if (canStartJob(job, now)) return { index: i, waitMs: 0 };
+      const lane = job.lane ? getLaneState(job.lane) : null;
+      if (lane && lane.running < job.laneConcurrency) {
+        waitMs = Math.min(waitMs, getStartWaitMs(job, now));
+      }
+    }
+    return { index: -1, waitMs };
+  };
+
+  const startJob = (job) => {
+    running++;
+    job.status = 'running';
+    if (job.lane) {
+      const state = getLaneState(job.lane);
+      state.running++;
+      state.lastStart = Date.now();
+    }
+    Promise.resolve()
+      .then(() => worker(job.index, job))
+      .then((value) => {
+        completed++;
+        job.resolve({ ok: true, index: job.index, key: job.key, value });
+      })
+      .catch((error) => {
+        failed++;
+        job.resolve({ ok: false, index: job.index, key: job.key, error });
+      })
+      .finally(() => {
+        running--;
+        if (job.lane) {
+          const state = getLaneState(job.lane);
+          state.running = Math.max(0, state.running - 1);
+        }
+        jobsByKey.delete(job.key);
+        drain();
+      });
+  };
+
   const drain = () => {
     while (running < concurrency && pending.length > 0) {
-      const job = pending.shift();
-      running++;
-      job.status = 'running';
-      Promise.resolve()
-        .then(() => worker(job.index, job))
-        .then((value) => {
-          completed++;
-          job.resolve({ ok: true, index: job.index, key: job.key, value });
-        })
-        .catch((error) => {
-          failed++;
-          job.resolve({ ok: false, index: job.index, key: job.key, error });
-        })
-        .finally(() => {
-          running--;
-          jobsByKey.delete(job.key);
-          drain();
-        });
+      const next = findNextJobIndex();
+      if (next.index < 0) {
+        if (next.waitMs !== Infinity) scheduleDrain(next.waitMs);
+        return;
+      }
+      const [job] = pending.splice(next.index, 1);
+      startJob(job);
     }
   };
 
@@ -72,6 +134,9 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
         existing.reason = options.reason || existing.reason;
         existing.index = index;
         existing.email = options.email || existing.email;
+        existing.lane = options.lane || existing.lane;
+        existing.laneConcurrency = Math.max(1, Number(options.laneConcurrency || existing.laneConcurrency || 1));
+        existing.minStartGapMs = Math.max(0, Number(options.minStartGapMs || existing.minStartGapMs || 0));
         sortPending();
       }
       return existing.promise;
@@ -85,6 +150,9 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
       email: options.email || null,
       priority,
       reason: options.reason || 'refresh',
+      lane: options.lane || null,
+      laneConcurrency: Math.max(1, Number(options.laneConcurrency || 1)),
+      minStartGapMs: Math.max(0, Number(options.minStartGapMs || 0)),
       status: 'pending',
       seq: ++seq,
       resolve,
@@ -93,7 +161,7 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
     jobsByKey.set(key, job);
     pending.push(job);
     sortPending();
-    logger?.('enqueue', { index, key, email: job.email, priority, reason: job.reason, pending: pending.length, running });
+    logger?.('enqueue', { index, key, email: job.email, priority, reason: job.reason, lane: job.lane, pending: pending.length, running });
     drain();
     return promise;
   };
@@ -150,6 +218,7 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
     running,
     queuedIndexes: [...jobsByKey.values()].map((job) => job.index),
     queuedKeys: [...jobsByKey.keys()],
+    lanes: Object.fromEntries([...laneState.entries()].map(([lane, state]) => [lane, { ...state }])),
     completed,
     failed,
   });

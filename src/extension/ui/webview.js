@@ -222,10 +222,9 @@ class AccountViewProvider {
           await this._runRequest(msg, async () => {
             const result = await act('batchAdd', msg.text);
             if (result && result.added > 0) {
-              this._toast(`+${result.added} 账号，验证中...`);
+              const queued = result.validation?.queued || result.added;
+              this._toast(`+${result.added} 账号，已进入慢速验证队列(${queued})`);
               this._pushState();
-              await act('refreshAll');
-              this._toast('验证完成');
             } else if (result && result.skipped > 0) {
               this._toast(`${result.skipped} 个已存在`, true);
             } else {

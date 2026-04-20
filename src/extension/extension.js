@@ -71,6 +71,9 @@ const authInjector = createAuthInjector({
 });
 
 const { injectAuth, _checkAccount, _loginToAccount } = authInjector;
+const BATCH_IMPORT_VERIFY_LANE = 'batch_import_verify';
+const BATCH_IMPORT_VERIFY_GAP_MS = 5000;
+const BATCH_IMPORT_ENQUEUE_DELAY_MS = 1500;
 
 function _refreshJobOptions(index, options = {}) {
   const account = S.am?.get(index);
@@ -370,6 +373,59 @@ async function _refreshAll(progressFn, options = {}) {
   });
 }
 
+function _enqueueBatchImportValidation(addedAccounts) {
+  const emails = (addedAccounts || [])
+    .map((account) => account?.email?.trim().toLowerCase())
+    .filter(Boolean);
+  if (emails.length === 0) return { queued: 0 };
+
+  const indexes = [];
+  const emailByIndex = new Map();
+  for (const email of emails) {
+    const current = S.am.findByEmail(email);
+    if (current) {
+      indexes.push(current.index);
+      emailByIndex.set(current.index, email);
+    }
+  }
+  if (indexes.length === 0) return { queued: 0 };
+
+  _logInfo(
+    '批量验证',
+    `新增${indexes.length}个账号进入慢速后台队列: 单并发, 间隔${BATCH_IMPORT_VERIFY_GAP_MS / 1000}s`,
+  );
+  enqueueRefreshAll(indexes, {
+    priority: 'low',
+    reason: 'batch_import_verify',
+    wait: false,
+    lane: BATCH_IMPORT_VERIFY_LANE,
+    laneConcurrency: 1,
+    minStartGapMs: BATCH_IMPORT_VERIFY_GAP_MS,
+    enqueueDelayMs: BATCH_IMPORT_ENQUEUE_DELAY_MS,
+    itemOptions: (index) => _refreshJobOptions(index, {
+      key: emailByIndex.get(index),
+      email: emailByIndex.get(index),
+      priority: 'low',
+      reason: 'batch_import_verify',
+    }),
+    onSettledIndex: () => {
+      _updatePoolBar();
+      _refreshPanel();
+    },
+  }).then((result) => {
+    _logInfo(
+      '批量验证',
+      `慢速后台验证完成 total=${result?.total ?? indexes.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0}`,
+    );
+    _updatePoolBar();
+    _refreshPanel();
+  }).catch((e) => {
+    _logWarn('批量验证', `慢速后台验证异常: ${e.message}`);
+  });
+
+  return { queued: indexes.length };
+}
+
 // ========== 号池命令 (v6.0 精简) ==========
 
 /** 刷新号池 — 全部账号额度 + 自动轮转 */
@@ -486,6 +542,7 @@ async function _doBatchAdd(textFromWebview) {
   const result = S.am.addBatch(text);
   if (result.added > 0) {
     _logInfo("批量添加", `已添加${result.added}个账号(智能解析)`);
+    result.validation = _enqueueBatchImportValidation(result.accounts);
   }
   _refreshPanel();
   return result;
