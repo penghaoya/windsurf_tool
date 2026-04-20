@@ -868,7 +868,12 @@ class AuthService {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
     const loginResult = await this.login(email, password);
-    if (!loginResult.ok) { _warn('额度', `${_emailPrefix} → login failed (${Date.now() - _t0}ms)`); return null; }
+    if (!loginResult.ok) {
+      const error = loginResult.error || 'login_failed';
+      const errorType = this._isFatalFirebaseAuthError(error) ? 'invalid_credentials' : 'login_failed';
+      _warn('额度', `${_emailPrefix} → login failed (${Date.now() - _t0}ms)`);
+      return { ok: false, errorType, error };
+    }
     const _t1 = Date.now();
 
     const reqData = encodeProtoString(loginResult.idToken);
@@ -915,7 +920,10 @@ class AuthService {
     }
 
     if (!resp && !jsonUsage) jsonUsage = await this._fetchPlanStatusJson(loginResult.idToken);
-    if (!resp && !jsonUsage) { _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`); return null; }
+    if (!resp && !jsonUsage) {
+      _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`);
+      return { ok: false, errorType: 'plan_status_failed', error: 'no_response' };
+    }
     const result = resp ? parseUsageInfo(resp.buffer) : jsonUsage;
     _info('额度', `${_emailPrefix} → ${result?.mode || '?'} daily=${result?.daily?.remaining ?? '?'}% weekly=${result?.weekly?.remaining ?? '?'}% (${Date.now() - _t0}ms, login=${_t1 - _t0}ms, plan=${Date.now() - _t1}ms)`);
     return result;

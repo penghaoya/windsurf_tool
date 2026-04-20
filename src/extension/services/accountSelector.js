@@ -96,6 +96,7 @@ export function selectOptimal(
     if (excludedEmailsSet.has(String(account.email || '').toLowerCase())) {
       continue;
     }
+    if (accountManager.isInvalidAuth?.(i)) continue;
     if (accountManager.isRateLimited(i)) continue;
     if (accountManager.isExpired(i)) continue;
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;
@@ -179,6 +180,7 @@ export function selectOptimal(
     if (excludedEmailsSet.has(String(account.email || '').toLowerCase())) {
       continue;
     }
+    if (accountManager.isInvalidAuth?.(i)) continue;
     if (accountManager.isRateLimited(i)) continue;
     if (accountManager.isExpired(i)) continue;
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;

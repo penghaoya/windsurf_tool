@@ -32,11 +32,11 @@ export function createActionHandler(helpers) {
   return function handleAction(context, action, arg) {
     switch (action) {
       case 'login':
-        return _seamlessSwitch(context, arg);
+        return _seamlessSwitch(context, arg, 'manual_login');
       case 'checkAccount':
         return helpers.checkAccount(context, arg);
       case 'explicitSwitch':
-        return _seamlessSwitch(context, arg);
+        return _seamlessSwitch(context, arg, 'manual_explicit');
       case 'refreshAll':
         return helpers.doRefreshPool(context);
       case 'refreshOne':

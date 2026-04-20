@@ -308,9 +308,16 @@ function _activate(context) {
  *  v5.11.0: Supplements QUOTA data from cachedPlanInfo when API doesn't return daily% */
 async function _refreshOne(index) {
   const account = S.am.get(index);
-  if (!account) return { credits: undefined };
+  if (!account) return { ok: false, credits: undefined, errorType: 'account_missing' };
   try {
     const usageInfo = await S.auth.getUsageInfo(account.email, account.password);
+    if (usageInfo?.ok === false) {
+      if (usageInfo.errorType === 'invalid_credentials') {
+        S.am.markAuthError(index, 'invalid_credentials', usageInfo.error);
+        _logWarn('账号验证', `#${index + 1} 登录凭据无效，已标记坏号`);
+      }
+      return { ok: false, credits: undefined, errorType: usageInfo.errorType, error: usageInfo.error };
+    }
     if (usageInfo) {
       // v5.11.0+v6.9: Supplement from cachedPlanInfo for active account (single read)
       if (index === S.activeIndex && S.auth) {
@@ -350,23 +357,28 @@ async function _refreshOne(index) {
         } catch (e) { _logWarn('额度补充', `cachedPlanInfo读取失败: ${e.message}`); }
       }
       S.am.updateUsage(index, usageInfo);
-      return { credits: usageInfo.credits, usageInfo };
+      return { ok: true, credits: usageInfo.credits, usageInfo };
     }
   } catch (e) { _logWarn('刷新', `getUsageInfo失败: ${e.message}`); }
-  return { credits: undefined };
+  return { ok: false, credits: undefined, errorType: 'refresh_failed' };
 }
 
 /** Refresh all accounts through the shared queue.
  *  Manual callers await completion; scheduler can pass { wait:false } for background scans. */
 async function _refreshAll(progressFn, options = {}) {
   const accounts = S.am.getAll();
-  const indexes = accounts.map((_, index) => index);
+  const indexes = Array.isArray(options.indexes)
+    ? options.indexes.filter((index) => Number.isInteger(index) && index >= 0 && index < accounts.length)
+    : accounts.map((_, index) => index);
   const priority = options.priority || 'normal';
   return enqueueRefreshAll(indexes, {
     priority,
     reason: options.reason || 'refresh_all',
     wait: options.wait !== false,
     enqueueDelayMs: options.enqueueDelayMs ?? (priority === 'low' ? 500 : 0),
+    lane: options.lane || null,
+    laneConcurrency: options.laneConcurrency,
+    minStartGapMs: options.minStartGapMs,
     itemOptions: (index) => _refreshJobOptions(index),
     progressFn,
     onSettledIndex: options.onSettledIndex,
@@ -393,6 +405,11 @@ function _enqueueBatchImportValidation(addedAccounts) {
   _logInfo(
     '批量验证',
     `新增${indexes.length}个账号进入慢速后台队列: 单并发, 间隔${BATCH_IMPORT_VERIFY_GAP_MS / 1000}s`,
+  );
+  S.batchImportValidationRunning = true;
+  S.fullScanDeferredUntil = Math.max(
+    S.fullScanDeferredUntil || 0,
+    Date.now() + indexes.length * BATCH_IMPORT_VERIFY_GAP_MS + 120000,
   );
   enqueueRefreshAll(indexes, {
     priority: 'low',
@@ -421,6 +438,9 @@ function _enqueueBatchImportValidation(addedAccounts) {
     _refreshPanel();
   }).catch((e) => {
     _logWarn('批量验证', `慢速后台验证异常: ${e.message}`);
+  }).finally(() => {
+    S.batchImportValidationRunning = false;
+    S.fullScanDeferredUntil = Math.max(S.fullScanDeferredUntil || 0, Date.now() + 120000);
   });
 
   return { queued: indexes.length };
@@ -444,7 +464,7 @@ async function _doRefreshPool(context) {
   ) {
     const decision = S.am.shouldSwitch(S.activeIndex, threshold);
     if (decision.switch) {
-      await _performSwitch(context, { threshold, targetPolicy: 'same_strategy' });
+      await _performSwitch(context, { threshold, targetPolicy: 'same_strategy', source: `refresh_pool:${decision.reason}` });
     }
   }
   _updatePoolBar();

@@ -1,7 +1,7 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth }"
     :id="`row${index}`"
   >
     <!-- Row 1: Tags left + Actions right -->
@@ -111,7 +111,11 @@
 
     <!-- Daily Depleted Badge -->
     <div v-if="isDailyDepleted && !isRateLimited" class="ac-dep">
-      <span>💤 日额度耗尽</span>
+      <span>日额度耗尽</span>
+    </div>
+
+    <div v-if="isInvalidAuth" class="ac-auth">
+      <span>登录凭据无效</span>
     </div>
 
     <!-- Rate Limited Badge -->
@@ -183,6 +187,7 @@ const quarantineLabel = computed(() => formatCooldown(quarantineRemaining.value)
 const poolCoolLabel = computed(() => formatCooldown(poolCoolRemaining.value))
 const isBlocked = computed(() => quarantineRemaining.value > 0 || poolCoolRemaining.value > 0)
 const isDailyDepleted = computed(() => props.account.dailyDepleted === true)
+const isInvalidAuth = computed(() => props.account.invalidAuth === true)
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
 
@@ -302,6 +307,7 @@ onBeforeUnmount(() => {
 .ac.dep{opacity:.35;filter:grayscale(.6)}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
+.ac.badauth{opacity:.38;filter:grayscale(.7)}
 .ac.exp{opacity:.3}
 .ac-head{display:flex;align-items:center;gap:4px;margin-bottom:2px}
 .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
@@ -348,4 +354,5 @@ onBeforeUnmount(() => {
 .ac-qr{color:var(--rd)}
 .ac-pc{color:var(--ac)}
 .ac-dep{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--tx3);margin-top:3px}
+.ac-auth{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--rd);margin-top:3px}
 </style>

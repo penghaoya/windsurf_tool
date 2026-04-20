@@ -7,6 +7,7 @@ function createManager(accounts) {
     count: () => accounts.length,
     get: (index) => accounts[index] || null,
     isRateLimited: (index) => !!accounts[index]?.rateLimited,
+    isInvalidAuth: (index) => !!accounts[index]?.invalidAuth,
     isExpired: (index) => !!accounts[index]?.expired,
     isModelRateLimited: (index, modelUid) => !!accounts[index]?.modelRateLimited?.includes(modelUid),
     effectiveRemaining: (index) => accounts[index]?.remaining ?? null,
@@ -41,4 +42,16 @@ test('selectOptimal keeps preferred quota accounts before credits accounts', () 
   const ordered = selectOptimal(manager, 0, 5, [], { preferredMode: 'quota' });
 
   assert.equal(ordered[0].email, 'quota@test.com');
+});
+
+test('selectOptimal skips accounts with invalid credentials', () => {
+  const manager = createManager([
+    { email: 'current@test.com', remaining: 10, daily: 10, mode: 'quota' },
+    { email: 'bad@test.com', remaining: 90, daily: 90, mode: 'quota', invalidAuth: true },
+    { email: 'good@test.com', remaining: 40, daily: 40, mode: 'quota' },
+  ]);
+
+  const ordered = selectOptimal(manager, 0, 5);
+
+  assert.deepEqual(ordered.map((c) => c.email), ['good@test.com']);
 });

@@ -84,8 +84,10 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
     Promise.resolve()
       .then(() => worker(job.index, job))
       .then((value) => {
-        completed++;
-        job.resolve({ ok: true, index: job.index, key: job.key, value });
+        const ok = value?.ok !== false;
+        if (ok) completed++;
+        else failed++;
+        job.resolve({ ok, index: job.index, key: job.key, value });
       })
       .catch((error) => {
         failed++;
@@ -134,7 +136,9 @@ export function createRefreshQueue({ worker, concurrency = 3, logger = null } = 
         existing.reason = options.reason || existing.reason;
         existing.index = index;
         existing.email = options.email || existing.email;
-        existing.lane = options.lane || existing.lane;
+        existing.lane = Object.prototype.hasOwnProperty.call(options, 'lane')
+          ? (options.lane || null)
+          : null;
         existing.laneConcurrency = Math.max(1, Number(options.laneConcurrency || existing.laneConcurrency || 1));
         existing.minStartGapMs = Math.max(0, Number(options.minStartGapMs || existing.minStartGapMs || 0));
         sortPending();

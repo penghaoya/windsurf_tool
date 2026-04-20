@@ -137,6 +137,7 @@ class AccountViewProvider {
         credits: a.credits,
         usage: a.usage || null,
         rateLimit: a.rateLimit || null,
+        authError: a.authError || null,
         loginCount: a.loginCount || 0,
         addedAt: a.addedAt || null,
         effective: this._am.effectiveRemaining(i),
@@ -145,6 +146,7 @@ class AccountViewProvider {
         planEnd: a.usage?.planEnd || null,
         urgency: this._am.getExpiryUrgency ? this._am.getExpiryUrgency(i) : -1,
         rateLimitInfo: this._am.getRateLimitInfo ? this._am.getRateLimitInfo(i) : null,
+        invalidAuth: this._am.isInvalidAuth ? this._am.isInvalidAuth(i) : false,
         schedulerBlocked: this._onAction ? this._onAction('getAccountBlocked', i) : null,
         dailyDepleted: dailyRem !== null && dailyRem <= 5,
       };

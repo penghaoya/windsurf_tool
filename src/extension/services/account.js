@@ -284,6 +284,7 @@ class AccountManager {
       loginCount: a.loginCount || 0,
       addedAt: a.addedAt || null,
       rateLimit: a.rateLimit || null,
+      authError: a.authError || null,
       fingerprint: a.fingerprint || null,
       usage: a.usage ? { ...a.usage, lastChecked: undefined } : null,
     })));
@@ -339,6 +340,7 @@ class AccountManager {
     const a = this._accounts[index];
     const previousFingerprint = this._getUsageFingerprint(a.usage);
     const previousCredits = a.credits;
+    const hadAuthError = !!a.authError;
     const nextUsage = {
       mode: usageInfo.mode || 'unknown',
       billingStrategy: usageInfo.billingStrategy || null,
@@ -352,6 +354,9 @@ class AccountManager {
       planEnd: usageInfo.planEnd || a.usage?.planEnd || null,
       lastChecked: Date.now(),
     };
+    if (a.authError) {
+      delete a.authError;
+    }
     // v7.4: Estimate planEnd for Trial accounts if only planStart is known
     if (!nextUsage.planEnd && nextUsage.planStart && nextUsage.plan) {
       const planName = (nextUsage.plan || '').toLowerCase();
@@ -365,7 +370,7 @@ class AccountManager {
       a.credits = usageInfo.credits;
     }
     const nextFingerprint = this._getUsageFingerprint(a.usage);
-    if (previousFingerprint === nextFingerprint && previousCredits === a.credits) {
+    if (previousFingerprint === nextFingerprint && previousCredits === a.credits && !hadAuthError) {
       return;
     }
     this._save();
@@ -479,6 +484,30 @@ class AccountManager {
     return this._accounts[index].fingerprint || null;
   }
 
+  markAuthError(index, type, message) {
+    if (index < 0 || index >= this._accounts.length) return;
+    this._accounts[index].authError = {
+      type: type || 'auth_failed',
+      message: message || null,
+      at: Date.now(),
+    };
+    this._save();
+    this._notify();
+  }
+
+  clearAuthError(index) {
+    if (index < 0 || index >= this._accounts.length) return;
+    if (!this._accounts[index].authError) return;
+    delete this._accounts[index].authError;
+    this._save();
+    this._notify();
+  }
+
+  isInvalidAuth(index) {
+    const a = this.get(index);
+    return a?.authError?.type === 'invalid_credentials';
+  }
+
   /** 保存设备指纹到账号 (持久化) */
   setFingerprint(index, ids) {
     if (index < 0 || index >= this._accounts.length || !ids) return;
@@ -517,6 +546,7 @@ class AccountManager {
       email: a.email, password: a.password, credits: a.credits,
       loginCount: a.loginCount || 0, addedAt: a.addedAt || Date.now(),
       rateLimit: a.rateLimit || null,
+      authError: a.authError || null,
       usage: a.usage || null,
       fingerprint: a.fingerprint || null
     }));
@@ -563,6 +593,7 @@ class AccountManager {
           newAccount.rateLimit = ext.rateLimit;
           this._rateLimits.set(ext.email, ext.rateLimit);
         }
+        if (ext.authError) newAccount.authError = ext.authError;
         this._accounts.push(newAccount);
         added++;
       } else {
@@ -584,6 +615,10 @@ class AccountManager {
         if (ext.rateLimit && ext.rateLimit.until > Date.now() && !local.rateLimit) {
           local.rateLimit = ext.rateLimit;
           this._rateLimits.set(local.email, ext.rateLimit);
+          changed = true;
+        }
+        if (ext.authError && !local.authError) {
+          local.authError = ext.authError;
           changed = true;
         }
         // Sync usage/quota state (fresher data wins)
@@ -821,7 +856,7 @@ class AccountManager {
   /** Get unified pool statistics — single call for dashboard/status bar */
   getPoolStats(threshold = 5) {
     const n = this._accounts.length;
-    let available = 0, depleted = 0, rateLimited = 0, unknown = 0;
+    let available = 0, depleted = 0, rateLimited = 0, unknown = 0, invalid = 0;
     let sumRemaining = 0, best = -Infinity, worst = Infinity;
     let nextReset = Infinity, nextWeeklyReset = Infinity;
     // v6.6: Aggregate D/W stats across ALL accounts (not just active)
@@ -835,8 +870,10 @@ class AccountManager {
     for (let i = 0; i < n; i++) {
       const a = this._accounts[i];
       const rem = this.effectiveRemaining(i);
+      const isInvalid = this.isInvalidAuth(i);
       const isRL = this.isRateLimited(i);
-      if (isRL) { rateLimited++; }
+      if (isInvalid) { invalid++; }
+      else if (isRL) { rateLimited++; }
       else if (rem === null || rem === undefined) { unknown++; }
       else if (rem <= threshold) { depleted++; }
       else { available++; }
@@ -899,7 +936,7 @@ class AccountManager {
     }
 
     return {
-      total: n, available, depleted, rateLimited, unknown, expired, urgentCount, soonCount, safeCount, unknownExpiryCount,
+      total: n, available, depleted, rateLimited, invalid, unknown, expired, urgentCount, soonCount, safeCount, unknownExpiryCount,
       sumRemaining,
       bestRemaining: best === -Infinity ? 0 : best,
       worstRemaining: worst === Infinity ? 0 : worst,
@@ -1043,6 +1080,7 @@ class AccountManager {
   /** Get switch recommendation with reason (v7.4: + expiry urgency awareness) */
   shouldSwitch(activeIndex, threshold = 5) {
     if (activeIndex < 0 || activeIndex >= this._accounts.length) return { switch: true, reason: 'no_active' };
+    if (this.isInvalidAuth(activeIndex)) return { switch: true, reason: 'invalid_credentials' };
     if (this.isExpired(activeIndex)) return { switch: true, reason: 'expired' };
     const rem = this.effectiveRemaining(activeIndex);
     if (rem === null || rem === undefined) return { switch: false, reason: 'unknown' };

@@ -142,3 +142,15 @@ test('refresh queue spaces starts inside the same lane', async () => {
   assert.ok(starts[1] - starts[0] >= 20);
   assert.ok(starts[2] - starts[1] >= 20);
 });
+
+test('refresh queue counts worker ok false as failed', async () => {
+  const queue = createRefreshQueue({
+    concurrency: 1,
+    worker: async (index) => ({ ok: index !== 2 }),
+  });
+
+  const result = await queue.enqueueMany([1, 2, 3]);
+
+  assert.equal(result.ok, 2);
+  assert.equal(result.failed, 1);
+});

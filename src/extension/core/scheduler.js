@@ -36,6 +36,9 @@ import {
 const ACTIVE_NETWORK_REFRESH_TTL = 3 * 60 * 1000;
 const STARTUP_FULL_SCAN_DELAY = 60 * 1000;
 const STARTUP_PREHEAT_COUNT = 3;
+const FULL_SCAN_REFRESH_LANE = 'full_scan';
+const FULL_SCAN_REFRESH_GAP_MS = 1200;
+const FULL_SCAN_FRESH_SKIP_MS = 10 * 60 * 1000;
 const _activeNetworkRefreshTs = new Map();
 
 // ═══ 并发Tab感知 ═══
@@ -200,6 +203,9 @@ export function _getOrderedCandidates({
 // ═══ 预热验证 ═══
 
 export async function _validateSwitchCandidate(targetIndex, threshold) {
+  if (S.am.isInvalidAuth?.(targetIndex)) {
+    return { ok: false, remaining: null, reason: 'invalid_credentials' };
+  }
   if (_isAccountQuarantined(targetIndex)) {
     return { ok: false, remaining: null, reason: 'account_quarantined' };
   }
@@ -248,6 +254,7 @@ export async function _performSwitch(context, {
   modelUid = null,
   candidates = null,
   allowThresholdFallback = false,
+  source = 'auto',
 } = {}) {
   // v18.0: 切换频率控制 — 防封控
   const now = Date.now();
@@ -288,7 +295,7 @@ export async function _performSwitch(context, {
     );
     for (const result of preheatResults) {
       if (result.status === 'fulfilled' && result.value.ok) {
-        const switched = await _seamlessSwitch(context, result.value.candidate.index);
+        const switched = await _seamlessSwitch(context, result.value.candidate.index, source);
         if (switched) return { ok: true, index: result.value.candidate.index, candidate: result.value.candidate };
         _logWarn('切换', `预热成功但切换失败 #${result.value.candidate.index + 1} (switching=${S.switching}, active=${S.activeIndex})`);
       } else if (result.status === 'fulfilled') {
@@ -303,13 +310,13 @@ export async function _performSwitch(context, {
         _logWarn('切换', `预热跳过 #${candidate.index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
         continue;
       }
-      const switched = await _seamlessSwitch(context, candidate.index);
+      const switched = await _seamlessSwitch(context, candidate.index, source);
       if (switched) return { ok: true, index: candidate.index, candidate };
     }
   } else if (ordered.length === 1) {
     const preheat = await _validateSwitchCandidate(ordered[0].index, threshold);
     if (preheat.ok) {
-      const switched = await _seamlessSwitch(context, ordered[0].index);
+      const switched = await _seamlessSwitch(context, ordered[0].index, source);
       if (switched) return { ok: true, index: ordered[0].index, candidate: ordered[0] };
     } else {
       _logWarn('切换', `预热跳过 #${ordered[0].index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
@@ -368,6 +375,7 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
     if (activeUrg >= 2 || activeUrg < 0) {
       for (let i = 0; i < accounts.length; i++) {
         if (i === S.activeIndex) continue;
+        if (S.am.isInvalidAuth?.(i)) continue;
         if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
         const iUrg = S.am.getExpiryUrgency(i);
         const iRem = S.am.effectiveRemaining(i);
@@ -456,7 +464,7 @@ async function _waitForSwitchConfirmation(targetEmail, timeoutMs = SWITCH_CONFIR
   return { ok: false, reason: 'timeout', email: lastEmail };
 }
 
-export async function _seamlessSwitch(context, targetIndex) {
+export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
   if (S.switching || targetIndex === S.activeIndex) return false;
   S.switching = true;
   const prevBar = S.statusBar.text;
@@ -464,6 +472,7 @@ export async function _seamlessSwitch(context, targetIndex) {
   const prevIndex = S.activeIndex;
   const prevEmail = _getAccountEmail(prevIndex);
   const targetEmail = _getAccountEmail(targetIndex);
+  _logInfo("切换", `开始无感切换 source=${source} #${prevIndex + 1}→#${targetIndex + 1}`);
   _setSwitchStatus({
     phase: 'switching',
     pendingIndex: targetIndex,
@@ -503,7 +512,7 @@ export async function _seamlessSwitch(context, targetIndex) {
         confirmedAt: Date.now(),
         message: '已生效',
       });
-      _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 已确认 (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
+      _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 已确认 source=${source} (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
     } else {
       _setSwitchStatus({
         phase: 'uncertain',
@@ -514,7 +523,7 @@ export async function _seamlessSwitch(context, targetIndex) {
         observedEmail: confirmed.email || null,
         message: '可能未生效',
       });
-      _logWarn("切换", `⚠️ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 未确认 (${confirmed.reason || 'unknown'}, observed=${confirmed.email || 'n/a'})`);
+      _logWarn("切换", `⚠️ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 未确认 source=${source} (${confirmed.reason || 'unknown'}, observed=${confirmed.email || 'n/a'})`);
     }
     return true;
   } catch (e) {
@@ -542,6 +551,7 @@ export function _roundRobinFallback() {
   if (accounts.length <= 1) return -1;
   for (let r = 1; r < accounts.length; r++) {
     const ci = (S.activeIndex + r) % accounts.length;
+    if (S.am.isInvalidAuth?.(ci)) continue;
     if (S.am.isRateLimited(ci) || S.am.isExpired(ci) || _isAccountQuarantined(ci)) continue;
     const dailyRem = S.am.getDailyRemaining(ci);
     if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
@@ -682,6 +692,7 @@ async function _poolTick(context) {
       excludeIndex: -1,
       threshold,
       targetPolicy: 'quota_first',
+      source: 'no_active',
     });
     if (!switchResult.ok) _logWarn("号池", "无活跃账号且无可用账号");
     return;
@@ -690,7 +701,7 @@ async function _poolTick(context) {
   if (S.am.isExpired(S.activeIndex)) {
     _logWarn("号池", `活跃账号 #${S.activeIndex + 1} 已过期 → 立即轮转`);
     if (autoRotate) {
-      await _performSwitch(context, { threshold, targetPolicy: 'same_strategy' });
+      await _performSwitch(context, { threshold, targetPolicy: 'same_strategy', source: 'active_expired' });
     }
     return;
   }
@@ -738,6 +749,7 @@ async function _poolTick(context) {
       if (i === S.activeIndex) continue;
       const email = _normalizeEmail(accounts[i]?.email);
       if (!email || otherClaimed.has(email)) continue;
+      if (S.am.isInvalidAuth?.(i)) continue;
       if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
       const rem = S.am.effectiveRemaining(i);
       if (rem === null || rem === undefined || rem <= threshold) continue;
@@ -762,6 +774,7 @@ async function _poolTick(context) {
         threshold,
         targetPolicy: 'quota_first',
         candidates: stableCandidates,
+        source: 'reactive_quota_drop',
       });
       if (reactiveSwitch.ok) return;
     }
@@ -770,41 +783,57 @@ async function _poolTick(context) {
   // ═══ 全池扫描 ═══
   const fullScanInterval = S.burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
   const fullScanAllowed = Date.now() >= (S.fullScanDeferredUntil || 0);
-  if (fullScanAllowed && Date.now() - S.lastFullScanTs > fullScanInterval) {
+  if (S.batchImportValidationRunning) {
+    S.fullScanDeferredUntil = Math.max(S.fullScanDeferredUntil || 0, Date.now() + 60000);
+  } else if (fullScanAllowed && Date.now() - S.lastFullScanTs > fullScanInterval) {
     S.lastFullScanTs = Date.now();
     const scanStartedAt = Date.now();
-    _logInfo("全池扫描", `后台刷新全部${accounts.length}个账号额度...`);
-    const updateSnapshot = (i) => {
-      const rem = S.am.effectiveRemaining(i);
-      const prev = S.allQuotaSnapshot.get(i);
-      if (prev && prev.remaining !== rem) {
-        const acct = S.am.get(i);
-        const emailPrefix = acct?.email?.split('@')[0] || '?';
-        const delta = rem !== null && prev.remaining !== null ? rem - prev.remaining : null;
-        const deltaStr = delta !== null ? ` (${delta > 0 ? '+' : ''}${delta})` : '';
-        _logInfo("全池扫描", `#${i + 1} ${emailPrefix}: 额度 ${prev.remaining}% → ${rem}%${deltaStr}`);
-      }
-      S.allQuotaSnapshot.set(i, { remaining: rem, checkedAt: Date.now() });
-    };
-    for (let i = 0; i < accounts.length; i++) updateSnapshot(i);
-    deps.refreshAll?.(null, {
-      priority: 'low',
-      reason: 'full_scan',
-      wait: false,
-      onSettledIndex: (index) => {
-        updateSnapshot(index);
-        deps.updatePoolBar?.();
-        _refreshPanel();
-      },
-    }).then((result) => {
-      _logInfo(
-        "全池扫描",
-        `后台完成 total=${result?.total ?? accounts.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0} (${result?.elapsedMs ?? (Date.now() - scanStartedAt)}ms)`,
-      );
-    }).catch((e) => {
-      _logWarn("全池扫描", `后台刷新异常: ${e.message}`);
-    });
-    _refreshPanel();
+    const scanIndexes = accounts
+      .map((account, index) => ({ account, index }))
+      .filter(({ index }) => !S.am.isInvalidAuth?.(index))
+      .filter(({ account }) => Date.now() - (account?.usage?.lastChecked || 0) >= FULL_SCAN_FRESH_SKIP_MS)
+      .map(({ index }) => index);
+    if (scanIndexes.length === 0) {
+      _logInfo("全池扫描", `跳过: ${Math.round(FULL_SCAN_FRESH_SKIP_MS / 60000)}min内无过期缓存账号`);
+      deps.updatePoolBar?.();
+    } else {
+      _logInfo("全池扫描", `后台慢速刷新${scanIndexes.length}/${accounts.length}个账号额度...`);
+      const updateSnapshot = (i) => {
+        const rem = S.am.effectiveRemaining(i);
+        const prev = S.allQuotaSnapshot.get(i);
+        if (prev && prev.remaining !== rem) {
+          const acct = S.am.get(i);
+          const emailPrefix = acct?.email?.split('@')[0] || '?';
+          const delta = rem !== null && prev.remaining !== null ? rem - prev.remaining : null;
+          const deltaStr = delta !== null ? ` (${delta > 0 ? '+' : ''}${delta})` : '';
+          _logInfo("全池扫描", `#${i + 1} ${emailPrefix}: 额度 ${prev.remaining}% → ${rem}%${deltaStr}`);
+        }
+        S.allQuotaSnapshot.set(i, { remaining: rem, checkedAt: Date.now() });
+      };
+      for (let i = 0; i < accounts.length; i++) updateSnapshot(i);
+      deps.refreshAll?.(null, {
+        priority: 'low',
+        reason: 'full_scan',
+        wait: false,
+        indexes: scanIndexes,
+        lane: FULL_SCAN_REFRESH_LANE,
+        laneConcurrency: 1,
+        minStartGapMs: FULL_SCAN_REFRESH_GAP_MS,
+        onSettledIndex: (index) => {
+          updateSnapshot(index);
+          deps.updatePoolBar?.();
+          _refreshPanel();
+        },
+      }).then((result) => {
+        _logInfo(
+          "全池扫描",
+          `后台完成 total=${result?.total ?? scanIndexes.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0} (${result?.elapsedMs ?? (Date.now() - scanStartedAt)}ms)`,
+        );
+      }).catch((e) => {
+        _logWarn("全池扫描", `后台刷新异常: ${e.message}`);
+      });
+      _refreshPanel();
+    }
   }
 
   // ═══ 预防性轮转 ═══
@@ -823,6 +852,7 @@ async function _poolTick(context) {
         const switchResult = await _performSwitch(context, {
           threshold,
           targetPolicy: decision.targetPolicy || 'same_strategy',
+          source: `preventive:${decision.reason}`,
         });
         if (!switchResult.ok) {
           if (trialPoolActive) S.lastTrialPoolCooldownFailTs = Date.now();
@@ -855,7 +885,7 @@ export async function _doPoolRotate(context, isPanic = false) {
       S.am.markRateLimited(S.activeIndex, 300, { model: "unknown", trigger: "panic_rotate" });
     }
     const panicSwitch = await _performSwitch(context, {
-      threshold, targetPolicy: 'same_strategy', panic: true, allowThresholdFallback: true,
+      threshold, targetPolicy: 'same_strategy', panic: true, allowThresholdFallback: true, source: 'panic_rotate',
     });
     if (panicSwitch.ok) {
       _logInfo("轮转", `✅ 紧急切换完成: → #${panicSwitch.index + 1} (耗时${Date.now() - t0}ms)`);
@@ -866,7 +896,7 @@ export async function _doPoolRotate(context, isPanic = false) {
     }
     if (accounts.length > 1) {
       const next = _roundRobinFallback();
-      if (next >= 0) await _seamlessSwitch(context, next);
+      if (next >= 0) await _seamlessSwitch(context, next, 'panic_round_robin');
       _logInfo("轮转", `✅ 紧急轮转: → #${next + 1} (耗时${Date.now() - t0}ms)`);
     }
     deps.updatePoolBar?.();
@@ -876,7 +906,7 @@ export async function _doPoolRotate(context, isPanic = false) {
 
   S.statusBar.text = "$(sync~spin) 轮转中...";
   const rotateResult = await _performSwitch(context, {
-    threshold, targetPolicy: 'same_strategy', refreshPool: true,
+    threshold, targetPolicy: 'same_strategy', refreshPool: true, source: 'manual_rotate',
   });
   if (rotateResult.ok) {
     deps.updatePoolBar?.();
@@ -889,7 +919,7 @@ export async function _doPoolRotate(context, isPanic = false) {
   } else {
     if (accounts.length > 1) {
       const next = _roundRobinFallback();
-      if (next >= 0) await _seamlessSwitch(context, next);
+      if (next >= 0) await _seamlessSwitch(context, next, 'manual_round_robin');
     }
   }
   deps.updatePoolBar?.();
