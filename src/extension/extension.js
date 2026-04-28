@@ -616,16 +616,16 @@ async function _doImport(context) {
 async function _doExport(context) {
   if (S.am.count() === 0) return;
   try {
-    const fpath = S.am.exportToFile(context.globalStorageUri.fsPath);
-    vscode.window
-      .showInformationMessage(`WAM: ✅ 已导出 ${S.am.count()} 个账号`, "打开目录")
-      .then((sel) => {
-        if (sel)
-          vscode.commands.executeCommand(
-            "revealFileInOS",
-            vscode.Uri.file(fpath),
-          );
-      });
+    const lines = S.am.getAll()
+      .filter((account) => account?.email && account?.password)
+      .map((account) => `${account.email}----${account.password}`);
+    if (lines.length === 0) {
+      vscode.window.showWarningMessage('WAM: 没有可导出的账号密码');
+      return;
+    }
+    await vscode.env.clipboard.writeText(lines.join('\n'));
+    _logInfo('导出', `已复制${lines.length}个账号到剪贴板`);
+    vscode.window.showInformationMessage(`WAM: ✅ 已复制 ${lines.length} 个账号到剪贴板`);
   } catch (e) {
     vscode.window.showErrorMessage(`WAM: 导出失败: ${e.message}`);
   }
