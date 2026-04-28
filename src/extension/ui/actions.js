@@ -9,6 +9,8 @@ import {
   _getPreemptiveThreshold,
   _isTrialLikeAccount,
   _getTrialPoolCooldown,
+  _logInfo,
+  _logWarn,
 } from '../core/state.js';
 import { _readCurrentModelUid } from '../core/model.js';
 import {
@@ -172,18 +174,29 @@ function resetAccountFingerprint(index = S.activeIndex, hooks = {}) {
   const account = S.am.get(index);
   if (!account) return { ok: false, error: 'account_missing' };
 
+  _logInfo('指纹', `开始重置当前账号指纹 #${index + 1} ${account.email}`);
   const fp = generateFingerprint();
   const applied = applyFingerprint(fp);
-  if (!applied.ok) return { ok: false, error: applied.error || 'apply_failed' };
+  if (!applied.ok) {
+    _logWarn('指纹', `重置失败 #${index + 1}: ${applied.error || 'apply_failed'}`);
+    return { ok: false, error: applied.error || 'apply_failed' };
+  }
 
   S.am.setFingerprint(index, fp);
-  syncFingerprintToStateDb(fp);
+  const dbSynced = syncFingerprintToStateDb(fp);
   S.lastRotatedIds = fp;
   S.hotResetCount++;
 
   const verify = hotVerify(fp);
   if (verify.verified) S.hotResetVerified++;
   const id = fp['storage.serviceMachineId']?.slice(0, 8) || '?';
+  _logInfo(
+    '指纹',
+    `当前账号指纹已重置 #${index + 1} ${account.email} id=${id} db=${dbSynced ? 'ok' : 'skip'} verify=${verify.verified ? 'ok' : 'pending'}`,
+  );
+  if (!verify.verified && verify.mismatches?.length > 0) {
+    _logWarn('指纹', `热验证未完全匹配: ${verify.mismatches.join('; ')}`);
+  }
   _syncSchedulerToShared();
   hooks.updatePoolBar?.();
   hooks.refreshPanel?.();
