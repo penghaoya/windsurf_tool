@@ -19,6 +19,7 @@ export const ACTION = {
   SET_MODE: 'setMode',
   REPROBE_PROXY: 'reprobeProxy',
   RESET_FINGERPRINT: 'resetFingerprint',
+  RESET_ACCOUNT_FINGERPRINT: 'resetAccountFingerprint',
   REMOVE_EMPTY: 'removeEmpty',
   TOGGLE_DETAIL: 'toggleDetail',
   SET_PROXY_PORT: 'setProxyPort',

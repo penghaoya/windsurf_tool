@@ -264,6 +264,16 @@ class AccountViewProvider {
       case ACTION.RESET_FINGERPRINT:
         if (act) act('resetFingerprint');
         break;
+      case ACTION.RESET_ACCOUNT_FINGERPRINT:
+        if (msg.index !== undefined && act) {
+          await this._runRequest(msg, async () => {
+            const result = await act('resetAccountFingerprint', msg.index);
+            if (!result?.ok) throw new Error(result?.error || '重置指纹失败');
+            this._toast(result.verified ? '当前账号指纹已重置并生效' : '当前账号指纹已重置，等待运行时同步');
+            return result;
+          });
+        }
+        break;
       case ACTION.REMOVE_EMPTY:
         this._removeEmpty(); this._pushState();
         break;

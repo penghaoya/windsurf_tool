@@ -37,6 +37,22 @@
           <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         </button>
         <button
+          v-if="isCurrent"
+          class="r-btn fp"
+          :class="{ spinning: fingerprinting, done: fingerprintState === 'ok' }"
+          @click="onResetFingerprint"
+          title="重置当前账号指纹"
+        >
+          <svg v-if="fingerprintState === 'ok'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 11v2"/>
+            <path d="M8 11v1a4 4 0 0 0 8 0v-1"/>
+            <path d="M7 7a5 5 0 0 1 10 0v3"/>
+            <path d="M6 14a6 6 0 0 0 12 0"/>
+            <path d="M4 11v2a8 8 0 0 0 16 0v-2"/>
+          </svg>
+        </button>
+        <button
           v-if="isRateLimited || isBlocked"
           class="r-btn rl-clear hover-btn"
           @click="onClearRateLimit"
@@ -165,8 +181,12 @@ const confirmRemove = ref(false)
 const copyState = ref('idle') // 'idle' | 'ok'
 const refreshing = ref(false)
 const refreshRequestId = ref(null)
+const fingerprinting = ref(false)
+const fingerprintState = ref('idle') // 'idle' | 'ok'
+const fingerprintRequestId = ref(null)
 let confirmTimer = null
 let copyTimer = null
+let fingerprintTimer = null
 
 const rateLimitUntil = computed(() =>
   props.account.rateLimitInfo?.until ?? props.account.rateLimit?.until ?? null
@@ -287,6 +307,25 @@ watch(() => refreshRequestId.value ? actionResults[refreshRequestId.value] : nul
   refreshing.value = false
 })
 
+function onResetFingerprint() {
+  if (fingerprinting.value) return
+  fingerprinting.value = true
+  fingerprintState.value = 'idle'
+  fingerprintRequestId.value = requestAction('resetAccountFingerprint', { index: props.index })
+}
+
+watch(() => fingerprintRequestId.value ? actionResults[fingerprintRequestId.value] : null, (result) => {
+  if (!result || !fingerprintRequestId.value) return
+  delete actionResults[fingerprintRequestId.value]
+  fingerprintRequestId.value = null
+  fingerprinting.value = false
+  if (result.ok) {
+    fingerprintState.value = 'ok'
+    clearTimeout(fingerprintTimer)
+    fingerprintTimer = setTimeout(() => { fingerprintState.value = 'idle' }, 1600)
+  }
+})
+
 function onClearRateLimit() {
   postMessage('clearRateLimit', { index: props.index })
 }
@@ -315,6 +354,7 @@ function formatCooldown(totalSeconds) {
 onBeforeUnmount(() => {
   clearTimeout(confirmTimer)
   clearTimeout(copyTimer)
+  clearTimeout(fingerprintTimer)
   stopClock()
 })
 </script>
@@ -353,6 +393,10 @@ onBeforeUnmount(() => {
 .r-btn.del:hover{background:var(--rd-bg);color:var(--rd)}
 .r-btn.copy{color:var(--tx3)}
 .r-btn.copy:hover{background:var(--ac-bg);color:var(--ac)}
+.r-btn.fp{color:var(--tx3)}
+.r-btn.fp:hover{background:color-mix(in srgb, var(--gn) 12%, transparent);color:var(--gn)}
+.r-btn.fp.spinning svg{animation:spin .8s linear infinite}
+.r-btn.fp.done{color:var(--gn)}
 /* P1: hover-reveal for low-freq buttons */
 .hover-btn{opacity:0;pointer-events:none;transition:opacity .15s ease}
 .ac:hover .hover-btn{opacity:1;pointer-events:auto}

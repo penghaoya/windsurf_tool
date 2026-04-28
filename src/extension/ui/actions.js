@@ -1,4 +1,5 @@
 import vscode from 'vscode';
+import fs from 'fs';
 import {
   S,
   schedulerState,
@@ -16,7 +17,8 @@ import {
   _seamlessSwitch,
 } from '../core/scheduler.js';
 import { _syncSchedulerToShared } from '../core/window.js';
-import { readFingerprint } from '../services/fingerprint.js';
+import { readFingerprint, generateFingerprint, applyFingerprint, hotVerify } from '../services/fingerprint.js';
+import { dbUpdateKeys, getStateDbPath } from '../infra/sqlite.js';
 
 export function createActionHandler(helpers) {
   const {
@@ -120,6 +122,8 @@ export function createActionHandler(helpers) {
         return doImport(context);
       case 'resetFingerprint':
         return doResetFingerprint();
+      case 'resetAccountFingerprint':
+        return resetAccountFingerprint(arg, { updatePoolBar, refreshPanel });
       case 'panicSwitch':
         return _doPoolRotate(context, true);
       case 'batchAdd':
@@ -154,4 +158,59 @@ export function createActionHandler(helpers) {
         return undefined;
     }
   };
+}
+
+function resetAccountFingerprint(index = S.activeIndex, hooks = {}) {
+  if (!S.am) return { ok: false, error: 'account_manager_missing' };
+  if (!Number.isInteger(index) || index < 0 || index >= S.am.count()) {
+    return { ok: false, error: 'invalid_account' };
+  }
+  if (index !== S.activeIndex) {
+    return { ok: false, error: 'only_active_account_supported' };
+  }
+
+  const account = S.am.get(index);
+  if (!account) return { ok: false, error: 'account_missing' };
+
+  const fp = generateFingerprint();
+  const applied = applyFingerprint(fp);
+  if (!applied.ok) return { ok: false, error: applied.error || 'apply_failed' };
+
+  S.am.setFingerprint(index, fp);
+  syncFingerprintToStateDb(fp);
+  S.lastRotatedIds = fp;
+  S.hotResetCount++;
+
+  const verify = hotVerify(fp);
+  if (verify.verified) S.hotResetVerified++;
+  const id = fp['storage.serviceMachineId']?.slice(0, 8) || '?';
+  _syncSchedulerToShared();
+  hooks.updatePoolBar?.();
+  hooks.refreshPanel?.();
+  return {
+    ok: true,
+    email: account.email,
+    fingerprintId: id,
+    verified: verify.verified,
+    mismatches: verify.mismatches || [],
+  };
+}
+
+function syncFingerprintToStateDb(fp) {
+  try {
+    const dbPath = getStateDbPath();
+    if (!fs.existsSync(dbPath)) return false;
+    const pairs = [
+      'storage.serviceMachineId',
+      'telemetry.devDeviceId',
+      'telemetry.machineId',
+      'telemetry.macMachineId',
+      'telemetry.sqmId',
+    ]
+      .filter((key) => fp[key])
+      .map((key) => ({ key, value: fp[key] }));
+    return pairs.length > 0 && dbUpdateKeys(dbPath, pairs);
+  } catch {
+    return false;
+  }
 }
