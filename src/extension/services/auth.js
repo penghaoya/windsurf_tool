@@ -932,6 +932,10 @@ class AuthService {
       return { ok: false, errorType: 'plan_status_failed', error: 'no_response' };
     }
     const result = resp ? parseUsageInfo(resp.buffer) : jsonUsage;
+    if (result) {
+      result.userEmail = loginResult.email || email;
+      result.source = resp ? 'api' : 'api_json';
+    }
     _info('额度', `${_emailPrefix} → ${result?.mode || '?'} daily=${result?.daily?.remaining ?? '?'}% weekly=${result?.weekly?.remaining ?? '?'}% (${Date.now() - _t0}ms, login=${_t1 - _t0}ms, plan=${Date.now() - _t1}ms)`);
     return result;
   }

@@ -66,7 +66,8 @@ export function _updatePoolBar() {
   const winTag = winCount > 1 ? ` W${winCount}` : '';
   const tabTag =
     S.cascadeTabCount > CONCURRENT_TAB_SAFE ? ` T${S.cascadeTabCount}` : '';
-  S.statusBar.text = `${modeIcon} ${quotaDisplay} ${poolTag}${winTag}${tabTag}${burst}${boost}${auto}`;
+  const pendingTag = S.pendingSwitchIndex >= 0 ? ' ?' : '';
+  S.statusBar.text = `${modeIcon} ${quotaDisplay} ${poolTag}${winTag}${tabTag}${pendingTag}${burst}${boost}${auto}`;
   S.statusBar.color = isLow
     ? new vscode.ThemeColor('errorForeground')
     : pool.available === 0
@@ -81,7 +82,7 @@ export function _updatePoolBar() {
   const currentModel = S.currentModelUid || _readCurrentModelUid();
 
   // Tooltip fingerprint: skip rebuild if data unchanged (avoid MarkdownString churn in boost mode)
-  const fp = `${S.activeIndex}|${pool.available}|${pool.total}|${pool.depleted}|${pool.rateLimited}|${pool.expired}|${pool.avgDaily}|${pool.avgWeekly}|${pool.avgEffective}|${pool.urgentCount}|${vel.toFixed(1)}|${hourlyCount}|${slopeInfo}|${S.switchCount}|${winCount}|${S.cascadeTabCount}|${S.burstMode}|${currentModel}|${lastCapacityResult?.messagesRemaining}|${lastCapacityResult?.hasCapacity}|${probeFailCount}|${S.capacityProbeCount}|${mode}|${threshold}`;
+  const fp = `${S.activeIndex}|${S.pendingSwitchIndex}|${pool.available}|${pool.total}|${pool.depleted}|${pool.rateLimited}|${pool.expired}|${pool.avgDaily}|${pool.avgWeekly}|${pool.avgEffective}|${pool.urgentCount}|${vel.toFixed(1)}|${hourlyCount}|${slopeInfo}|${S.switchCount}|${winCount}|${S.cascadeTabCount}|${S.burstMode}|${currentModel}|${lastCapacityResult?.messagesRemaining}|${lastCapacityResult?.hasCapacity}|${probeFailCount}|${S.capacityProbeCount}|${mode}|${threshold}`;
   if (fp === _lastTooltipFingerprint) return;
   _lastTooltipFingerprint = fp;
 
@@ -127,6 +128,14 @@ export function _updatePoolBar() {
       L('---');
       L(`**${quota.plan || '计划'}**`);
       L(`${account.email}`);
+    }
+  }
+  if (S.pendingSwitchIndex >= 0) {
+    const pendingAccount = S.am.get(S.pendingSwitchIndex);
+    if (pendingAccount) {
+      L('---');
+      L(`待确认切换 &nbsp; **#${S.pendingSwitchIndex + 1}**`);
+      L(`${pendingAccount.email}`);
     }
   }
 

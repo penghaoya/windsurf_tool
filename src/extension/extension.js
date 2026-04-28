@@ -75,6 +75,33 @@ const BATCH_IMPORT_VERIFY_LANE = 'batch_import_verify';
 const BATCH_IMPORT_VERIFY_GAP_MS = 5000;
 const BATCH_IMPORT_ENQUEUE_DELAY_MS = 1500;
 
+function _usageFromCachedQuota(cached, existingUsage = {}) {
+  return {
+    mode: cached.billing === 'credits' ? 'credits' : 'quota',
+    billingStrategy: cached.billing || existingUsage.billingStrategy || 'quota',
+    daily: cached.daily !== null && cached.daily !== undefined
+      ? { used: Math.max(0, 100 - cached.daily), total: 100, remaining: cached.daily }
+      : existingUsage.daily || null,
+    weekly: cached.weekly !== null && cached.weekly !== undefined
+      ? { used: Math.max(0, 100 - cached.weekly), total: 100, remaining: cached.weekly }
+      : existingUsage.weekly || null,
+    plan: cached.plan || existingUsage.plan || null,
+    resetTime: cached.resetTime || existingUsage.resetTime || null,
+    weeklyReset: cached.weeklyReset || existingUsage.weeklyReset || null,
+    extraBalance: cached.extraBalance ?? existingUsage.extraBalance ?? null,
+    planStart: cached.planStart || existingUsage.planStart || null,
+    planEnd: cached.planEnd || existingUsage.planEnd || null,
+    source: 'local',
+    userEmail: cached.email || null,
+  };
+}
+
+function _usageBelongsToAccount(account, usageInfo) {
+  const observed = usageInfo?.userEmail ? String(usageInfo.userEmail).trim().toLowerCase() : null;
+  if (!observed) return true;
+  return observed === String(account?.email || '').trim().toLowerCase();
+}
+
 function _refreshJobOptions(index, options = {}) {
   const account = S.am?.get(index);
   const email = account?.email ? account.email.trim() : null;
@@ -86,16 +113,17 @@ function _refreshJobOptions(index, options = {}) {
 }
 
 async function _runRefreshJob(index, job = {}) {
+  const preferLocal = job.reason === 'full_scan' || job.reason === 'switch_preheat';
   if (job.email) {
     const current = S.am.findByEmail(job.email);
     if (!current) {
       _logWarn('刷新队列', `账号已不存在，跳过 ${job.email}`);
       return { skipped: true, reason: 'account_missing', index: -1, email: job.email };
     }
-    const result = await _refreshOne(current.index);
+    const result = await _refreshOne(current.index, { preferLocal, reason: job.reason });
     return { ...result, index: current.index, email: job.email };
   }
-  const result = await _refreshOne(index);
+  const result = await _refreshOne(index, { preferLocal, reason: job.reason });
   return { ...result, index };
 }
 
@@ -197,9 +225,27 @@ function _activate(context) {
 
   // 恢复状态
   const savedIndex = context.globalState.get("wam-current-index", -1);
+  const savedPendingIndex = context.globalState.get("wam-pending-index", -1);
+  const savedPendingEmail = context.globalState.get("wam-pending-email", null);
   const accounts = S.am.getAll();
   if (savedIndex >= 0 && savedIndex < accounts.length)
     S.activeIndex = savedIndex;
+  const restoredPendingByEmail = savedPendingEmail ? S.am.findByEmail(savedPendingEmail) : null;
+  const restoredPendingIndex = restoredPendingByEmail?.index ?? savedPendingIndex;
+  if (restoredPendingIndex >= 0 && restoredPendingIndex < accounts.length) {
+    S.pendingSwitchIndex = restoredPendingIndex;
+    S.pendingSwitchEmail = savedPendingEmail || accounts[restoredPendingIndex]?.email || null;
+    S.switchStatus = {
+      ...S.switchStatus,
+      phase: 'uncertain',
+      pendingIndex: restoredPendingIndex,
+      confirmedIndex: -1,
+      targetEmail: S.pendingSwitchEmail,
+      message: '等待运行时确认',
+      updatedAt: Date.now(),
+    };
+    _logWarn('启动', `恢复待确认切换 #${restoredPendingIndex + 1}`);
+  }
   _updatePoolBar();
   S.statusBar.show();
 
@@ -310,6 +356,17 @@ async function _refreshOne(index, options = {}) {
   const account = S.am.get(index);
   if (!account) return { ok: false, credits: undefined, errorType: 'account_missing' };
   try {
+    if (options.preferLocal && S.auth?.readCachedQuota) {
+      const cached = S.auth.readCachedQuota(account.email, {
+        silent: true,
+        source: options.reason || 'refresh',
+      });
+      if (cached) {
+        const usageInfo = _usageFromCachedQuota(cached, account.usage);
+        S.am.updateUsage(index, usageInfo);
+        return { ok: true, credits: usageInfo.credits, usageInfo, source: 'local' };
+      }
+    }
     const usageInfo = await S.auth.getUsageInfo(account.email, account.password, options);
     if (usageInfo?.ok === false) {
       if (usageInfo.cacheOnly) {
@@ -322,6 +379,10 @@ async function _refreshOne(index, options = {}) {
       return { ok: false, credits: undefined, errorType: usageInfo.errorType, error: usageInfo.error };
     }
     if (usageInfo) {
+      if (!_usageBelongsToAccount(account, usageInfo)) {
+        _logWarn('额度写入', `拒绝写入 #${index + 1}: 返回账号=${usageInfo.userEmail || 'n/a'} 目标=${account.email}`);
+        return { ok: false, credits: undefined, errorType: 'account_mismatch', error: 'quota_result_account_mismatch' };
+      }
       // v5.11.0+v6.9: Supplement from cachedPlanInfo for active account (single read)
       if (index === S.activeIndex && S.auth) {
         try {

@@ -26,6 +26,8 @@ export const S = {
   // 号池状态
   activeIndex: -1,
   switching: false,
+  pendingSwitchIndex: -1,
+  pendingSwitchEmail: null,
   poolTimer: null,
   lastQuota: null,
   lastCheckTs: 0,

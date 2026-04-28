@@ -256,6 +256,14 @@ export async function _performSwitch(context, {
   allowThresholdFallback = false,
   source = 'auto',
 } = {}) {
+  if (!panic && S.pendingSwitchIndex >= 0) {
+    const pending = await _reconcilePendingSwitch(context);
+    if (!pending.settled) {
+      _logWarn('切换', `已有待确认切换 #${S.pendingSwitchIndex + 1}，跳过新的自动切换`);
+      return { ok: false, index: S.pendingSwitchIndex, reason: 'pending_switch' };
+    }
+    return { ok: true, index: S.activeIndex, reason: 'pending_confirmed' };
+  }
   // v18.0: 切换频率控制 — 防封控
   const now = Date.now();
   if (!panic) {
@@ -446,6 +454,84 @@ function _setSwitchStatus(partial) {
   _refreshPanel();
 }
 
+function _persistSwitchState(context, activeIndex = S.activeIndex, pendingIndex = S.pendingSwitchIndex, pendingEmail = S.pendingSwitchEmail) {
+  if (!context?.globalState) return;
+  context.globalState.update('wam-current-index', activeIndex);
+  context.globalState.update('wam-pending-index', pendingIndex);
+  context.globalState.update('wam-pending-email', pendingEmail || null);
+}
+
+function _commitConfirmedSwitch(context, {
+  prevIndex,
+  targetIndex,
+  source,
+  targetEmail,
+  confirmedEmail = null,
+}) {
+  const prevEmail = _getAccountEmail(prevIndex);
+  S.activeIndex = targetIndex;
+  S.pendingSwitchIndex = -1;
+  S.pendingSwitchEmail = null;
+  S.switchCount++;
+  S.am.incrementLoginCount?.(targetIndex);
+  S.am.markUsed(targetIndex);
+  S.lastQuota = null;
+  S.lastSwitchTs = Date.now();
+  S.hourlySwitchLog.push(S.lastSwitchTs);
+  _dropAccountRuntimeByEmail(prevEmail);
+  _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
+  _heartbeatWindow();
+  _persistSwitchState(context, targetIndex, -1, null);
+  _setSwitchStatus({
+    phase: 'confirmed',
+    pendingIndex: -1,
+    confirmedIndex: targetIndex,
+    targetEmail,
+    confirmedAt: Date.now(),
+    observedEmail: confirmedEmail || targetEmail,
+    message: '已生效',
+  });
+  _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 已确认 source=${source} (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
+}
+
+export async function _reconcilePendingSwitch(context) {
+  let pendingIndex = S.pendingSwitchIndex;
+  if (pendingIndex < 0) return { settled: true, reason: 'no_pending' };
+  const pendingEmail = S.pendingSwitchEmail || _getAccountEmail(pendingIndex);
+  const currentByEmail = pendingEmail && S.am?.findByEmail?.(pendingEmail);
+  if (S.pendingSwitchEmail && !currentByEmail) {
+    S.pendingSwitchIndex = -1;
+    S.pendingSwitchEmail = null;
+    _persistSwitchState(context, S.activeIndex, -1, null);
+    _setSwitchStatus({ phase: 'idle', pendingIndex: -1, message: '' });
+    return { settled: true, reason: 'missing_target_email' };
+  }
+  if (currentByEmail && currentByEmail.index !== pendingIndex) {
+    pendingIndex = currentByEmail.index;
+    S.pendingSwitchIndex = pendingIndex;
+  }
+  const targetEmail = pendingEmail || _getAccountEmail(pendingIndex);
+  if (!targetEmail) {
+    S.pendingSwitchIndex = -1;
+    S.pendingSwitchEmail = null;
+    _persistSwitchState(context, S.activeIndex, -1, null);
+    _setSwitchStatus({ phase: 'idle', pendingIndex: -1, message: '' });
+    return { settled: true, reason: 'missing_target' };
+  }
+
+  const confirmed = await _waitForSwitchConfirmation(targetEmail, 1200);
+  if (!confirmed.ok) return { settled: false, reason: confirmed.reason, email: confirmed.email || null };
+
+  _commitConfirmedSwitch(context, {
+    prevIndex: S.activeIndex,
+    targetIndex: pendingIndex,
+    source: 'pending_reconcile',
+    targetEmail,
+    confirmedEmail: confirmed.email,
+  });
+  return { settled: true, index: pendingIndex };
+}
+
 async function _waitForSwitchConfirmation(targetEmail, timeoutMs = SWITCH_CONFIRM_TIMEOUT) {
   const normalizedTarget = _normalizeEmail(targetEmail);
   if (!normalizedTarget || !S.auth?.readCachedAuthEmail) {
@@ -466,12 +552,20 @@ async function _waitForSwitchConfirmation(targetEmail, timeoutMs = SWITCH_CONFIR
 
 export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
   if (S.switching || targetIndex === S.activeIndex) return false;
+  if (S.pendingSwitchIndex >= 0 && S.pendingSwitchIndex !== targetIndex) {
+    _logWarn('切换', `已有待确认切换 #${S.pendingSwitchIndex + 1}，拒绝并发切换 #${targetIndex + 1}`);
+    return false;
+  }
   S.switching = true;
   const prevBar = S.statusBar.text;
   S.statusBar.text = "$(sync~spin) ...";
   const prevIndex = S.activeIndex;
-  const prevEmail = _getAccountEmail(prevIndex);
   const targetEmail = _getAccountEmail(targetIndex);
+  if (!targetEmail) {
+    S.statusBar.text = prevBar;
+    S.switching = false;
+    return false;
+  }
   _logInfo("切换", `开始无感切换 source=${source} #${prevIndex + 1}→#${targetIndex + 1}`);
   _setSwitchStatus({
     phase: 'switching',
@@ -484,7 +578,10 @@ export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
 
   try {
     _invalidateApiKeyCache();
-    await deps.loginToAccount(context, targetIndex);
+    const loginResult = await deps.loginToAccount(context, targetIndex);
+    if (!loginResult?.injected) {
+      throw new Error(loginResult?.method || 'auth_injection_failed');
+    }
     _setSwitchStatus({
       phase: 'verifying',
       pendingIndex: targetIndex,
@@ -492,28 +589,18 @@ export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
       message: '验证中',
     });
     const confirmed = await _waitForSwitchConfirmation(targetEmail);
-    S.switchCount++;
-    S.am.markUsed(targetIndex);
-    S.lastQuota = null;
-    // v18.0: 记录切换时间戳 (防封控频率追踪)
-    S.lastSwitchTs = Date.now();
-    S.hourlySwitchLog.push(S.lastSwitchTs);
-    _dropAccountRuntimeByEmail(prevEmail);
-    _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
-    _heartbeatWindow();
-    // 持久化activeIndex,崩溃恢复时不会回退到旧账号
-    if (context?.globalState) context.globalState.update('wam-current-index', targetIndex);
     if (confirmed.ok) {
-      _setSwitchStatus({
-        phase: 'confirmed',
-        pendingIndex: -1,
-        confirmedIndex: targetIndex,
+      _commitConfirmedSwitch(context, {
+        prevIndex,
+        targetIndex,
+        source,
         targetEmail,
-        confirmedAt: Date.now(),
-        message: '已生效',
+        confirmedEmail: confirmed.email,
       });
-      _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 已确认 source=${source} (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
     } else {
+      S.pendingSwitchIndex = targetIndex;
+      S.pendingSwitchEmail = targetEmail;
+      _persistSwitchState(context, S.activeIndex, targetIndex, targetEmail);
       _setSwitchStatus({
         phase: 'uncertain',
         pendingIndex: targetIndex,
@@ -677,6 +764,16 @@ function _preheatStartupCandidates(threshold) {
 async function _poolTick(context) {
   const accounts = S.am.getAll();
   if (accounts.length === 0) return;
+
+  if (S.pendingSwitchIndex >= 0) {
+    const pending = await _reconcilePendingSwitch(context);
+    if (!pending.settled) {
+      _logInfo('切换', `待确认切换 #${S.pendingSwitchIndex + 1} 仍未生效 (${pending.reason || 'unknown'})`);
+      deps.updatePoolBar?.();
+      _refreshPanel();
+      return;
+    }
+  }
 
   S.am.sweepExpiredRateLimits?.();
   _mergeSchedulerFromShared();

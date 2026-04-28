@@ -217,10 +217,7 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
   async function loginToAccount(context, index) {
     const account = S.am.get(index);
-    if (!account) return;
-
-    S.activeIndex = index;
-    context.globalState.update('wam-current-index', index);
+    if (!account) return { ok: false, injected: false, method: 'missing_account' };
 
     const apiKeyBefore = readAuthApiKeyPrefix();
     const injectResult = await injectAuth(context, index);
@@ -233,8 +230,8 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       );
     }
 
-    S.am.incrementLoginCount(index);
     updatePoolBar();
+    return injectResult;
   }
 
   async function waitForApiKeyChange(oldPrefix, maxWaitMs = 2000) {
