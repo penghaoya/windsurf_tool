@@ -164,6 +164,14 @@ function _getAdaptivePollMs() {
   return POLL_NORMAL;
 }
 
+function _setLastDecision(partial) {
+  S.lastDecision = {
+    ts: Date.now(),
+    ...partial,
+  };
+  _refreshPanel();
+}
+
 // ═══ 运行时候选过滤 ═══
 
 export function _filterRuntimeCandidates(candidates, { modelUid = null } = {}) {
@@ -259,20 +267,24 @@ export async function _performSwitch(context, {
   if (!panic && S.pendingSwitchIndex >= 0) {
     const pending = await _reconcilePendingSwitch(context);
     if (!pending.settled) {
+      _setLastDecision({ action: 'skip_switch', reason: 'pending_switch', candidateCount: 0 });
       _logWarn('切换', `已有待确认切换 #${S.pendingSwitchIndex + 1}，跳过新的自动切换`);
       return { ok: false, index: S.pendingSwitchIndex, reason: 'pending_switch' };
     }
+    _setLastDecision({ action: 'confirm_pending', reason: 'pending_confirmed', targetIndex: S.activeIndex });
     return { ok: true, index: S.activeIndex, reason: 'pending_confirmed' };
   }
   // v18.0: 切换频率控制 — 防封控
   const now = Date.now();
   if (!panic) {
     if (S.lastSwitchTs && now - S.lastSwitchTs < MIN_SWITCH_INTERVAL) {
+      _setLastDecision({ action: 'skip_switch', reason: 'switch_cooldown', cooldownMs: MIN_SWITCH_INTERVAL - (now - S.lastSwitchTs) });
       _logWarn('切换', `频率保护: 距上次仅${Math.round((now - S.lastSwitchTs) / 1000)}s < ${MIN_SWITCH_INTERVAL / 1000}s`);
       return { ok: false, index: -1, reason: 'switch_cooldown' };
     }
     S.hourlySwitchLog = S.hourlySwitchLog.filter(ts => now - ts < 3600000);
     if (S.hourlySwitchLog.length >= MAX_SWITCHES_PER_HOUR) {
+      _setLastDecision({ action: 'skip_switch', reason: 'hourly_cap', switchCount: S.hourlySwitchLog.length });
       _logWarn('切换', `小时上限: 已切${S.hourlySwitchLog.length}次/h (cap=${MAX_SWITCHES_PER_HOUR})`);
       return { ok: false, index: -1, reason: 'hourly_cap' };
     }
@@ -293,6 +305,14 @@ export async function _performSwitch(context, {
       }
     }
   }
+  const skipReasons = [];
+  _setLastDecision({
+    action: 'switch_candidates',
+    reason: source,
+    candidateCount: ordered.length,
+    threshold,
+    targetPolicy,
+  });
   // v16.0: 并行预热 Top-3 候选,取第一个成功的 (worst case 5s vs 原15s)
   const PARALLEL_PREHEAT_N = 3;
   if (ordered.length > 1) {
@@ -308,6 +328,7 @@ export async function _performSwitch(context, {
         _logWarn('切换', `预热成功但切换失败 #${result.value.candidate.index + 1} (switching=${S.switching}, active=${S.activeIndex})`);
       } else if (result.status === 'fulfilled') {
         const v = result.value;
+        skipReasons.push(`#${v.candidate.index + 1}:${v.reason}`);
         _logWarn('切换', `预热跳过 #${v.candidate.index + 1}: ${v.reason}${v.remaining !== null ? ` (${v.remaining}%≤${threshold}%)` : ''}`);
       }
     }
@@ -315,6 +336,7 @@ export async function _performSwitch(context, {
     for (const candidate of rest) {
       const preheat = await _validateSwitchCandidate(candidate.index, threshold);
       if (!preheat.ok) {
+        skipReasons.push(`#${candidate.index + 1}:${preheat.reason}`);
         _logWarn('切换', `预热跳过 #${candidate.index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
         continue;
       }
@@ -327,9 +349,16 @@ export async function _performSwitch(context, {
       const switched = await _seamlessSwitch(context, ordered[0].index, source);
       if (switched) return { ok: true, index: ordered[0].index, candidate: ordered[0] };
     } else {
+      skipReasons.push(`#${ordered[0].index + 1}:${preheat.reason}`);
       _logWarn('切换', `预热跳过 #${ordered[0].index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
     }
   }
+  _setLastDecision({
+    action: 'switch_failed',
+    reason: ordered.length === 0 ? 'no_candidates' : 'preheat_failed',
+    candidateCount: ordered.length,
+    skips: skipReasons.slice(-6),
+  });
   if (!panic) _logWarn('切换', '候选账号全部预热失败或不可切换');
   return { ok: false, index: -1 };
 }
@@ -490,6 +519,13 @@ function _commitConfirmedSwitch(context, {
     confirmedAt: Date.now(),
     observedEmail: confirmedEmail || targetEmail,
     message: '已生效',
+  });
+  _setLastDecision({
+    action: 'switch_confirmed',
+    reason: source,
+    fromIndex: prevIndex,
+    targetIndex,
+    observedEmail: confirmedEmail || targetEmail,
   });
   _logInfo("切换", `✅ 无感切换 #${prevIndex + 1}→#${targetIndex + 1} 已确认 source=${source} (第${S.switchCount}次, ${_getActiveWindowCount()}窗口)`);
 }
@@ -731,6 +767,38 @@ async function _refreshActiveSnapshot(index) {
   return { source: 'network' };
 }
 
+function _reconcileActiveAccountFromRuntime(context) {
+  if (!S.auth?.readCachedAuthEmail || !S.am || S.activeIndex < 0) return false;
+  const runtimeEmail = _normalizeEmail(S.auth.readCachedAuthEmail());
+  const activeEmail = _getAccountEmail(S.activeIndex);
+  if (!runtimeEmail || runtimeEmail === activeEmail) return false;
+  const matched = S.am.findByEmail?.(runtimeEmail);
+  if (!matched) {
+    _setLastDecision({
+      action: 'runtime_mismatch',
+      reason: 'runtime_email_not_in_pool',
+      observedEmail: runtimeEmail,
+      activeEmail,
+    });
+    _logWarn('运行时对账', `当前Windsurf账号 ${runtimeEmail} 不在号池中(active=${activeEmail || 'n/a'})`);
+    return false;
+  }
+  const prevIndex = S.activeIndex;
+  S.activeIndex = matched.index;
+  S.lastQuota = null;
+  if (context?.globalState) context.globalState.update('wam-current-index', matched.index);
+  _heartbeatWindow();
+  _setLastDecision({
+    action: 'runtime_reconcile',
+    reason: 'active_index_mismatch',
+    fromIndex: prevIndex,
+    targetIndex: matched.index,
+    observedEmail: runtimeEmail,
+  });
+  _logWarn('运行时对账', `activeIndex已按Windsurf运行时修正 #${prevIndex + 1} → #${matched.index + 1} (${runtimeEmail})`);
+  return true;
+}
+
 function _preheatStartupCandidates(threshold) {
   if (S.startupPreheatDone) return;
   S.startupPreheatDone = true;
@@ -794,6 +862,8 @@ async function _poolTick(context) {
     if (!switchResult.ok) _logWarn("号池", "无活跃账号且无可用账号");
     return;
   }
+
+  _reconcileActiveAccountFromRuntime(context);
 
   if (S.am.isExpired(S.activeIndex)) {
     _logWarn("号池", `活跃账号 #${S.activeIndex + 1} 已过期 → 立即轮转`);
@@ -943,7 +1013,24 @@ async function _poolTick(context) {
       // 防抖
     } else {
       const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
+      if (decision.action === 'none') {
+        _setLastDecision({
+          action: 'none',
+          reason: decision.reason,
+          activeIndex: S.activeIndex,
+          quota: curQuota,
+          threshold,
+        });
+      }
       if (decision.action === 'switch_account') {
+        _setLastDecision({
+          action: 'switch_account',
+          reason: decision.reason,
+          activeIndex: S.activeIndex,
+          quota: curQuota,
+          threshold,
+          targetPolicy: decision.targetPolicy || 'same_strategy',
+        });
         if (decision.reason.startsWith('ufef_urgent')) S.lastUfefSwitchTs = Date.now();
         _logInfo("调度决策", `预防性切号: ${decision.reason}`);
         const switchResult = await _performSwitch(context, {

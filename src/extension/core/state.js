@@ -42,6 +42,9 @@ export const S = {
     updatedAt: 0,
     message: '',
   },
+  lastDecision: null,
+  refreshCircuitUntil: 0,
+  refreshCircuitReason: null,
   discoveredAuthCmd: null,
   eventLog: [],
 

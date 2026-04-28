@@ -7,6 +7,7 @@
         :pool="state.pool"
         :activeQuota="state.activeQuota"
         :threshold="state.threshold"
+        :lastDecision="state.lastDecision"
       />
       <Toolbar />
       <AddAccount />

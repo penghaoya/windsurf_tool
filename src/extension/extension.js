@@ -74,6 +74,7 @@ const { injectAuth, _checkAccount, _loginToAccount } = authInjector;
 const BATCH_IMPORT_VERIFY_LANE = 'batch_import_verify';
 const BATCH_IMPORT_VERIFY_GAP_MS = 5000;
 const BATCH_IMPORT_ENQUEUE_DELAY_MS = 1500;
+const AUTH_REFRESH_CIRCUIT_MS = 30 * 60 * 1000;
 
 function _usageFromCachedQuota(cached, existingUsage = {}) {
   return {
@@ -102,6 +103,27 @@ function _usageBelongsToAccount(account, usageInfo) {
   return observed === String(account?.email || '').trim().toLowerCase();
 }
 
+function _isAuthRateLimitError(resultOrError) {
+  const text = String(resultOrError?.error || resultOrError?.message || resultOrError || '').toLowerCase();
+  return (
+    text.includes('too_many_attempts_try_later') ||
+    text.includes('too-many-requests') ||
+    text.includes('too many requests') ||
+    text.includes('http 429') ||
+    (text.includes('firebase') && text.includes('429'))
+  );
+}
+
+function _isLowPriorityRefresh(job = {}) {
+  return job.priority === 'low' || job.reason === 'full_scan' || job.reason === 'panic_post_refresh';
+}
+
+function _tripRefreshCircuit(reason) {
+  S.refreshCircuitUntil = Date.now() + AUTH_REFRESH_CIRCUIT_MS;
+  S.refreshCircuitReason = reason || 'auth_rate_limited';
+  _logWarn('刷新熔断', `检测到认证限流，低优先级批量刷新暂停${Math.round(AUTH_REFRESH_CIRCUIT_MS / 60000)}分钟 (${S.refreshCircuitReason})`);
+}
+
 function _refreshJobOptions(index, options = {}) {
   const account = S.am?.get(index);
   const email = account?.email ? account.email.trim() : null;
@@ -114,6 +136,15 @@ function _refreshJobOptions(index, options = {}) {
 
 async function _runRefreshJob(index, job = {}) {
   const preferLocal = job.reason === 'full_scan' || job.reason === 'switch_preheat';
+  if (_isLowPriorityRefresh(job) && S.refreshCircuitUntil > Date.now()) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'auth_refresh_circuit',
+      until: S.refreshCircuitUntil,
+      index,
+    };
+  }
   if (job.email) {
     const current = S.am.findByEmail(job.email);
     if (!current) {
@@ -121,9 +152,11 @@ async function _runRefreshJob(index, job = {}) {
       return { skipped: true, reason: 'account_missing', index: -1, email: job.email };
     }
     const result = await _refreshOne(current.index, { preferLocal, reason: job.reason });
+    if (_isAuthRateLimitError(result)) _tripRefreshCircuit(result.error);
     return { ...result, index: current.index, email: job.email };
   }
   const result = await _refreshOne(index, { preferLocal, reason: job.reason });
+  if (_isAuthRateLimitError(result)) _tripRefreshCircuit(result.error);
   return { ...result, index };
 }
 
@@ -365,6 +398,13 @@ async function _refreshOne(index, options = {}) {
         const usageInfo = _usageFromCachedQuota(cached, account.usage);
         S.am.updateUsage(index, usageInfo);
         return { ok: true, credits: usageInfo.credits, usageInfo, source: 'local' };
+      }
+    }
+    if ((options.preferLocal || index === S.activeIndex || index === S.pendingSwitchIndex) && S.auth?.fetchUsageFromCurrentApiKey) {
+      const runtimeUsage = await S.auth.fetchUsageFromCurrentApiKey(account.email);
+      if (runtimeUsage) {
+        S.am.updateUsage(index, runtimeUsage);
+        return { ok: true, credits: runtimeUsage.credits, usageInfo: runtimeUsage, source: 'apikey_status' };
       }
     }
     const usageInfo = await S.auth.getUsageInfo(account.email, account.password, options);

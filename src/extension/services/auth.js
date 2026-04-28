@@ -47,6 +47,11 @@ const REGISTER_URLS = [
   'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/RegisterUser',
   'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/RegisterUser',
 ];
+const REGISTER_JSON_FALLBACK_URLS = [
+  'https://api.codeium.com/exa.language_server_pb.LanguageServerService/RegisterUser',
+  'https://server.codeium.com/exa.language_server_pb.LanguageServerService/RegisterUser',
+];
+const GET_USER_STATUS_URL = 'https://server.codeium.com/exa.language_server_pb.LanguageServerService/GetUserStatus';
 
 const TOKEN_TTL = 50 * 60 * 1000; // 50 minutes
 const AUTH_PROVIDER_TTL = 24 * 60 * 60 * 1000;
@@ -1045,6 +1050,93 @@ class AuthService {
     return null;
   }
 
+  _parseUsageFromGetUserStatus(data) {
+    const userStatus = data?.userStatus || data?.user_status || data;
+    if (!userStatus || typeof userStatus !== 'object') return null;
+    const planStatus = userStatus.planStatus || userStatus.plan_status || {};
+    const planInfo = userStatus.planInfo || userStatus.plan_info || planStatus.planInfo || planStatus.plan_info || {};
+    const quotaUsage = planInfo.quotaUsage || planInfo.quota_usage || planStatus.quotaUsage || planStatus.quota_usage || {};
+    const plan = planInfo.planName || planInfo.plan_name || planStatus.planName || planStatus.plan_name || null;
+    const billingRaw = planInfo.billingStrategy ?? planInfo.billing_strategy ?? planStatus.billingStrategy ?? planStatus.billing_strategy ?? null;
+    const billingStrategy = typeof billingRaw === 'string'
+      ? billingRaw.toLowerCase()
+      : billingRaw === 1
+        ? 'credits'
+        : billingRaw === 2
+          ? 'quota'
+          : null;
+    const dailyRemaining = quotaUsage.dailyRemainingPercent ?? quotaUsage.daily_remaining_percent ?? planStatus.dailyQuotaRemainingPercent ?? planStatus.daily_quota_remaining_percent;
+    const weeklyRemaining = quotaUsage.weeklyRemainingPercent ?? quotaUsage.weekly_remaining_percent ?? planStatus.weeklyQuotaRemainingPercent ?? planStatus.weekly_quota_remaining_percent;
+    const dailyResetUnix = Number(quotaUsage.dailyResetAtUnix ?? quotaUsage.daily_reset_at_unix ?? planStatus.dailyQuotaResetAtUnix ?? planStatus.daily_quota_reset_at_unix ?? 0);
+    const weeklyResetUnix = Number(quotaUsage.weeklyResetAtUnix ?? quotaUsage.weekly_reset_at_unix ?? planStatus.weeklyQuotaResetAtUnix ?? planStatus.weekly_quota_reset_at_unix ?? 0);
+    const availablePrompt = planStatus.availablePromptCredits ?? planStatus.available_prompt_credits ?? planInfo.monthlyPromptCredits ?? planInfo.monthly_prompt_credits;
+    const usedPrompt = planStatus.usedPromptCredits ?? planStatus.used_prompt_credits ?? 0;
+
+    if (!plan && dailyRemaining === undefined && weeklyRemaining === undefined && availablePrompt === undefined) {
+      return null;
+    }
+
+    const result = {
+      mode: billingStrategy === 'credits' ? 'credits' : 'quota',
+      billingStrategy: billingStrategy || (dailyRemaining !== undefined || weeklyRemaining !== undefined ? 'quota' : 'credits'),
+      credits: null,
+      plan,
+      daily: dailyRemaining !== undefined
+        ? { used: Math.max(0, 100 - Number(dailyRemaining)), total: 100, remaining: Number(dailyRemaining) }
+        : null,
+      weekly: weeklyRemaining !== undefined
+        ? { used: Math.max(0, 100 - Number(weeklyRemaining)), total: 100, remaining: Number(weeklyRemaining) }
+        : null,
+      resetTime: dailyResetUnix ? dailyResetUnix * 1000 : null,
+      weeklyReset: weeklyResetUnix ? weeklyResetUnix * 1000 : null,
+      extraBalance: Number(quotaUsage.overageBalanceMicros ?? quotaUsage.overage_balance_micros ?? 0) / 1000000,
+      planStart: null,
+      planEnd: null,
+      userEmail: userStatus.userEmail || userStatus.user_email || null,
+      source: 'apikey_status',
+    };
+    if (availablePrompt !== undefined && availablePrompt !== null) {
+      result.credits = Math.round((Number(availablePrompt) - Number(usedPrompt || 0)) / 100);
+      if (!result.daily && result.billingStrategy === 'credits') result.mode = 'credits';
+    }
+    return result;
+  }
+
+  async fetchUsageFromCurrentApiKey(expectedEmail = null) {
+    try {
+      const apiKey = this.readCurrentApiKey();
+      if (!apiKey) return null;
+      if (String(apiKey).startsWith('sk-ws-01-')) {
+        _info('额度', 'GetUserStatus跳过: 当前apiKey为sk-ws-01 session token');
+        return null;
+      }
+      const body = {
+        metadata: {
+          apiKey,
+          ideName: 'vscode',
+          extensionName: 'codeium.windsurf-windsurf',
+          extensionVersion: '1.9.0',
+        },
+      };
+      const r = await this._httpsJson(GET_USER_STATUS_URL, 'POST', body, undefined, {
+        'Content-Type': 'application/connect+json',
+        'Connect-Protocol-Version': '1',
+      });
+      if (!r.ok) return null;
+      const usage = this._parseUsageFromGetUserStatus(r.data);
+      if (!usage) return null;
+      if (!this._matchesExpectedEmail(usage.userEmail, expectedEmail)) {
+        _warn('额度', `GetUserStatus email mismatch: cached=${usage.userEmail || 'n/a'} expected=${expectedEmail}`);
+        return null;
+      }
+      _info('额度', `GetUserStatus → daily=${usage.daily?.remaining ?? '?'}% weekly=${usage.weekly?.remaining ?? '?'}% email=${usage.userEmail || 'n/a'}`);
+      return usage;
+    } catch (e) {
+      _warn('额度', `GetUserStatus失败: ${e.message}`);
+      return null;
+    }
+  }
+
   // ========== RegisterUser → apiKey (for hot injection, mode-aware) ==========
 
   async registerUser(email, password) {
@@ -1064,9 +1156,34 @@ class AuthService {
       if (!resp) resp = await this._tryRelaysBinary('/windsurf/register', reqData);
     }
 
-    if (!resp) return null;
-    const apiKey = parseProtoString(resp.buffer);
-    return apiKey ? { apiKey, email, idToken: loginResult.idToken } : null;
+    if (resp) {
+      const apiKey = parseProtoString(resp.buffer);
+      if (apiKey) return { apiKey, email, idToken: loginResult.idToken };
+    }
+
+    const fallback = await this._registerUserJsonFallback(loginResult.idToken);
+    return fallback?.apiKey ? { ...fallback, email, idToken: loginResult.idToken } : null;
+  }
+
+  async _registerUserJsonFallback(idToken) {
+    for (const url of REGISTER_JSON_FALLBACK_URLS) {
+      try {
+        const r = await this._httpsJson(url, 'POST', { firebase_id_token: idToken });
+        const apiKey = r.data?.api_key || r.data?.apiKey;
+        if (r.ok && apiKey) {
+          _info('注册', `RegisterUser JSON fallback成功: ${new URL(url).hostname}`);
+          return {
+            apiKey,
+            name: r.data?.name || '',
+            apiServerUrl: r.data?.api_server_url || r.data?.apiServerUrl || '',
+          };
+        }
+        _warn('注册', `RegisterUser JSON fallback失败: ${new URL(url).hostname} status=${r.status}`);
+      } catch (e) {
+        _warn('注册', `RegisterUser JSON fallback异常: ${new URL(url).hostname} ${e.message}`);
+      }
+    }
+    return null;
   }
 
   // ========== GetOneTimeAuthToken (legacy v5.0.20 flow, mode-aware) ==========

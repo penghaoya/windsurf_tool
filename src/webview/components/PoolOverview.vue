@@ -59,6 +59,10 @@
         </div>
       </div>
     </div>
+    <div v-if="decisionText" class="pool-decision">
+      <span class="decision-dot"></span>
+      <span>{{ decisionText }}</span>
+    </div>
   </div>
 </template>
 
@@ -72,6 +76,7 @@ const props = defineProps({
   pool: { type: Object, default: () => ({}) },
   activeQuota: { type: Object, default: null },
   threshold: { type: Number, default: 5 },
+  lastDecision: { type: Object, default: null },
 })
 
 const activeAccount = computed(() =>
@@ -145,6 +150,24 @@ const expiryHtml = computed(() => {
   if (q.planDays > 0) return `<span style="color:${color}">${q.planDays}天剩余${label}</span>`
   return '<span style="color:var(--rd)">已过期</span>'
 })
+
+const decisionText = computed(() => {
+  const d = props.lastDecision
+  if (!d) return ''
+  const reason = d.reason || 'ok'
+  if (d.action === 'none') return `最近决策：不切换，${reason}`
+  if (d.action === 'switch_account') return `最近决策：准备切换，${reason}`
+  if (d.action === 'switch_confirmed') return `最近决策：已切到 #${(d.targetIndex ?? -1) + 1}`
+  if (d.action === 'switch_failed') {
+    const skips = Array.isArray(d.skips) && d.skips.length ? ` · ${d.skips.join('，')}` : ''
+    return `最近决策：切换失败，${reason}${skips}`
+  }
+  if (d.action === 'skip_switch') return `最近决策：跳过切换，${reason}`
+  if (d.action === 'runtime_reconcile') return `最近决策：运行时对账到 #${(d.targetIndex ?? -1) + 1}`
+  if (d.action === 'runtime_mismatch') return `最近决策：运行时账号不在号池`
+  if (d.action === 'switch_candidates') return `最近决策：候选 ${d.candidateCount ?? 0} 个`
+  return `最近决策：${reason}`
+})
 </script>
 
 <style scoped>
@@ -176,4 +199,6 @@ const expiryHtml = computed(() => {
 .pool-active .act-plan{font-size:9px;font-weight:600;padding:0 3px;border-radius:2px;border:1px solid var(--ac);color:var(--ac)}
 .pool-active .act-expiry{font-size:10px}
 .pool-active .act-meta{font-size:10px;color:var(--tx3);margin-top:0;display:flex;gap:3px;flex-wrap:wrap}
+.pool-decision{margin-top:3px;display:flex;align-items:center;gap:5px;font-size:10px;color:var(--tx3);line-height:1.4;word-break:break-word}
+.decision-dot{width:4px;height:4px;border-radius:50%;background:var(--ac);flex-shrink:0}
 </style>

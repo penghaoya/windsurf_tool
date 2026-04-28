@@ -127,6 +127,7 @@ class AccountViewProvider {
     const activeQuota = this._am.getActiveQuota ? this._am.getActiveQuota(currentIndex) : null;
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
     const switchStatus = this._onAction ? (this._onAction('getSwitchStatus') || null) : null;
+    const lastDecision = this._onAction ? (this._onAction('getLastDecision') || null) : null;
 
     // 为每个账号附加计算属性 (Vue 侧只做展示，不做业务逻辑)
     const enriched = accounts.map((a, i) => {
@@ -166,6 +167,7 @@ class AccountViewProvider {
       threshold,
       switchCount,
       switchStatus,
+      lastDecision,
     };
     const fingerprint = JSON.stringify(payload);
     if (!force && fingerprint === this._lastStateFingerprint) return;

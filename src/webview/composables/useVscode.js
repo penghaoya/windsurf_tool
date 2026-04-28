@@ -32,6 +32,7 @@ export const state = reactive({
   threshold: 15,
   switchCount: 0,
   switchStatus: null,
+  lastDecision: null,
 })
 
 /** Toast 消息队列 */
@@ -84,6 +85,7 @@ export function initMessageListener() {
         if (m.threshold !== undefined) state.threshold = m.threshold
         if (m.switchCount !== undefined) state.switchCount = m.switchCount
         if (m.switchStatus !== undefined) state.switchStatus = m.switchStatus
+        if (m.lastDecision !== undefined) state.lastDecision = m.lastDecision
         break
       case MSG.TOAST:
         addToast(m.msg, m.isError)

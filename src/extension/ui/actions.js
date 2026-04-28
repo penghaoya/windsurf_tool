@@ -72,6 +72,8 @@ export function createActionHandler(helpers) {
         return S.switchCount;
       case 'getSwitchStatus':
         return S.switchStatus || null;
+      case 'getLastDecision':
+        return S.lastDecision || null;
       case 'showLogs':
         S.outputChannel?.show(true);
         return undefined;
