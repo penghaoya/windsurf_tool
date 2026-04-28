@@ -86,17 +86,16 @@ function _refreshJobOptions(index, options = {}) {
 }
 
 async function _runRefreshJob(index, job = {}) {
-  const cacheOnly = job.reason === 'full_scan';
   if (job.email) {
     const current = S.am.findByEmail(job.email);
     if (!current) {
       _logWarn('刷新队列', `账号已不存在，跳过 ${job.email}`);
       return { skipped: true, reason: 'account_missing', index: -1, email: job.email };
     }
-    const result = await _refreshOne(current.index, { cacheOnly });
+    const result = await _refreshOne(current.index);
     return { ...result, index: current.index, email: job.email };
   }
-  const result = await _refreshOne(index, { cacheOnly });
+  const result = await _refreshOne(index);
   return { ...result, index };
 }
 
