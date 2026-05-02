@@ -32,11 +32,9 @@ const FIREBASE_KEYS = [
   'AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY',
 ];
 
-// Relay (works in China without proxy) — 自建优先，第三方降级
-const RELAYS = [
-  'https://aiotvr.xyz/wam',   // 自建阿里云中转 (笔记本CFW代理)
-  'https://168666okfa.xyz',    // 第三方中转 (备选)
-];
+// Relay (works in China without proxy) — 已废弃, 401鉴权失败时无意义且常超时
+// 保留数组结构以便将来注入新中转地址
+const RELAYS = [];
 // Windsurf gRPC endpoints (Connect-RPC over HTTPS)
 const PLAN_STATUS_URLS = [
   'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
@@ -607,6 +605,11 @@ class AuthService {
     return (errors || []).some((error) => error?.status === 401 && this._isMigratedAuthBody(error.body));
   }
 
+  // Auth-class failure — relay fallback won't help, only network errors should fall through to relay.
+  _hasAuthFailure(errors) {
+    return (errors || []).some((error) => error?.status === 401 || error?.status === 403);
+  }
+
   /** Try all relays for binary endpoint, return first success */
   async _tryRelaysBinary(path, bodyBuffer, options = {}) {
     const errors = options.errors || null;
@@ -772,7 +775,11 @@ class AuthService {
 
     if (!forceFresh) {
       const cached = this._getCachedToken(email);
-      if (cached) { _info('登录', `${_emailPrefix} → cached (0ms)`); return { ok: true, idToken: cached, email, cached: true }; }
+      if (cached) {
+        _info('登录', `${_emailPrefix} → cached (0ms)`);
+        const provider = this._getCachedAuthProvider(email);
+        return { ok: true, idToken: cached, email, cached: true, provider };
+      }
     }
 
     if (cacheOnly) {
@@ -888,10 +895,13 @@ class AuthService {
     }
     const _t1 = Date.now();
 
+    // devin-auth tokens are windsurf session tokens, incompatible with binary GetPlanStatus.
+    // Skip binary path entirely and go straight to JSON GetPlanStatus to avoid 4 wasted 401s.
+    const isDevinAuth = loginResult.provider === 'devin-auth' || loginResult.channel === 'devin-auth';
     const reqData = encodeProtoString(loginResult.idToken);
     let planErrors = [];
-    let resp = await this._fetchPlanStatus(reqData, { errors: planErrors });
-    let jsonUsage = null;
+    let resp = isDevinAuth ? null : await this._fetchPlanStatus(reqData, { errors: planErrors });
+    let jsonUsage = isDevinAuth ? await this._fetchPlanStatusJson(loginResult.idToken) : null;
 
     if (!resp && this._hasMigratedAuthError(planErrors)) {
       _warn('额度', `${_emailPrefix} → account migrated, clearing firebase provider cache and retrying devin-auth`);
@@ -945,19 +955,23 @@ class AuthService {
     return result;
   }
 
-  /** Fetch PlanStatus from multi-endpoint (extracted for reuse) */
+  /** Fetch PlanStatus from multi-endpoint (extracted for reuse)
+   *  Auth failure (401/403) → no relay fallback (same token won't pass elsewhere)
+   *  Network failure → fall through to relay if available */
   async _fetchPlanStatus(reqData, options = {}) {
     const requestOptions = {
       errors: options.errors || null,
       stopOnMigrated: true,
     };
     let resp = null;
-    if (ACTIVE_MODE === 'relay') {
+    if (ACTIVE_MODE === 'relay' && RELAYS.length > 0) {
       resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData, requestOptions);
-      if (!resp && !this._hasMigratedAuthError(requestOptions.errors)) resp = await this._raceUrls(PLAN_STATUS_URLS, reqData, requestOptions);
+      if (!resp && !this._hasAuthFailure(requestOptions.errors)) resp = await this._raceUrls(PLAN_STATUS_URLS, reqData, requestOptions);
     } else {
       resp = await this._raceUrls(PLAN_STATUS_URLS, reqData, requestOptions);
-      if (!resp && !this._hasMigratedAuthError(requestOptions.errors)) resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData, requestOptions);
+      if (!resp && RELAYS.length > 0 && !this._hasAuthFailure(requestOptions.errors)) {
+        resp = await this._tryRelaysBinary('/windsurf/plan-status', reqData, requestOptions);
+      }
     }
     return resp;
   }

@@ -400,7 +400,9 @@ async function _refreshOne(index, options = {}) {
         return { ok: true, credits: usageInfo.credits, usageInfo, source: 'local' };
       }
     }
-    if ((options.preferLocal || index === S.activeIndex || index === S.pendingSwitchIndex) && S.auth?.fetchUsageFromCurrentApiKey) {
+    // apiKey path uses CURRENT active account's apiKey, only meaningful for active/pending account.
+    // Calling for non-active accounts during full_scan wastes one HTTP and triggers email mismatch.
+    if ((index === S.activeIndex || index === S.pendingSwitchIndex) && S.auth?.fetchUsageFromCurrentApiKey) {
       const runtimeUsage = await S.auth.fetchUsageFromCurrentApiKey(account.email);
       if (runtimeUsage) {
         S.am.updateUsage(index, runtimeUsage);
