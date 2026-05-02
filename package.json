@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "1.6.6",
+  "version": "1.6.8",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {

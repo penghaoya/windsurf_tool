@@ -13,6 +13,19 @@ import { safeReadJsonSync, safeWriteJsonSync } from '../infra/safeJson.js';
 import { parseAccounts } from '../shared/accountParser.js';
 import { shouldAcceptUsageWrite } from '../shared/quota.js';
 
+// Fields the user would lose if we don't persist them. Volatile fields
+// (usage, rateLimit, authError, credits) are recoverable via re-fetch and
+// stay only in the primary file to avoid 3x I/O on every quota refresh.
+const PERSISTENT_FIELDS = ['email', 'password', 'addedAt', 'fingerprint', 'loginCount', 'selectionMode'];
+
+function _extractPersistent(account) {
+  const out = {};
+  for (const k of PERSISTENT_FIELDS) {
+    if (account[k] !== undefined) out[k] = account[k];
+  }
+  return out;
+}
+
 class AccountManager {
   constructor(storagePath, options) {
     this._filePath = null;
@@ -29,6 +42,7 @@ class AccountManager {
     this._discoveredPaths = []; // Auto-discovered paths (also written to on save to prevent stale merges)
     this._isolated = !!(options && options.isolated); // test isolation — skip persistent paths + discovery
     this._saveTimer = null; // debounce timer for _save
+    this._persistentDirty = false; // mark when PERSISTENT_FIELDS changed → triggers backup-path write
     this._init(storagePath);
   }
 
@@ -190,16 +204,20 @@ class AccountManager {
 
     if (merged > 0 || deduped > 0 || migrated) {
       console.log(`WAM: [合并] 从持久化存储恢复${merged}个账号! 总计: ${this._accounts.length}`);
+      this._markPersistent(); // merged data is critical — flush to backup paths
       this._saveNow(); // Persist the merged result to all locations (immediate, not debounced)
     } else {
       console.log(`WAM: [加载] 已加载${this._accounts.length}个账号`);
     }
   }
 
-  /** Debounced save — coalesces rapid writes within 300ms */
+  /** Mark a mutation as touching PERSISTENT_FIELDS — triggers backup-path write on next flush */
+  _markPersistent() { this._persistentDirty = true; }
+
+  /** Debounced save — coalesces rapid writes within 800ms */
   _save() {
     if (this._saveTimer) clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._saveNow(); }, 300);
+    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._saveNow(); }, 800);
   }
 
   /** Flush pending save immediately (call on dispose / critical ops) */
@@ -212,7 +230,7 @@ class AccountManager {
   }
 
   _saveNow() {
-    // Write to primary (extension storage)
+    // Write FULL state to primary (extension storage) — high frequency, includes volatile usage/rateLimit
     try {
       this._writing = true;
       safeWriteJsonSync(this._filePath, this._accounts);
@@ -221,17 +239,24 @@ class AccountManager {
       this._writing = false;
       console.error('AccountManager save error:', e);
     }
-    // Write to ALL persistent paths (triple-persistence)
-    for (const pp of this._persistentPaths) {
-      try {
-        safeWriteJsonSync(pp, this._accounts);
-      } catch (e) {
-        console.warn(`WAM: [PERSIST] write failed ${pp}: ${e.message}`);
+    // Backup paths: write ONLY persistent fields, ONLY when they changed.
+    // This prevents 3x disk I/O on every quota refresh while preserving uninstall safety.
+    if (this._persistentDirty) {
+      const filtered = this._accounts.map(_extractPersistent);
+      for (const pp of this._persistentPaths) {
+        try {
+          safeWriteJsonSync(pp, filtered);
+        } catch (e) {
+          console.warn(`WAM: [PERSIST] write failed ${pp}: ${e.message}`);
+        }
       }
-    }
-    // Also sync to discovered paths (prevent stale data from resurrecting deleted accounts)
-    for (const dp of this._discoveredPaths) {
-      try { safeWriteJsonSync(dp, this._accounts); } catch {}
+      // Drain discovered (legacy) paths once, then forget — avoid permanent fan-out writes.
+      // After first write the data is saved to up-to-date locations, legacy paths can stop syncing.
+      for (const dp of this._discoveredPaths) {
+        try { safeWriteJsonSync(dp, filtered); } catch {}
+      }
+      this._discoveredPaths = [];
+      this._persistentDirty = false;
     }
   }
 
@@ -309,6 +334,7 @@ class AccountManager {
     if (!email || !password || !email.includes('@')) return false;
     if (this.findByEmail(email)) return false;
     this._accounts.push({ email, password, credits: undefined, loginCount: 0, addedAt: Date.now() });
+    this._markPersistent();
     this._save();
     this._notify();
     return true;
@@ -317,6 +343,7 @@ class AccountManager {
   remove(index) {
     if (index < 0 || index >= this._accounts.length) return false;
     this._accounts.splice(index, 1);
+    this._markPersistent();
     this._save();
     this._notify();
     return true;
@@ -479,6 +506,7 @@ class AccountManager {
   incrementLoginCount(index) {
     if (index < 0 || index >= this._accounts.length) return;
     this._accounts[index].loginCount = (this._accounts[index].loginCount || 0) + 1;
+    this._markPersistent();
     this._save();
   }
 
@@ -518,6 +546,7 @@ class AccountManager {
   setFingerprint(index, ids) {
     if (index < 0 || index >= this._accounts.length || !ids) return;
     this._accounts[index].fingerprint = ids;
+    this._markPersistent();
     this._save();
   }
 
@@ -534,7 +563,7 @@ class AccountManager {
       addedAccounts.push({email, password});
       added++;
     }
-    if (added > 0) { this._save(); this._notify(); }
+    if (added > 0) { this._markPersistent(); this._save(); this._notify(); }
     return { added, skipped, errors: 0, total: pairs.length, accounts: addedAccounts };
   }
 
@@ -635,7 +664,7 @@ class AccountManager {
         if (changed) updated++; else unchanged++;
       }
     }
-    if (added > 0 || updated > 0) { this._save(); this._notify(); }
+    if (added > 0 || updated > 0) { this._markPersistent(); this._save(); this._notify(); }
     return { added, updated, unchanged, total: this._accounts.length };
   }
 
