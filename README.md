@@ -5,8 +5,10 @@
 ## 功能特性
 
 - **号池引擎** — 多账号自动轮转，用尽即切，无感切换
-- **10 层防御** — 多维度限流检测，从 Context Key 到 gRPC 探测全覆盖
-- **设备指纹热重置** — 切号时自动轮转 6 组设备 ID，服务端视为全新设备
+- **层级感知调度** — Free/Pro/Max/Teams/Enterprise 差异化阈值与 Opus 预算 (v17.0)
+- **多层防御** — Context Key / cachedPlanInfo / 斜率 / 速度 / Opus 预算 / 输出通道 / 多窗口协调
+- **Per-Account 指纹** — 每个账号绑定专属 6 组设备 ID，切换时恢复而非随机生成 (v18.0)
+- **防封控频率控制** — 最小切换间隔 30s + 每小时上限 30 次 + 注入时 200-2200ms Timing Jitter
 - **三重持久化** — 账号数据存 3 个位置，卸载重装不丢失
 - **侧边栏仪表盘** — Vue 3 实时展示号池状态、额度、切换记录
 
@@ -64,55 +66,71 @@ Step 4: GetPlanStatus (gRPC + Protobuf)
 └─────────────────────────────────────────────────┘
 ```
 
-### 3. 10 层防御体系
+### 3. 多层防御体系
 
 多层检测确保在 rate limit 触发**之前**完成切换：
 
 | 层级 | 机制 | 原理 |
 |------|------|------|
-| L1-L2 | Context Key 轮询 | 每 2 秒读取 VS Code 内部 Context Key，检测 quota 变化 |
-| L3 | cachedPlanInfo 监控 | 每 10 秒读取 state.vscdb 中缓存的计划信息，检测额度耗尽 |
-| L5 | gRPC 容量探测 | 调用 `CheckUserMessageRateLimit` 接口，获取实时剩余消息数 |
+| L1-L2 | Context Key 轮询 | 读取 VS Code 内部 Context Key，检测 quota 变化 |
+| L3-L4 | cachedPlanInfo + 模型/层级限流 | 读取 `state.vscdb` 中缓存的计划信息与 tier cap 信号 |
+| L5 | gRPC 容量探测 | `CheckUserMessageRateLimit` — **当前禁用** (`L5_ENABLED=false`, Proto schema 变更) |
 | L6 | 斜率预测 | 基于历史消息速率线性外推，预测何时耗尽 |
 | L7 | 速度检测器 | 120 秒窗口内消息速率突变检测 |
-| L8 | Opus 预算守卫 | 按模型分级限制: Thinking-1M=1条, Thinking=2条, Regular=3条 |
+| L8 | Opus 预算守卫 | 层级差异化: Max×10 > Pro/Teams×3 > Free×1 (`getModelBudgetForTier`) |
 | L9 | 输出通道拦截 | 实时监控 Windsurf 输出通道，拦截 rate limit 错误信息 |
-| L10 | 多窗口协调 | 共享状态文件 + 心跳机制，多窗口间账号隔离 (跨平台路径) |
+| L10 | 多窗口协调 | 共享状态文件 + 心跳机制，Email 隔离 (跨平台路径) |
 
-### 3.1 调度策略 (v16.0)
+### 3.1 调度策略 (v19)
 
-号池引擎采用 Per-Account Runtime State + 统一切换入口:
+号池引擎采用 Per-Account Runtime State + 统一切换入口 `_performSwitch`:
 
-| 机制 | 说明 |
-|------|------|
-| 账号隔离 | 命中 Trial 限流的账号隔离 1h，候选过滤+预热拒绝 |
-| Trial池冷却 | 全局 Trial 限流时按模型族冷却整组 Trial 候选 (20min) |
-| 模型降级 | Trial 池冷却无候选时自动从 Opus 降级到 Sonnet |
-| 降级锁 | 降级后 120s 内 _readCurrentModelUid() 不读 DB，防止覆盖回 Opus |
-| 降级清理 | 降级成功后清 Opus 消息计数 + per-model 限流标记 |
-| 静默模式 | Trial 池冷却 + 降级锁生效时跳过预防性轮转 (避免重试风暴) |
-| 失败防抖 | Trial 池冷却切换失败后 60s 内不重试 |
-| UFEF 冷却 | 10min 冷却防止 safe↔urgent 账号频繁抖动 |
-| Round-Robin | 同紧急度 + 额度差≤10% 时轮转，均匀消耗 |
-| 指数退避 | 限流冷却 base×2^(n-1)，上限 3600s，恢复后归零 |
-| 并行预热 | Top-3 候选 Promise.allSettled 并行探测 (5s 超时)，切号延迟从 15s→5s (v16.0) |
-| 切号重置 | _dropAccountRuntime(旧) + _resetAccountRuntime(新) |
-| 可配置阈值 | `wam.preemptiveThreshold` (默认 15, 0-100) |
-| Mode-Aware | selectOptimal 返回有序数组，quota/credits/unknown 分组排序 |
-| Email 隔离 | 多窗口协调使用 Email 而非 index，避免顺序变化失效 |
-| 价值最大化 | selectOptimal: 到期近+额度高=最优先，Quota 7 级 / Credits 4 级排序 (v14.1) |
-| 动态Opus冷却 | L5 resetsInSeconds 优先(≥300s)，固定 1500s 兜底 (v14.2) |
-| Opus预算过滤 | opus_budget_guard 切号时过滤已耗尽候选，无候选时主动降级 Sonnet (v14.2) |
-| L5 NO_DATA降频 | 连续≥5次无数据后逐步拉长探测间隔(最高120s) (v15.0) |
-| 降级恢复 | Trial池冷却+降级锁过期后自动恢复到降级前的 Opus 模型 (v15.0) |
-| Token精确过期 | JWT exp 计算精确过期时间(提前2min buffer) (v15.0) |
-| 模型Credit成本 | MODEL_CREDIT_COST: Opus T1M=10, T=5, R=3, Sonnet=1 (v16.0) |
-| Opus模型路由 | Opus 请求时 Pro 账号前置、Trial 后置 (成本感知路由) (v16.0) |
-| L5容量自适应 | 剩余≤2条:3s / ≤5:8s / ≤10:15s，越少探测越频繁 (v16.0) |
+**心跳 / 扫描**
+- 自适应心跳轮询: normal 45s / boost 8s / burst 3s
+- 全池扫描: normal 300s / boost 120s / burst 60s (启动延迟 60s), `full_scan` 泳道串行 (1200ms gap)
+- 预热新鲜度 5min: 候选最近刷新过则跳过网络请求直接用缓存
+- 并行预热 Top-3 候选 (Promise.allSettled, 5s 超时), 取首个成功; 其余串行兜底
 
-### 4. 设备指纹热重置
+**层级感知 (v17.0)**
+- 层级差异化预防性阈值: Free=20% / Pro/Teams/Enterprise=15% / Max=8% (用户 `wam.preemptiveThreshold` 覆盖优先)
+- 响应式切换阈值: Free=3% / Pro=5% / Max=8% / Credits=8%
+- Opus 预算倍率: Free×1 / Pro/Teams/Enterprise×3 / Max×10
+- Opus 请求路由: Max 前置 > Pro/Teams/Enterprise > Free 后置
+- 降级目标: Free→SWE-1.5 (零消耗) / 付费→Sonnet
 
-Windsurf 通过 6 组设备 ID 识别用户设备，切号时必须轮转以避免服务端关联：
+**账号选择排序 (v14.1 价值最大化)**
+- 核心原则: 到期近+额度高 = 最优先 (最大化过期前榨取)
+- `selectOptimal` 返回有序数组, Quota 7 级 / Credits 4 级, 分组 quota/credits/unknown
+- 15% 额度带宽阈值 + Round-Robin 同级额度差≤10% 时轮转均匀消耗
+
+**Trial / 限流防护**
+- 账号隔离 1h: 命中 Trial 限流的账号候选过滤 + 预热拒绝
+- Trial 池冷却 20min: 全局 Trial 限流时按模型族冷却整组候选
+- 自动降级: 池冷却无候选时 Opus → Sonnet/SWE-1.5, 降级锁 120s 防覆盖
+- 降级恢复: 池冷却 + 降级锁都过期后自动恢复原 Opus 模型
+- UFEF 10min 冷却防止 safe↔urgent 抖动; 指数退避 base×2^(n-1) 上限 3600s
+- 静默模式: 池冷却 + 降级锁生效时跳过预防性轮转避免重试风暴
+
+**防封控 (v18.0)**
+- Per-Account 指纹绑定: 切号时恢复专属 6 组设备 ID 而非随机生成
+- 切换频率: `MIN_SWITCH_INTERVAL=30s` + `MAX_SWITCHES_PER_HOUR=30` (panic 旁路)
+- Timing Jitter: 认证注入前 200-2200ms 随机延迟
+- `storage.json` 原子写入: tmp+rename 防崩溃损坏
+
+**可靠性**
+- fresh-vs-cache 写入守卫: 30s 内 `local_cache` 不覆盖 API 实时写入 (`shared/quota.js`)
+- 原子 JSON + `.bak` 备份 (`infra/safeJson.js`); SQLite 1s TTL 读副本缓存
+- JWT exp 精确过期 (提前 2min buffer); Proto3 默认值三层修复 (0% 被省略场景)
+- 多窗口 Email 隔离; `schedulerState` 同步 max(until) 合并
+
+**刷新队列** (`core/refreshQueue.js`)
+- 优先级: high (切号预热) > normal > low (全池扫描)
+- 泳道并发: `full_scan` 1 并发 1200ms gap; `batch_import_verify` 5000ms gap
+- 同 key pending 任务合并, 高优先级可升级排队任务
+
+### 4. Per-Account 设备指纹 (v18.0)
+
+Windsurf 通过 6 组设备 ID 识别用户设备，每个账号**绑定唯一指纹**，切换时恢复而非随机生成：
 
 ```
 storage.serviceMachineId  ← UUID v4 (storage.json + state.vscdb)
@@ -123,7 +141,19 @@ telemetry.sqmId           ← 32位 hex (无短横)
 machineid                 ← UUID v4 (独立文件)
 ```
 
-热重置流程：生成新 ID → 写入 `storage.json` → 写入 `state.vscdb` → 写入 `machineid` 文件 → Windsurf 重启后自动读取新 ID。
+**切号流程**:
+```
+切换到账号 #N
+ ├─ am.getFingerprint(N) → 已有?
+ │   ├─ 是 → applyFingerprint(fp) 恢复专属设备身份
+ │   └─ 否 → generateFingerprint() 生成 + 持久化 + 应用
+ ├─ storage.json 原子写入 (tmp+rename)
+ ├─ state.vscdb 同步 + machineid 文件写入
+ └─ hotVerify 延迟 3s 验证生效
+```
+
+- 账号 JSON 持久化 `fingerprint` 字段, 导入导出保留
+- 手动 `wam.resetFingerprint` 仅清空当前 storage, 不影响 Per-Account 绑定
 
 ### 5. 数据读写 (state.vscdb)
 
@@ -175,12 +205,14 @@ P2: ~/.wam/accounts-backup.json                              (用户目录，卸
 ```text
 extension/
 ├── extension.js
-├── core/
-├── services/
-├── infra/
-├── ui/
-└── shared/
+├── core/          # scheduler / defense / model / state / window / refreshQueue
+├── services/     # account / accountSelector / auth / authInjector / fingerprint / protobuf
+├── infra/        # sqlite / safeJson
+├── ui/           # actions / statusbar / webview / wisdom
+└── shared/       # config / messageTypes / accountParser / quota
 ```
+
+详见 `AGENTS.md` 中的完整目录结构与模块职责说明。
 
 ## 技术栈
 
@@ -211,6 +243,30 @@ npm run install-ext  # 安装到 Windsurf
 | `npm run build:ext` | 仅 Extension Host → `dist/extension.js` |
 | `npm run package` | 构建 + 打包 → `output/*.vsix` |
 | `npm run install-ext` | 打包并安装到 IDE |
+| `npm test` | 运行 `tests/*.test.mjs` (ESM loader) |
+
+## 命令面板
+
+| 命令 | 说明 |
+|------|------|
+| `wam.switchAccount` | 切换账号 |
+| `wam.refreshCredits` / `wam.refreshAllCredits` | 刷新当前 / 全部账号额度 |
+| `wam.smartRotate` | 智能轮转 (查全部·切最优) |
+| `wam.panicSwitch` | 紧急切换 (限流应急) |
+| `wam.batchAdd` / `wam.importAccounts` | 批量添加 / 导入账号 |
+| `wam.resetFingerprint` | 重置设备指纹 |
+| `wam.switchMode` / `wam.reprobeProxy` | 切换本地/中转 / 重探代理 |
+| `wam.openPanel` | 打开管理面板 |
+| `wam.initWorkspace` | 工作区配置 (智慧模板部署) |
+
+## 配置项
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `wam.autoRotate` | `true` | 自动调度; `false` 时仅在 ≤`manualThreshold` 时切一次 |
+| `wam.preemptiveThreshold` | `15` | 自动模式预防性切换阈值 (% 剩余) |
+| `wam.manualThreshold` | `0` | 手动模式安全网阈值; 0=纯手动 |
+| `wam.rotateFingerprint` | `true` | 切号时应用 Per-Account 绑定指纹 |
 
 ## 鸣谢
 

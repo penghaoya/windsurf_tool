@@ -36,28 +36,32 @@ windsurf-tools/
 │   ├── extension/              # Extension Host (Node.js ESM → CJS 输出)
 │   │   ├── extension.js        # 激活入口 + 依赖装配 + 命令绑定
 │   │   ├── core/               # 调度核心
-│   │   │   ├── scheduler.js    # 引擎心跳 + 评估 + 切换执行
-│   │   │   ├── defense.js      # L1-L5 检测 + 限流分类
+│   │   │   ├── scheduler.js    # 引擎心跳 + 评估 + 切换执行 (_poolTick/evaluateActiveAccount/_performSwitch)
+│   │   │   ├── defense.js      # L1-L5 检测 + 限流分类 + apiKey 缓存 + 安全中枢上报
 │   │   │   ├── model.js        # Opus 守卫 + 模型降级/恢复
-│   │   │   ├── state.js        # 共享状态 + 运行时
-│   │   │   └── window.js       # 多窗口心跳 + 共享状态
+│   │   │   ├── state.js        # 共享状态 S + schedulerState + deps + 结构化日志 + 日志轮转
+│   │   │   ├── window.js       # 多窗口心跳 + 共享状态同步 (Email 隔离)
+│   │   │   └── refreshQueue.js # 刷新任务队列 (优先级 + 泳道并发 + 最小启动间隔)
 │   │   ├── services/           # 业务服务
-│   │   │   ├── account.js      # 账号 CRUD + 防抖持久化 + 限流标记
-│   │   │   ├── accountSelector.js # 候选排序 + 优先级策略
-│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + Protobuf查询 + 网络层
-│   │   │   ├── authInjector.js # 四策略注入 + 指纹轮转
-│   │   │   ├── fingerprint.js  # 设备指纹 6ID 读写
-│   │   │   └── protobuf.js     # Protobuf 编解码 (纯函数, 从 auth.js 拆分)
+│   │   │   ├── account.js      # 账号 CRUD + 三路持久化 + 防抖写 + 限流标记 + 指纹字段
+│   │   │   ├── accountSelector.js # 候选排序 (selectOptimal/findBestForModel)
+│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + 代理探测 + 双模式网络
+│   │   │   ├── authInjector.js # 四策略注入 + Per-Account 指纹恢复 + Timing Jitter
+│   │   │   ├── fingerprint.js  # 设备指纹 6ID 读写 + 原子写 storage.json
+│   │   │   └── protobuf.js     # Protobuf 编解码 (纯函数)
 │   │   ├── infra/
-│   │   │   └── sqlite.js       # state.vscdb 读写 (node:sqlite DatabaseSync)
+│   │   │   ├── sqlite.js       # state.vscdb 读写 (node:sqlite + 1s TTL 读副本缓存)
+│   │   │   └── safeJson.js     # 原子 JSON 读写 (.bak 备份 + tmp+rename)
 │   │   ├── ui/
-│   │   │   ├── actions.js      # Webview 动作路由
+│   │   │   ├── actions.js      # Webview 动作路由 (单一 switch 分发)
 │   │   │   ├── statusbar.js    # 状态栏渲染
 │   │   │   ├── webview.js      # Vue 产物加载器 + 状态推送
 │   │   │   └── wisdom.js       # 智慧模板部署
 │   │   └── shared/
-│   │       ├── config.js       # 常量 + 正则 + 模型辅助
-│   │       └── messageTypes.js # Webview 消息契约
+│   │       ├── config.js       # 常量 + 正则 + 模型辅助 + 层级阈值函数
+│   │       ├── messageTypes.js # Webview 消息契约
+│   │       ├── accountParser.js# 通用账号文本解析 (与 Webview 共享)
+│   │       └── quota.js        # cachedPlanInfo→usage 转换 + fresh-vs-cache 写入守卫
 │   └── webview/                # Vue 3 前端 (ESM)
 │       ├── main.js             # Vue 入口
 │       ├── App.vue             # 根组件
@@ -67,6 +71,9 @@ windsurf-tools/
 │       └── components/         # UI 组件
 │           ├── PoolOverview.vue    # 号池总览
 │           ├── Toolbar.vue         # 工具栏
+│           ├── ActiveAccountCard.vue # 当前激活账号卡
+│           ├── QuickActions.vue    # 快捷操作 (紧急切换/批量添加等)
+│           ├── ModeSwitcher.vue    # 自动/手动/调度阈值切换
 │           ├── AddAccount.vue      # 添加账号
 │           ├── AccountList.vue     # 账号列表
 │           ├── AccountCard.vue     # 账号卡片
@@ -92,6 +99,34 @@ npm run build:ext       # 仅 Extension Host → dist/extension.js
 npm run package         # 构建 + 打包 → output/windsurf-tools-{version}.vsix
 npm run install-ext     # 打包并安装到 IDE
 ```
+
+## 命令 (contributes.commands)
+
+| 命令 | 说明 |
+|------|------|
+| `wam.switchAccount` | 切换账号 |
+| `wam.refreshCredits` | 刷新当前账号额度 |
+| `wam.refreshAllCredits` | 刷新全部账号并轮转 |
+| `wam.smartRotate` | 智能轮转 (查全部·切最优) |
+| `wam.panicSwitch` | 紧急切换 (限流应急, panic=true) |
+| `wam.batchAdd` | 批量添加账号 (粘贴文本解析) |
+| `wam.importAccounts` | 导入账号文件 |
+| `wam.resetFingerprint` | 手动重置设备指纹 |
+| `wam.switchMode` | 切换网络模式 (local/relay) |
+| `wam.reprobeProxy` | 重新探测代理 |
+| `wam.openPanel` | 打开管理面板 |
+| `wam.initWorkspace` | 工作区配置 (智慧模板部署) |
+
+## 配置项 (contributes.configuration)
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `wam.autoRotate` | `true` | `true`=自动调度, `false`=手动 (仅在 ≤manualThreshold 时切) |
+| `wam.preemptiveThreshold` | `15` | 自动模式预防性切换阈值 (% 剩余) |
+| `wam.manualThreshold` | `0` | 手动模式安全网阈值 (%); 0=纯手动不自动切 |
+| `wam.rotateFingerprint` | `true` | 切号时应用 Per-Account 绑定指纹 |
+
+> **调度模式**: `autoRotate=true` 启用全部自动调度; `autoRotate=false` 仅当激活账号 ≤`manualThreshold` 时触发一次安全网切换。
 
 ## 认证链 (四步)
 
@@ -245,10 +280,13 @@ Credits 模式排序 (4级):
 
 **切换控制**
 - UFEF 冷却 10min 防 safe↔urgent 抖动; Round-Robin 同级额度差≤10%时轮转均匀消耗
-- 指数退避 base×2^(n-1) 上限3600s; 并行预热 Top-3 候选 5s 超时 (Promise.allSettled)
-- 自适应扫描频率: normal 300s / boost 120s / burst 60s
-- 日额度≤5% 不作为候选 (MIN_DAILY_QUOTA_FOR_SWITCH)
-- 可配置阈值 `wam.preemptiveThreshold` (默认15, 0-100)
+- 指数退避 base×2^(n-1) 上限 3600s; 并行预热 Top-3 候选 5s 超时 (Promise.allSettled)
+- 自适应**心跳轮询**: normal `POLL_NORMAL=45s` / boost `POLL_BOOST=8s` / burst `POLL_BURST=3s`
+- **全池扫描**间隔: normal 300s / boost 120s / burst 60s (启动后延迟 60s 启动)
+- 全池扫描使用 `full_scan` 泳道 (并发=1, 最小启动间隔 1200ms), 且跳过 10min 内已刷新的账号
+- 预热新鲜度: 候选 `usage.lastChecked` < `PREHEAT_FRESHNESS_TTL=5min` 时直接跳过网络请求
+- 日额度 ≤5% 不作为候选 (`MIN_DAILY_QUOTA_FOR_SWITCH`)
+- 可配置阈值 `wam.preemptiveThreshold` (默认15, 0-100); 用户覆盖优先于层级阈值
 
 **Trial 防护**
 - Trial 限流检测 → 账号隔离 1h + Trial 池冷却 20min (按模型族)
@@ -271,7 +309,10 @@ Credits 模式排序 (4级):
 - Proto3 默认值修复: 日额度 0% 被省略 → 三层防御正确识别为耗尽
 - cachedPlanInfo email 校验, 防止数据污染; activeIndex 持久化防崩溃回退
 - Token 精确过期 (JWT exp, 提前 2min buffer); SQLite 1s TTL 读副本缓存
-- 账号存储防抖 300ms 合并写入; _refreshPanel 50ms 防抖; tooltip 指纹缓存
+- 账号存储防抖 300ms 合并写入; `_refreshPanel` 50ms 防抖; tooltip 指纹缓存
+- **fresh-vs-cache 写入守卫** (`shared/quota.js`): 30s 窗口内 `local_cache` 不覆盖 `api/api_json/apikey_status` 实时写入
+- **原子 JSON 读写** (`infra/safeJson.js`): tmp+rename + `.bak` 备份, 读取时自动回退到 `.bak`
+- **结构化日志**: `_logInfo/_logWarn/_logError` 写 OutputChannel + 文件 (2MB 切片, 保留 3 份)
 
 ### Proto3 默认值修复
 
@@ -346,6 +387,19 @@ _pushState() ──── postMessage ────→ useVscode.state (reactive)
   - Windows: `%APPDATA%/Windsurf/User/globalStorage/`
 - 原子写入: tmp文件 → rename, 失败降级直写
 - 心跳 30s, 死亡 90s, **Email 隔离** (非 index, 避免顺序变化失效)
+- `schedulerState` (隔离/池冷却) 通过 `syncSchedulerToShared` 同步到共享状态, 多窗口合并 max(until)
+
+## 刷新任务队列 (core/refreshQueue.js)
+
+统一的账号刷新调度, 避免并发爆炸与节流踩踏:
+
+- **优先级**: `high` (切号预热) > `normal` > `low` (全池扫描)
+- **任务去重**: 同 `key` 的 pending 任务合并, 高优先级可升级已排队任务
+- **泳道并发控制** (`lane` + `laneConcurrency` + `minStartGapMs`):
+  - `full_scan` 泳道: concurrency=1, gap=1200ms (避免风暴)
+  - `batch_import_verify` 泳道: gap=5000ms (批量导入验证节流)
+- **入口**: `enqueueRefresh(index, options)` / `enqueueRefreshAll(indexes, options)`
+- 由 `extension.js` 注入 worker, 暴露为 `deps.refreshOne/refreshAll`
 
 ## 开发规则
 
