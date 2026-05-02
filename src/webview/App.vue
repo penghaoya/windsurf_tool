@@ -9,13 +9,21 @@
         :threshold="state.threshold"
         :lastDecision="state.lastDecision"
       />
+      <ActiveAccountCard
+        :accounts="state.accounts"
+        :currentIndex="state.currentIndex"
+        :activeQuota="state.activeQuota"
+        :switchStatus="state.switchStatus"
+      />
       <ModeSwitcher
         :autoRotate="state.autoRotate"
         :threshold="state.threshold"
         :manualThreshold="state.manualThreshold"
       />
-      <Toolbar />
-      <AddAccount />
+      <QuickActions :addOpen="addOpen" @toggleAdd="addOpen = !addOpen" />
+      <transition name="slide">
+        <AddAccount v-if="addOpen" />
+      </transition>
       <div class="list-toggle" @click="listExpanded = !listExpanded">
         <span class="list-toggle-arr" :style="{ transform: listExpanded ? 'rotate(90deg)' : '' }">▶</span>
         <span>{{ state.accounts.length }} 个账号</span>
@@ -47,13 +55,15 @@
 import { ref, onBeforeUnmount, onMounted } from 'vue'
 import { state, toasts, isLoading, initMessageListener } from './composables/useVscode.js'
 import PoolOverview from './components/PoolOverview.vue'
+import ActiveAccountCard from './components/ActiveAccountCard.vue'
 import ModeSwitcher from './components/ModeSwitcher.vue'
-import Toolbar from './components/Toolbar.vue'
+import QuickActions from './components/QuickActions.vue'
 import AddAccount from './components/AddAccount.vue'
 import AccountList from './components/AccountList.vue'
 import ToastMessage from './components/ToastMessage.vue'
 
 const listExpanded = ref(true)
+const addOpen = ref(false)
 const scrollHover = ref(false)
 const scrollEl = ref(null)
 const scrollTop = ref(0)
@@ -95,4 +105,7 @@ onBeforeUnmount(() => {
 .list-toggle:hover{color:var(--tx)}
 .list-toggle-arr{transition:transform .2s ease;font-size:8px;color:var(--tx3)}
 .loading { opacity: .35; pointer-events: none; transition: opacity .2s }
+.slide-enter-active,.slide-leave-active{transition:opacity .2s ease,transform .2s ease,max-height .25s ease;overflow:hidden}
+.slide-enter-from,.slide-leave-to{opacity:0;transform:translateY(-4px);max-height:0}
+.slide-enter-to,.slide-leave-from{opacity:1;transform:translateY(0);max-height:140px}
 </style>

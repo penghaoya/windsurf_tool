@@ -44,21 +44,7 @@
       <span v-if="pool.expired > 0" class="chip muted"><b>{{ pool.expired }}</b>过期</span>
     </div>
 
-    <!-- Active Account -->
-    <div v-if="currentIndex >= 0 && activeAccount" class="pool-active">
-      <span class="act-dot"></span>
-      <div class="act-info">
-        <div class="act-row">
-          <span class="act-name">#{{ currentIndex + 1 }} {{ activeAccount.email }}</span>
-          <span v-if="activeQuota?.plan" class="act-plan">{{ activeQuota.plan }}</span>
-          <span v-if="expiryHtml" class="act-expiry" v-html="expiryHtml"></span>
-        </div>
-        <div v-if="activeQuotaTag || activeResetInfo" class="act-meta">
-          <span v-if="activeQuotaTag" style="color:var(--ac)">{{ activeQuotaTag }}</span>
-          <span v-if="activeResetInfo">{{ activeResetInfo }}</span>
-        </div>
-      </div>
-    </div>
+    <!-- Latest decision (only when actionable, hide quiet 'ok' state) -->
     <div v-if="decisionText" class="pool-decision">
       <span class="decision-dot"></span>
       <span>{{ decisionText }}</span>
@@ -155,6 +141,8 @@ const decisionText = computed(() => {
   const d = props.lastDecision
   if (!d) return ''
   const reason = d.reason || 'ok'
+  // Suppress quiet 'ok' / 'none' decisions — only surface real signals
+  if (d.action === 'none' && (reason === 'ok' || !reason)) return ''
   if (d.action === 'none') return `最近决策：不切换，${reason}`
   if (d.action === 'switch_account') return `最近决策：准备切换，${reason}`
   if (d.action === 'switch_confirmed') return `最近决策：已切到 #${(d.targetIndex ?? -1) + 1}`
@@ -191,14 +179,6 @@ const decisionText = computed(() => {
 .chip.warn{color:var(--yw);border-color:color-mix(in srgb, var(--yw) 20%, transparent);background:var(--yw-bg)}
 .chip.bad{color:var(--rd);border-color:color-mix(in srgb, var(--rd) 20%, transparent);background:var(--rd-bg)}
 .chip.muted{color:var(--tx3)}
-.pool-active{margin-top:3px;padding:4px 6px;background:var(--bg2);border-radius:var(--R3);border:1px solid var(--bd);display:flex;align-items:center;gap:5px}
-.pool-active .act-dot{width:5px;height:5px;border-radius:50%;background:var(--gn);flex-shrink:0;box-shadow:0 0 3px var(--gn)}
-.pool-active .act-info{flex:1;min-width:0}
-.pool-active .act-row{display:flex;align-items:center;gap:3px;flex-wrap:wrap;font-size:11px}
-.pool-active .act-name{font-weight:600;color:var(--tx);word-break:break-all;font-size:11px}
-.pool-active .act-plan{font-size:9px;font-weight:600;padding:0 3px;border-radius:2px;border:1px solid var(--ac);color:var(--ac)}
-.pool-active .act-expiry{font-size:10px}
-.pool-active .act-meta{font-size:10px;color:var(--tx3);margin-top:0;display:flex;gap:3px;flex-wrap:wrap}
 .pool-decision{margin-top:3px;display:flex;align-items:center;gap:5px;font-size:10px;color:var(--tx3);line-height:1.4;word-break:break-word}
 .decision-dot{width:4px;height:4px;border-radius:50%;background:var(--ac);flex-shrink:0}
 </style>

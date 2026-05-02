@@ -1,4 +1,8 @@
 <template>
+  <div class="mode-hint" :class="hintClass">
+    <span class="hint-dot"></span>
+    <span class="hint-text">{{ hintText }}</span>
+  </div>
   <div class="mode-bar">
     <div class="mode-seg" role="tablist">
       <button
@@ -46,14 +50,10 @@
       </div>
     </div>
   </div>
-  <div v-if="!autoRotate" class="mode-hint">
-    <span class="hint-dot"></span>
-    <span v-if="manualThreshold > 0">激活账号 ≤ {{ manualThreshold }}% 时自动切换</span>
-    <span v-else>纯手动 — 不会自动切换</span>
-  </div>
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { postMessage } from '../composables/useVscode.js'
 import { ACTION } from '../../extension/shared/messageTypes.js'
 
@@ -61,6 +61,21 @@ const props = defineProps({
   autoRotate: { type: Boolean, default: true },
   threshold: { type: Number, default: 15 },
   manualThreshold: { type: Number, default: 0 },
+})
+
+const hintText = computed(() => {
+  if (props.autoRotate) {
+    return `自动调度 — 剩余 ≤ ${props.threshold}% 时预防性切换`
+  }
+  if (props.manualThreshold > 0) {
+    return `激活账号 ≤ ${props.manualThreshold}% 时自动切换`
+  }
+  return '纯手动 — 不会自动切换'
+})
+
+const hintClass = computed(() => {
+  if (props.autoRotate) return 'hint-auto'
+  return props.manualThreshold > 0 ? 'hint-manual-armed' : 'hint-manual-idle'
 })
 
 function setMode(auto) {
@@ -129,13 +144,24 @@ function onThresholdChange(e) {
 .f-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .f-suffix{font-size:10px;color:var(--tx3);font-weight:500}
 
+/* Always-rendered hint line above controls — fixed height prevents layout shift */
 .mode-hint{
   display:flex;align-items:center;gap:5px;
-  margin:-1px 0 4px;padding:0 4px;
-  font-size:10px;color:var(--tx3);line-height:1.4;
+  height:14px;margin:0 0 3px;padding:0 4px;
+  font-size:10px;line-height:1.4;
+  color:var(--tx3);
+  transition:color .2s ease;
 }
 .hint-dot{
   width:4px;height:4px;border-radius:50%;
-  background:var(--yw);flex-shrink:0;
+  flex-shrink:0;
+  transition:background-color .2s ease;
+}
+.mode-hint.hint-auto .hint-dot{background:var(--gn)}
+.mode-hint.hint-manual-armed .hint-dot{background:var(--yw)}
+.mode-hint.hint-manual-idle .hint-dot{background:var(--tx3)}
+.hint-text{
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  transition:opacity .15s ease;
 }
 </style>
