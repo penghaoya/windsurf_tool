@@ -504,8 +504,10 @@ class AuthService {
           const sock = await this._proxyTunnel(u.hostname);
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
           const rawText = resp.bodyBuffer.toString('utf8');
-          _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms)`);
-          if (!resp.ok) _warnHttpErrorRaw('JSON', u.hostname, u.pathname, resp.status, rawText);
+          if (!resp.ok) {
+            _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms)`);
+            _warnHttpErrorRaw('JSON', u.hostname, u.pathname, resp.status, rawText);
+          }
           try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText }); }
           catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
         } catch (e) { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
@@ -519,8 +521,10 @@ class AuthService {
           res.on('data', c => buf += c);
           res.on('end', () => {
             agent.destroy();
-            _info('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms)`);
-            if (res.statusCode !== 200) _warnHttpErrorRaw('JSON', u.hostname, u.pathname, res.statusCode, buf);
+            if (res.statusCode !== 200) {
+              _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms)`);
+              _warnHttpErrorRaw('JSON', u.hostname, u.pathname, res.statusCode, buf);
+            }
             try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
             catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
           });
@@ -552,8 +556,10 @@ class AuthService {
             ...extraHeaders,
           };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
-          _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms)`);
-          if (!resp.ok) _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), resp.status, resp.bodyBuffer);
+          if (!resp.ok) {
+            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms)`);
+            _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), resp.status, resp.bodyBuffer);
+          }
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
@@ -572,8 +578,10 @@ class AuthService {
           res.on('end', () => {
             agent.destroy();
             const buf = Buffer.concat(chunks);
-            _info('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms)`);
-            if (res.statusCode !== 200) _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), res.statusCode, buf);
+            if (res.statusCode !== 200) {
+              _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms)`);
+              _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), res.statusCode, buf);
+            }
             resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
           });
           res.on('error', () => { agent.destroy(); reject(new Error('response error')); });
@@ -782,7 +790,7 @@ class AuthService {
     if (!forceFresh) {
       const cached = this._getCachedToken(email);
       if (cached) {
-        _info('登录', `${_emailPrefix} → cached (0ms)`);
+        // silent cache hit — login=0ms will be visible on downstream [额度] line
         const provider = this._getCachedAuthProvider(email);
         return { ok: true, idToken: cached, email, cached: true, provider };
       }
@@ -1270,9 +1278,7 @@ class AuthService {
 
       const protoQuota = this.readCachedUserStatusProto(dbPath, expectedEmail, options);
       if (protoQuota) {
-        if (!silent) {
-          _info('缓存额度', `${source}proto daily=${protoQuota.daily}% weekly=${protoQuota.weekly}% plan=${protoQuota.plan} email=${protoQuota.email || 'n/a'} exhausted=${protoQuota.exhausted}`);
-        }
+        // silent on success — info is already on [额度] line
         return protoQuota;
       }
 
@@ -1306,9 +1312,7 @@ class AuthService {
         }
         return null;
       }
-      if (!silent) {
-        _info('缓存额度', `${source}daily=${result.daily}% weekly=${result.weekly}% billing=${result.billing} plan=${result.plan} planEnd=${result.planEnd ? new Date(result.planEnd).toLocaleDateString() : 'n/a'} exhausted=${result.exhausted}`);
-      }
+      // silent on success — [额度] line already covers it
       return result;
     } catch (e) {
       _warn('缓存额度', `readCachedQuota error: ${e.message}`);

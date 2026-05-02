@@ -83,7 +83,10 @@ export function _detectCascadeTabs() {
   const prev = S.cascadeTabCount;
   S.cascadeTabCount = count;
   if (count !== prev) {
-    _logInfo("对话感知", `并发对话数: ${prev} → ${count}${count > CONCURRENT_TAB_SAFE ? " ⚠️ 超过安全阈值!" : ""}`);
+    // only log when crossing the safety threshold — routine 0↔1 is noise
+    if (count > CONCURRENT_TAB_SAFE || prev > CONCURRENT_TAB_SAFE) {
+      _logInfo("对话感知", `并发对话数: ${prev} → ${count}${count > CONCURRENT_TAB_SAFE ? " ⚠️ 超过安全阈值!" : ""}`);
+    }
     if (count > CONCURRENT_TAB_SAFE && !S.burstMode) {
       S.burstMode = true;
       _activateBoost();
@@ -230,7 +233,7 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
     const lastChecked = account?.usage?.lastChecked || 0;
     const dataFresh = (Date.now() - lastChecked) < PREHEAT_FRESHNESS_TTL;
     if (dataFresh) {
-      _logInfo('预热', `#${targetIndex + 1} 数据新鲜(${Math.round((Date.now() - lastChecked) / 1000)}s前刷新), 跳过网络请求`);
+      // silent — skip is the happy path, only timeouts/errors log
     } else {
       await Promise.race([
         deps.refreshOne(targetIndex, { priority: 'high', reason: 'switch_preheat' }),

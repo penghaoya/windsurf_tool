@@ -152,11 +152,7 @@ function _wireDeps() {
   configureRefreshQueue({
     worker: _runRefreshJob,
     concurrency: 3,
-    logger: (event, data) => {
-      if (event === 'enqueue' && data.priority === 'high') {
-        _logInfo('刷新队列', `高优先级入队 #${data.index + 1} (${data.reason})`);
-      }
-    },
+    // enqueue events intentionally silent — downstream [额度] line carries the signal
   });
   deps.loginToAccount = _loginToAccount;
   deps.refreshOne = (index, options) => enqueueRefresh(index, _refreshJobOptions(index, options));
