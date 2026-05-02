@@ -46,6 +46,7 @@ import {
   _configureFileLogger,
 } from './core/state.js';
 import { L5_ENABLED } from './shared/config.js';
+import { usageFromCachedQuota } from './shared/quota.js';
 import {
   _deregisterWindow,
   _getActiveWindowCount,
@@ -75,27 +76,6 @@ const BATCH_IMPORT_VERIFY_LANE = 'batch_import_verify';
 const BATCH_IMPORT_VERIFY_GAP_MS = 5000;
 const BATCH_IMPORT_ENQUEUE_DELAY_MS = 1500;
 const AUTH_REFRESH_CIRCUIT_MS = 30 * 60 * 1000;
-
-function _usageFromCachedQuota(cached, existingUsage = {}) {
-  return {
-    mode: cached.billing === 'credits' ? 'credits' : 'quota',
-    billingStrategy: cached.billing || existingUsage.billingStrategy || 'quota',
-    daily: cached.daily !== null && cached.daily !== undefined
-      ? { used: Math.max(0, 100 - cached.daily), total: 100, remaining: cached.daily }
-      : existingUsage.daily || null,
-    weekly: cached.weekly !== null && cached.weekly !== undefined
-      ? { used: Math.max(0, 100 - cached.weekly), total: 100, remaining: cached.weekly }
-      : existingUsage.weekly || null,
-    plan: cached.plan || existingUsage.plan || null,
-    resetTime: cached.resetTime || existingUsage.resetTime || null,
-    weeklyReset: cached.weeklyReset || existingUsage.weeklyReset || null,
-    extraBalance: cached.extraBalance ?? existingUsage.extraBalance ?? null,
-    planStart: cached.planStart || existingUsage.planStart || null,
-    planEnd: cached.planEnd || existingUsage.planEnd || null,
-    source: 'local',
-    userEmail: cached.email || null,
-  };
-}
 
 function _usageBelongsToAccount(account, usageInfo) {
   const observed = usageInfo?.userEmail ? String(usageInfo.userEmail).trim().toLowerCase() : null;
@@ -135,27 +115,22 @@ function _refreshJobOptions(index, options = {}) {
 }
 
 async function _runRefreshJob(index, job = {}) {
-  const preferLocal = job.reason === 'full_scan' || job.reason === 'switch_preheat';
-  if (_isLowPriorityRefresh(job) && S.refreshCircuitUntil > Date.now()) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: 'auth_refresh_circuit',
-      until: S.refreshCircuitUntil,
-      index,
-    };
-  }
+  const preferLocal = job.reason === 'full_scan' || job.reason === 'switch_preheat' || job.reason === 'manual_full_scan';
+  // During password-channel circuit-break, low-priority jobs may still run cache-only
+  // (cache reads + active-account apiKey are not affected by Firebase auth rate limits).
+  const circuitTripped = _isLowPriorityRefresh(job) && S.refreshCircuitUntil > Date.now();
+  const refreshOptions = { preferLocal, reason: job.reason, cacheOnly: circuitTripped };
   if (job.email) {
     const current = S.am.findByEmail(job.email);
     if (!current) {
       _logWarn('刷新队列', `账号已不存在，跳过 ${job.email}`);
       return { skipped: true, reason: 'account_missing', index: -1, email: job.email };
     }
-    const result = await _refreshOne(current.index, { preferLocal, reason: job.reason });
+    const result = await _refreshOne(current.index, refreshOptions);
     if (_isAuthRateLimitError(result)) _tripRefreshCircuit(result.error);
     return { ...result, index: current.index, email: job.email };
   }
-  const result = await _refreshOne(index, { preferLocal, reason: job.reason });
+  const result = await _refreshOne(index, refreshOptions);
   if (_isAuthRateLimitError(result)) _tripRefreshCircuit(result.error);
   return { ...result, index };
 }
@@ -395,10 +370,14 @@ async function _refreshOne(index, options = {}) {
         source: options.reason || 'refresh',
       });
       if (cached) {
-        const usageInfo = _usageFromCachedQuota(cached, account.usage);
+        const usageInfo = usageFromCachedQuota(cached, account.usage);
         S.am.updateUsage(index, usageInfo);
         return { ok: true, credits: usageInfo.credits, usageInfo, source: 'local' };
       }
+    }
+    // cacheOnly mode (circuit-tripped): only cache reads allowed, skip all network paths.
+    if (options.cacheOnly) {
+      return { ok: true, skipped: true, errorType: 'cache_miss', source: 'cache_only_skip' };
     }
     // apiKey path uses CURRENT active account's apiKey, only meaningful for active/pending account.
     // Calling for non-active accounts during full_scan wastes one HTTP and triggers email mismatch.
@@ -554,14 +533,16 @@ function _enqueueBatchImportValidation(addedAccounts) {
 
 // ========== 号池命令 (v6.0 精简) ==========
 
-/** 刷新号池 — 全部账号额度 + 自动轮转 */
+/** 刷新号池 — 全部账号额度 + 自动轮转
+ *  reason='manual_full_scan' 让 worker 启用 preferLocal，优先吃 cache，
+ *  避免手动点刷新时发起 N 个 password 登录 → Firebase 限流 → 熝断。 */
 async function _doRefreshPool(context) {
   const accounts = S.am.getAll();
   if (accounts.length === 0) return;
   S.statusBar.text = "$(sync~spin) 刷新号池...";
   await _refreshAll((i, n) => {
     S.statusBar.text = `$(sync~spin) ${i + 1}/${n}...`;
-  });
+  }, { priority: 'low', reason: 'manual_full_scan' });
   // 刷新后自动轮转
   const threshold = _getPreemptiveThreshold();
   if (

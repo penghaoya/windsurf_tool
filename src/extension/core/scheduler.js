@@ -32,8 +32,11 @@ import {
   _classifyRateLimit, _trackHourlyMsg, _getHourlyMsgCount, _isNearTierCap,
   _invalidateApiKeyCache, _pushRateLimitEvent, _startQuotaWatcher,
 } from './defense.js';
+import { usageFromCachedQuota, cachedQuotaChanged } from '../shared/quota.js';
 
-const ACTIVE_NETWORK_REFRESH_TTL = 3 * 60 * 1000;
+// Active account network refresh TTL: kept short so the active card reflects
+// real-time consumption; cache reads still serve sub-TTL ticks.
+const ACTIVE_NETWORK_REFRESH_TTL = 60 * 1000;
 const STARTUP_FULL_SCAN_DELAY = 60 * 1000;
 const STARTUP_PREHEAT_COUNT = 3;
 const FULL_SCAN_REFRESH_LANE = 'full_scan';
@@ -709,41 +712,6 @@ export function _startPoolEngine(context) {
   _startQuotaWatcher(context);
 }
 
-function _usageFromCachedQuota(cached, existingUsage = {}) {
-  const daily = cached.daily !== null && cached.daily !== undefined
-    ? { used: Math.max(0, 100 - cached.daily), total: 100, remaining: cached.daily }
-    : existingUsage.daily || null;
-  const weekly = cached.weekly !== null && cached.weekly !== undefined
-    ? { used: Math.max(0, 100 - cached.weekly), total: 100, remaining: cached.weekly }
-    : existingUsage.weekly || null;
-
-  return {
-    mode: cached.billing === 'credits' ? 'credits' : 'quota',
-    billingStrategy: cached.billing || existingUsage.billingStrategy || 'quota',
-    daily,
-    weekly,
-    plan: cached.plan || existingUsage.plan || null,
-    resetTime: cached.resetTime || existingUsage.resetTime || null,
-    weeklyReset: cached.weeklyReset || existingUsage.weeklyReset || null,
-    extraBalance: cached.extraBalance ?? existingUsage.extraBalance ?? null,
-    planStart: cached.planStart || existingUsage.planStart || null,
-    planEnd: cached.planEnd || existingUsage.planEnd || null,
-  };
-}
-
-function _cachedQuotaChanged(cached, existingUsage = {}) {
-  const daily = existingUsage.daily?.remaining ?? null;
-  const weekly = existingUsage.weekly?.remaining ?? null;
-  return (
-    daily !== (cached.daily ?? null) ||
-    weekly !== (cached.weekly ?? null) ||
-    (existingUsage.plan || null) !== (cached.plan || null) ||
-    (existingUsage.resetTime || null) !== (cached.resetTime || null) ||
-    (existingUsage.weeklyReset || null) !== (cached.weeklyReset || null) ||
-    (existingUsage.planEnd || null) !== (cached.planEnd || null)
-  );
-}
-
 async function _refreshActiveSnapshot(index) {
   const account = S.am.get(index);
   const email = _normalizeEmail(account?.email);
@@ -754,8 +722,8 @@ async function _refreshActiveSnapshot(index) {
       source: 'active_tick',
     });
     if (cached) {
-      if (_cachedQuotaChanged(cached, account.usage)) {
-        S.am.updateUsage(index, _usageFromCachedQuota(cached, account.usage));
+      if (cachedQuotaChanged(cached, account.usage)) {
+        S.am.updateUsage(index, usageFromCachedQuota(cached, account.usage));
         return { source: 'local_cache' };
       }
       return { source: 'local_cache_unchanged' };

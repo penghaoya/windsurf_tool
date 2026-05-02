@@ -11,6 +11,7 @@ import {
 } from './accountSelector.js';
 import { safeReadJsonSync, safeWriteJsonSync } from '../infra/safeJson.js';
 import { parseAccounts } from '../shared/accountParser.js';
+import { shouldAcceptUsageWrite } from '../shared/quota.js';
 
 class AccountManager {
   constructor(storagePath, options) {
@@ -334,13 +335,16 @@ class AccountManager {
     this._notify();
   }
 
-  /** Update comprehensive usage info (v6.9: + planStart/planEnd/gracePeriod for official alignment) */
+  /** Update comprehensive usage info (v6.9: + planStart/planEnd/gracePeriod for official alignment)
+   *  Monotonic guard: a stale local-cache write must not clobber a recent fresh real-time write. */
   updateUsage(index, usageInfo) {
     if (index < 0 || index >= this._accounts.length || !usageInfo) return;
     const a = this._accounts[index];
+    if (!shouldAcceptUsageWrite(a.usage, usageInfo)) return;
     const previousFingerprint = this._getUsageFingerprint(a.usage);
     const previousCredits = a.credits;
     const hadAuthError = !!a.authError;
+    const now = Date.now();
     const nextUsage = {
       mode: usageInfo.mode || 'unknown',
       billingStrategy: usageInfo.billingStrategy || null,
@@ -352,7 +356,9 @@ class AccountManager {
       extraBalance: usageInfo.extraBalance || null,
       planStart: usageInfo.planStart || a.usage?.planStart || null,
       planEnd: usageInfo.planEnd || a.usage?.planEnd || null,
-      lastChecked: Date.now(),
+      source: usageInfo.source || a.usage?.source || 'unknown',
+      fetchedAt: now,
+      lastChecked: now,
     };
     if (a.authError) {
       delete a.authError;
@@ -378,7 +384,7 @@ class AccountManager {
   }
 
   _getUsageFingerprint(usage) {
-    return JSON.stringify(usage ? { ...usage, lastChecked: undefined } : null);
+    return JSON.stringify(usage ? { ...usage, lastChecked: undefined, fetchedAt: undefined } : null);
   }
 
   /**
