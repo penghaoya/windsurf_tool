@@ -230,6 +230,7 @@ class AccountManager {
   }
 
   _saveNow() {
+    const wasDirty = this._persistentDirty;
     // Write FULL state to primary (extension storage) — high frequency, includes volatile usage/rateLimit
     try {
       this._writing = true;
@@ -241,11 +242,13 @@ class AccountManager {
     }
     // Backup paths: write ONLY persistent fields, ONLY when they changed.
     // This prevents 3x disk I/O on every quota refresh while preserving uninstall safety.
-    if (this._persistentDirty) {
+    let backupCount = 0;
+    if (wasDirty) {
       const filtered = this._accounts.map(_extractPersistent);
       for (const pp of this._persistentPaths) {
         try {
           safeWriteJsonSync(pp, filtered);
+          backupCount++;
         } catch (e) {
           console.warn(`WAM: [PERSIST] write failed ${pp}: ${e.message}`);
         }
@@ -253,10 +256,16 @@ class AccountManager {
       // Drain discovered (legacy) paths once, then forget — avoid permanent fan-out writes.
       // After first write the data is saved to up-to-date locations, legacy paths can stop syncing.
       for (const dp of this._discoveredPaths) {
-        try { safeWriteJsonSync(dp, filtered); } catch {}
+        try { safeWriteJsonSync(dp, filtered); backupCount++; } catch {}
       }
       this._discoveredPaths = [];
       this._persistentDirty = false;
+    }
+    // Lightweight telemetry — visible in log so optimization is observable
+    if (wasDirty) {
+      console.log(`WAM: [存储] 主+${backupCount}备份 (关键字段变更, ${this._accounts.length}账号)`);
+    } else {
+      console.log(`WAM: [存储] 仅主 (运行时缓存, ${this._accounts.length}账号)`);
     }
   }
 
