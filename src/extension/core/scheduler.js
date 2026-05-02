@@ -974,6 +974,26 @@ async function _poolTick(context) {
     }
   }
 
+  // ═══ 手动模式安全网 ═══
+  // autoRotate=false 时关闭所有自动调度；仅当配置了 manualThreshold>0
+  // 且激活账号剩余≤该阈值时,触发一次保护性切换(纯手动=0,永不触发)
+  if (!autoRotate) {
+    const manualThreshold = vscode.workspace.getConfiguration("wam").get("manualThreshold", 0);
+    if (manualThreshold > 0 && curQuota !== null && curQuota <= manualThreshold
+        && Date.now() - S.lastReactiveSwitchTs > REACTIVE_SWITCH_CD) {
+      _logInfo("手动模式", `安全网触发: 激活#${S.activeIndex + 1} 剩余${curQuota}% ≤ ${manualThreshold}%`);
+      S.lastReactiveSwitchTs = Date.now();
+      const safetyNet = await _performSwitch(context, {
+        threshold: manualThreshold,
+        targetPolicy: 'same_strategy',
+        source: `manual_safety_net:${curQuota}<=${manualThreshold}`,
+      });
+      if (!safetyNet.ok) _logWarn("手动模式", "安全网切换失败: 无合适候选");
+    }
+    deps.updatePoolBar?.();
+    return;
+  }
+
   // ═══ 预防性轮转 ═══
   if (autoRotate) {
     const trialPoolActive = !!_getTrialPoolCooldown(_readCurrentModelUid());

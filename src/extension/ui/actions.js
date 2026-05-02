@@ -158,6 +158,18 @@ export function createActionHandler(helpers) {
             });
         }
         return undefined;
+      case 'setManualThreshold':
+        if (arg !== undefined) {
+          const next = Math.max(0, Math.min(100, Number(arg) || 0));
+          return vscode.workspace
+            .getConfiguration('wam')
+            .update('manualThreshold', next, true)
+            .then(() => {
+              updatePoolBar();
+              refreshPanel();
+            });
+        }
+        return undefined;
       default:
         return undefined;
     }

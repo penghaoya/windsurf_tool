@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "1.5.3",
+  "version": "1.6.1",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -104,14 +104,21 @@
         "wam.autoRotate": {
           "type": "boolean",
           "default": true,
-          "description": "积分不足时自动切换到最高积分账号"
+          "description": "调度模式：true=自动（启用全部自动调度），false=手动（仅在激活账号剩余额度≤manualThreshold时自动切换；0=纯手动）"
         },
         "wam.preemptiveThreshold": {
           "type": "number",
           "default": 15,
           "minimum": 0,
           "maximum": 100,
-          "description": "预防性切换阈值，达到该剩余额度时提前切换账号"
+          "description": "自动模式预防性切换阈值（剩余%）"
+        },
+        "wam.manualThreshold": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "手动模式安全网阈值（剩余%）。激活账号≤此值时自动切换一次；0=纯手动不自动切"
         },
         "wam.rotateFingerprint": {
           "type": "boolean",

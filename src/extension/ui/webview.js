@@ -123,6 +123,8 @@ class AccountViewProvider {
     const currentIndex = this._onAction ? this._onAction('getCurrentIndex') : -1;
     const cfg = vscode.workspace.getConfiguration('wam');
     const threshold = cfg.get('preemptiveThreshold', 15);
+    const autoRotate = cfg.get('autoRotate', true);
+    const manualThreshold = cfg.get('manualThreshold', 0);
     const pool = this._am.getPoolStats ? this._am.getPoolStats(threshold) : { total: accounts.length, available: 0, depleted: 0, rateLimited: 0, health: 0, avgDaily: null, avgWeekly: null };
     const activeQuota = this._am.getActiveQuota ? this._am.getActiveQuota(currentIndex) : null;
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
@@ -165,6 +167,8 @@ class AccountViewProvider {
       pool,
       activeQuota,
       threshold,
+      autoRotate,
+      manualThreshold,
       switchCount,
       switchStatus,
       lastDecision,
@@ -291,6 +295,10 @@ class AccountViewProvider {
       case 'setCreditThreshold':
       case ACTION.SET_PREEMPTIVE_THRESHOLD:
         if (act) act('setPreemptiveThreshold', msg.value);
+        this._pushState();
+        break;
+      case ACTION.SET_MANUAL_THRESHOLD:
+        if (act) act('setManualThreshold', msg.value);
         this._pushState();
         break;
       case ACTION.EXPORT_ACCOUNTS:

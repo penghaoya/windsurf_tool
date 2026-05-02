@@ -9,6 +9,11 @@
         :threshold="state.threshold"
         :lastDecision="state.lastDecision"
       />
+      <ModeSwitcher
+        :autoRotate="state.autoRotate"
+        :threshold="state.threshold"
+        :manualThreshold="state.manualThreshold"
+      />
       <Toolbar />
       <AddAccount />
       <div class="list-toggle" @click="listExpanded = !listExpanded">
@@ -42,6 +47,7 @@
 import { ref, onBeforeUnmount, onMounted } from 'vue'
 import { state, toasts, isLoading, initMessageListener } from './composables/useVscode.js'
 import PoolOverview from './components/PoolOverview.vue'
+import ModeSwitcher from './components/ModeSwitcher.vue'
 import Toolbar from './components/Toolbar.vue'
 import AddAccount from './components/AddAccount.vue'
 import AccountList from './components/AccountList.vue'

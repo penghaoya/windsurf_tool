@@ -30,6 +30,8 @@ export const state = reactive({
   pool: { total: 0, available: 0, depleted: 0, rateLimited: 0, expired: 0, health: 0, avgDaily: null, avgWeekly: null, nextReset: null, weeklyReset: null, avgCredits: null },
   activeQuota: null,
   threshold: 15,
+  autoRotate: true,
+  manualThreshold: 0,
   switchCount: 0,
   switchStatus: null,
   lastDecision: null,
@@ -83,6 +85,8 @@ export function initMessageListener() {
         if (m.pool) state.pool = m.pool
         if (m.activeQuota !== undefined) state.activeQuota = m.activeQuota
         if (m.threshold !== undefined) state.threshold = m.threshold
+        if (m.autoRotate !== undefined) state.autoRotate = m.autoRotate
+        if (m.manualThreshold !== undefined) state.manualThreshold = m.manualThreshold
         if (m.switchCount !== undefined) state.switchCount = m.switchCount
         if (m.switchStatus !== undefined) state.switchStatus = m.switchStatus
         if (m.lastDecision !== undefined) state.lastDecision = m.lastDecision

@@ -25,6 +25,7 @@ export const ACTION = {
   SET_PROXY_PORT: 'setProxyPort',
   SET_AUTO_ROTATE: 'setAutoRotate',
   SET_PREEMPTIVE_THRESHOLD: 'setPreemptiveThreshold',
+  SET_MANUAL_THRESHOLD: 'setManualThreshold',
   EXPORT_ACCOUNTS: 'exportAccounts',
   IMPORT_ACCOUNTS: 'importAccounts',
   CLEAR_RATE_LIMIT: 'clearRateLimit',
