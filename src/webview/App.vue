@@ -14,8 +14,6 @@
         :currentIndex="state.currentIndex"
         :activeQuota="state.activeQuota"
         :switchStatus="state.switchStatus"
-      />
-      <ModeSwitcher
         :autoRotate="state.autoRotate"
         :threshold="state.threshold"
         :manualThreshold="state.manualThreshold"
@@ -56,7 +54,6 @@ import { ref, onBeforeUnmount, onMounted } from 'vue'
 import { state, toasts, isLoading, initMessageListener } from './composables/useVscode.js'
 import PoolOverview from './components/PoolOverview.vue'
 import ActiveAccountCard from './components/ActiveAccountCard.vue'
-import ModeSwitcher from './components/ModeSwitcher.vue'
 import QuickActions from './components/QuickActions.vue'
 import AddAccount from './components/AddAccount.vue'
 import AccountList from './components/AccountList.vue'

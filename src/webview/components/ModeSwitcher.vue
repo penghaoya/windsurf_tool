@@ -1,9 +1,9 @@
 <template>
-  <div class="mode-hint" :class="hintClass">
+  <div v-if="!embedded" class="mode-hint" :class="hintClass">
     <span class="hint-dot"></span>
     <span class="hint-text">{{ hintText }}</span>
   </div>
-  <div class="mode-bar">
+  <div class="mode-bar" :class="{ embedded }">
     <div class="mode-seg" role="tablist">
       <button
         class="seg-btn"
@@ -50,6 +50,10 @@
       </div>
     </div>
   </div>
+  <div v-if="embedded" class="mode-hint embedded below" :class="hintClass">
+    <span class="hint-dot"></span>
+    <span class="hint-text">{{ hintText }}</span>
+  </div>
 </template>
 
 <script setup>
@@ -61,6 +65,7 @@ const props = defineProps({
   autoRotate: { type: Boolean, default: true },
   threshold: { type: Number, default: 15 },
   manualThreshold: { type: Number, default: 0 },
+  embedded: { type: Boolean, default: false },
 })
 
 const hintText = computed(() => {
@@ -96,9 +101,11 @@ function onThresholdChange(e) {
 <style scoped>
 /* Flat row to harmonize with Toolbar — no outer card. Controls carry their own borders */
 .mode-bar{
-  display:flex;align-items:center;gap:3px;
-  margin-bottom:4px;
+  display:flex;align-items:center;gap:4px;
+  margin-bottom:3px;
 }
+/* Embedded inside ActiveAccountCard — strip outer margin/padding */
+.mode-bar.embedded{margin-bottom:0;padding:0}
 .mode-spacer{flex:1}
 
 .mode-seg{
@@ -152,6 +159,8 @@ function onThresholdChange(e) {
   color:var(--tx3);
   transition:color .2s ease;
 }
+.mode-hint.embedded{padding:0;margin:0}
+.mode-hint.embedded.below{margin-top:4px}
 .hint-dot{
   width:4px;height:4px;border-radius:50%;
   flex-shrink:0;
