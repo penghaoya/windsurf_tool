@@ -90,6 +90,10 @@ function _warnHttpErrorRaw(kind, hostname, pathLabel, status, body) {
   _warn('HTTP_RAW', `${kind} ${hostname}${pathLabel} → ${status} raw=${_formatRawForLog(body)}`);
 }
 
+// Global cooldowns for upstream rate limits (process-wide, per-AuthService)
+const DEVIN_AUTH_COOLDOWN_MS = 60_000; // after 429 on /_devin-auth/*
+const GET_USER_STATUS_BREAKER_MS = 10 * 60_000; // after repeated 415
+
 class AuthService {
   constructor(storagePath) {
     this._tokenCache = new Map(); // email -> { idToken, expireTime }
@@ -97,6 +101,8 @@ class AuthService {
     this._storagePath = storagePath || null;
     this._cachePath = null; // set lazily in _getCachePath()
     this._providerCachePath = null;
+    this._devinAuthCooldownUntil = 0; // ts — skip devin-auth before this
+    this._getUserStatusBreakerUntil = 0; // ts — skip GetUserStatus before this
     this._loadCache();
     this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
@@ -791,7 +797,13 @@ class AuthService {
     const errors = [];
     const cachedProvider = this._getCachedAuthProvider(email);
 
-    if (cachedProvider !== 'firebase' && cachedProvider !== 'unsupported-devin') {
+    const devinCooldownLeft = this._devinAuthCooldownUntil - Date.now();
+    if (cachedProvider === 'firebase' || cachedProvider === 'unsupported-devin') {
+      _info('登录', `${_emailPrefix} → provider cached(${cachedProvider}), skip devin-auth`);
+      errors.push(`devin-auth: skipped(${cachedProvider})`);
+    } else if (devinCooldownLeft > 0) {
+      errors.push(`devin-auth: cooldown(${Math.ceil(devinCooldownLeft / 1000)}s)`);
+    } else {
       try {
         const devin = await this._signInWithDevinAuth(email, password);
         this._setCachedToken(email, devin.idToken);
@@ -801,12 +813,12 @@ class AuthService {
         errors.push(`devin-auth: ${e.message}`);
         if (this._isUnsupportedDevinAuthError(e.message)) {
           this._setCachedAuthProvider(email, 'unsupported-devin');
+        } else if (/\b429\b|rate[\s_-]*limit/i.test(e.message || '')) {
+          this._devinAuthCooldownUntil = Date.now() + DEVIN_AUTH_COOLDOWN_MS;
+          _warn('登录', `devin-auth 全局冷却 ${DEVIN_AUTH_COOLDOWN_MS / 1000}s (upstream 429)`);
         }
         _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
       }
-    } else {
-      _info('登录', `${_emailPrefix} → provider cached(${cachedProvider}), skip devin-auth`);
-      errors.push(`devin-auth: skipped(${cachedProvider})`);
     }
 
     const tryFirebase = async (useProxy) => {
@@ -917,31 +929,39 @@ class AuthService {
       }
     }
 
-    if (!resp && loginResult.cached) {
+    if (!resp && !jsonUsage && loginResult.cached) {
       _warn('额度', `${_emailPrefix} → cached token failed, retrying fresh`);
       this.clearTokenCache(email);
       const fresh = await this.login(email, password, true);
       if (fresh.ok) {
-        const freshReq = encodeProtoString(fresh.idToken);
-        planErrors = [];
-        resp = await this._fetchPlanStatus(freshReq, { errors: planErrors });
-        if (!resp && this._hasMigratedAuthError(planErrors)) {
-          _warn('额度', `${_emailPrefix} → fresh firebase still migrated, retrying devin-auth`);
-          this.clearTokenCache(email);
-          this._clearAuthProviderCache(email);
-          const devin = await this.login(email, password, true);
-          if (devin.ok) {
-            planErrors = [];
-            resp = await this._fetchPlanStatus(encodeProtoString(devin.idToken), { errors: planErrors });
-            if (!resp && !this._hasMigratedAuthError(planErrors)) {
-              jsonUsage = await this._fetchPlanStatusJson(devin.idToken);
+        const freshIsDevin = fresh.provider === 'devin-auth' || fresh.channel === 'devin-auth';
+        if (freshIsDevin) {
+          jsonUsage = await this._fetchPlanStatusJson(fresh.idToken);
+        } else {
+          const freshReq = encodeProtoString(fresh.idToken);
+          planErrors = [];
+          resp = await this._fetchPlanStatus(freshReq, { errors: planErrors });
+          if (!resp && this._hasMigratedAuthError(planErrors)) {
+            _warn('额度', `${_emailPrefix} → fresh firebase still migrated, retrying devin-auth`);
+            this.clearTokenCache(email);
+            this._clearAuthProviderCache(email);
+            const devin = await this.login(email, password, true);
+            if (devin.ok) {
+              planErrors = [];
+              resp = await this._fetchPlanStatus(encodeProtoString(devin.idToken), { errors: planErrors });
+              if (!resp && !this._hasMigratedAuthError(planErrors)) {
+                jsonUsage = await this._fetchPlanStatusJson(devin.idToken);
+              }
             }
-          }
-        } else if (!resp) jsonUsage = await this._fetchPlanStatusJson(fresh.idToken);
+          } else if (!resp) jsonUsage = await this._fetchPlanStatusJson(fresh.idToken);
+        }
       }
     }
 
-    if (!resp && !jsonUsage) jsonUsage = await this._fetchPlanStatusJson(loginResult.idToken);
+    // devin-auth path already attempted JSON with loginResult.idToken above — don't repeat.
+    if (!resp && !jsonUsage && !isDevinAuth) {
+      jsonUsage = await this._fetchPlanStatusJson(loginResult.idToken);
+    }
     if (!resp && !jsonUsage) {
       _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`);
       return { ok: false, errorType: 'plan_status_failed', error: 'no_response' };
@@ -1120,10 +1140,8 @@ class AuthService {
     try {
       const apiKey = this.readCurrentApiKey();
       if (!apiKey) return null;
-      if (String(apiKey).startsWith('sk-ws-01-')) {
-        _info('额度', 'GetUserStatus跳过: 当前apiKey为sk-ws-01 session token');
-        return null;
-      }
+      if (String(apiKey).startsWith('sk-ws-01-')) return null;
+      if (Date.now() < this._getUserStatusBreakerUntil) return null;
       const body = {
         metadata: {
           apiKey,
@@ -1136,7 +1154,13 @@ class AuthService {
         'Content-Type': 'application/connect+json',
         'Connect-Protocol-Version': '1',
       });
-      if (!r.ok) return null;
+      if (!r.ok) {
+        if (r.status === 415 || r.status === 404 || r.status === 501) {
+          this._getUserStatusBreakerUntil = Date.now() + GET_USER_STATUS_BREAKER_MS;
+          _warn('额度', `GetUserStatus ${r.status} → 熔断 ${GET_USER_STATUS_BREAKER_MS / 60000}min`);
+        }
+        return null;
+      }
       const usage = this._parseUsageFromGetUserStatus(r.data);
       if (!usage) return null;
       if (!this._matchesExpectedEmail(usage.userEmail, expectedEmail)) {

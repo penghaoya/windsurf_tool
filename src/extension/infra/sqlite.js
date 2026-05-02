@@ -33,6 +33,14 @@ function _releaseReadCopy(tmpDb) {
   }
 }
 
+// 写操作后必须调用: 使下一次读重新copyFile, 避免读到写前快照
+function _invalidateReadCache() {
+  if (_readCache.path) {
+    try { fs.unlinkSync(_readCache.path); } catch {}
+  }
+  _readCache = { path: null, dbPath: null, ts: 0 };
+}
+
 /** 获取当前平台的 state.vscdb 路径 */
 export function getStateDbPath() {
   const p = process.platform;
@@ -106,6 +114,7 @@ export function dbWriteKey(dbPath, key, value) {
     try {
       db.exec('PRAGMA busy_timeout = 5000');
       db.prepare('INSERT OR REPLACE INTO ItemTable(key,value) VALUES(?,?)').run(key, value);
+      _invalidateReadCache();
       return true;
     } finally { db.close(); }
   } catch { return false; }
@@ -118,6 +127,7 @@ export function dbDeleteKey(dbPath, key) {
     try {
       db.exec('PRAGMA busy_timeout = 5000');
       db.prepare('DELETE FROM ItemTable WHERE key = ?').run(key);
+      _invalidateReadCache();
       return true;
     } finally { db.close(); }
   } catch { return false; }
@@ -137,6 +147,7 @@ export function dbUpdateKeys(dbPath, pairs) {
           stmt.run(value, key);
         }
         db.exec('COMMIT');
+        _invalidateReadCache();
         return true;
       } catch (e) {
         try { db.exec('ROLLBACK'); } catch {}
@@ -165,6 +176,7 @@ export function dbTransaction(dbPath, operations) {
           else if (op.type === 'delete') deleteStmt.run(op.key);
         }
         db.exec('COMMIT');
+        _invalidateReadCache();
         return true;
       } catch (e) {
         try { db.exec('ROLLBACK'); } catch {}
