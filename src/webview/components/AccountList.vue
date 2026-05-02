@@ -32,11 +32,12 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, shallowRef, triggerRef, watch } from 'vue'
 import AccountCard from './AccountCard.vue'
 
 const ITEM_HEIGHT = 118
-const OVERSCAN = 5
+const OVERSCAN = 8
+const HEIGHT_EPSILON = 1
 
 const props = defineProps({
   accounts: { type: Array, default: () => [] },
@@ -49,7 +50,8 @@ const props = defineProps({
 })
 
 const rowRefs = new Map()
-const rowHeights = ref(new Map())
+// Use shallowRef + triggerRef to avoid O(N) Map cloning on every height flush.
+const rowHeights = shallowRef(new Map())
 let rowResizeObserver = null
 let pendingHeightUpdates = null
 let heightUpdateRaf = null
@@ -59,14 +61,12 @@ const accountItems = computed(() =>
     .map((account, i) => ({ account, index: Number.isInteger(account.index) ? account.index : i }))
 )
 
-const measuredHeights = computed(() => rowHeights.value)
-
 function rowKey(account, index) {
   return account.email || `index:${index}`
 }
 
 function getRowHeight(item) {
-  return measuredHeights.value.get(rowKey(item.account, item.index)) || ITEM_HEIGHT
+  return rowHeights.value.get(rowKey(item.account, item.index)) || ITEM_HEIGHT
 }
 
 const heightOffsets = computed(() => {
@@ -117,7 +117,9 @@ const visibleAccounts = computed(() =>
 function scheduleHeightUpdate(key, height) {
   if (!key || !height) return
   const nextHeight = Math.ceil(height)
-  if (rowHeights.value.get(key) === nextHeight) return
+  // Suppress sub-pixel jitter to avoid mount/measure storm on scroll.
+  const prev = rowHeights.value.get(key)
+  if (prev !== undefined && Math.abs(prev - nextHeight) <= HEIGHT_EPSILON) return
   if (!pendingHeightUpdates) pendingHeightUpdates = new Map()
   pendingHeightUpdates.set(key, nextHeight)
   if (!heightUpdateRaf) {
@@ -130,12 +132,16 @@ function flushHeightUpdates() {
   if (!pendingHeightUpdates) return
   const batch = pendingHeightUpdates
   pendingHeightUpdates = null
-  const next = new Map(rowHeights.value)
+  const map = rowHeights.value
   let changed = false
   for (const [k, h] of batch) {
-    if (next.get(k) !== h) { next.set(k, h); changed = true }
+    const prev = map.get(k)
+    if (prev === undefined || Math.abs(prev - h) > HEIGHT_EPSILON) {
+      map.set(k, h)
+      changed = true
+    }
   }
-  if (changed) rowHeights.value = next
+  if (changed) triggerRef(rowHeights)
 }
 
 function setRowRef(el, key) {
@@ -162,11 +168,12 @@ onMounted(() => {
 
 watch(accountItems, () => {
   const allowed = new Set(accountItems.value.map((item) => rowKey(item.account, item.index)))
-  const next = new Map()
-  for (const [key, height] of rowHeights.value) {
-    if (allowed.has(key)) next.set(key, height)
+  const map = rowHeights.value
+  let changed = false
+  for (const key of map.keys()) {
+    if (!allowed.has(key)) { map.delete(key); changed = true }
   }
-  rowHeights.value = next
+  if (changed) triggerRef(rowHeights)
 })
 
 onBeforeUnmount(() => {
@@ -181,7 +188,7 @@ onBeforeUnmount(() => {
 .sbox.open{max-height:9999px;opacity:1;padding:2px 0}
 .virtual-list{position:relative;width:100%}
 .virtual-offset{position:absolute;left:0;right:0;top:0}
-.virtual-row{width:100%;padding-bottom:3px}
+.virtual-row{width:100%;padding-bottom:3px;contain:layout paint}
 .empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
 .empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
 </style>

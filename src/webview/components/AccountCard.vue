@@ -360,13 +360,13 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;transition:all .15s ease}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;transition:border-color .15s ease,background-color .15s ease;contain:layout paint}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
-.ac.dep{opacity:.35;filter:grayscale(.6)}
+.ac.dep{opacity:.35}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
-.ac.badauth{opacity:.38;filter:grayscale(.7)}
+.ac.badauth{opacity:.38}
 .ac.exp{opacity:.3}
 .ac-head{display:flex;align-items:center;gap:4px;margin-bottom:2px}
 .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
