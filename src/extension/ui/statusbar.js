@@ -37,25 +37,31 @@ export function _updatePoolBar() {
   const pool = S.am.getPoolStats(threshold);
   const mode = S.auth ? S.auth.getProxyStatus().mode : '?';
   const modeIcon = mode === 'relay' ? '☁' : '⚡';
+  const acctTag = S.activeIndex >= 0 ? `#${S.activeIndex + 1}` : '';
 
-  let quotaDisplay = '?';
-  let isLow = false;
-  if (pool.avgDaily !== null) {
-    const dPct = Math.min(100, pool.avgDaily);
-    const wPct =
-      pool.avgWeekly !== null ? Math.min(100, pool.avgWeekly) : null;
-    const poolEffective = wPct !== null ? Math.min(dPct, wPct) : dPct;
-    quotaDisplay = wPct !== null ? `天${dPct}%·周${wPct}%` : `天${dPct}%`;
-    isLow = poolEffective <= 10;
-  } else if (pool.avgCredits !== null) {
-    quotaDisplay = `均${pool.avgCredits}分`;
-    isLow = pool.avgCredits <= threshold;
-  } else {
-    quotaDisplay = `${pool.health}%`;
-    isLow = pool.health <= 10;
+  // Active account quota (what the user is consuming RIGHT NOW)
+  let activeDisplay = '';
+  let activeEffective = null;
+  if (S.activeIndex >= 0) {
+    const aq = S.am.getActiveQuota(S.activeIndex);
+    if (aq) {
+      if (aq.daily !== null) {
+        const parts = [`天${aq.daily}`];
+        if (aq.weekly !== null) parts.push(`周${aq.weekly}`);
+        activeDisplay = parts.join('·');
+        activeEffective = aq.weekly !== null ? Math.min(aq.daily, aq.weekly) : aq.daily;
+      } else if (aq.credits !== null) {
+        activeDisplay = `${aq.credits}分`;
+        activeEffective = aq.credits;
+      }
+    }
   }
 
-  const poolTag = `${pool.available}/${pool.total}`;
+  const quotaDisplay = activeDisplay || `${pool.health}%`;
+  const isLow = activeEffective !== null ? activeEffective <= 10 : pool.health <= 10;
+
+  const badTag = pool.depleted > 0 ? `-${pool.depleted}` : '';
+  const poolTag = `${pool.available}/${pool.total}${badTag}`;
   const boost = _isBoost() ? '⚡' : '';
   const burst = S.burstMode ? '🔥' : '';
   const auto = vscode.workspace.getConfiguration('wam').get('autoRotate', true)
@@ -67,7 +73,7 @@ export function _updatePoolBar() {
   const tabTag =
     S.cascadeTabCount > CONCURRENT_TAB_SAFE ? ` T${S.cascadeTabCount}` : '';
   const pendingTag = S.pendingSwitchIndex >= 0 ? ' ?' : '';
-  S.statusBar.text = `${modeIcon} ${quotaDisplay} ${poolTag}${winTag}${tabTag}${pendingTag}${burst}${boost}${auto}`;
+  S.statusBar.text = `${modeIcon} ${acctTag} ${quotaDisplay} ${poolTag}${winTag}${tabTag}${pendingTag}${burst}${boost}${auto}`;
   S.statusBar.color = isLow
     ? new vscode.ThemeColor('errorForeground')
     : pool.available === 0
@@ -90,72 +96,62 @@ export function _updatePoolBar() {
   md.isTrusted = true;
   md.supportHtml = true;
   const L = (...segments) => md.appendMarkdown(segments.join('') + '\n\n');
-  const fmtDate = (ts) => {
-    const date = new Date(ts);
-    return `${date.getMonth() + 1}月${date.getDate()}日 ${String(
-      date.getHours(),
-    ).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  };
 
   if (S.activeIndex >= 0) {
     const quota = S.am.getActiveQuota(S.activeIndex);
     const account = S.am.get(S.activeIndex);
     if (quota && account) {
-      L(`**${quota.plan || '计划'}**`);
-      L('额度按 天/周 重置');
-      if (quota.planDays !== null) {
-        if (quota.planDays > 0) L(`计划剩余 **${quota.planDays} 天**`);
-        else L('计划 **已过期**');
-      }
+      // Line 1: Plan + days remaining
+      const planLabel = quota.plan || '计划';
+      const daysLabel = quota.planDays !== null
+        ? (quota.planDays > 0 ? ` · ${quota.planDays}天剩余` : ' · **已过期**')
+        : '';
+      L(`**${planLabel}**${daysLabel}`);
+      L(`${account.email}`);
       L('---');
+      // Quota: show remaining % with compact reset
+      const fmtTime = (ts) => {
+        const d = new Date(ts);
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      };
       if (quota.daily !== null) {
-        const used = Math.max(0, 100 - quota.daily);
-        L(`**天额度已用：** &nbsp;&nbsp; **${used}%**`);
-        if (quota.dailyResetRaw) L(`重置于 ${fmtDate(quota.dailyResetRaw)}`);
-        else if (quota.resetCountdown) L(`${quota.resetCountdown} 后重置`);
+        const resetPart = quota.dailyResetRaw ? ` &nbsp; ↻${fmtTime(quota.dailyResetRaw)}` : '';
+        L(`天 **${quota.daily}%**${resetPart}`);
       }
       if (quota.weekly !== null) {
-        const weeklyUsed = Math.max(0, 100 - quota.weekly);
-        L(`**周额度已用：** &nbsp;&nbsp; **${weeklyUsed}%**`);
-        if (quota.weeklyReset) L(`重置于 ${fmtDate(quota.weeklyReset)}`);
-        else if (quota.weeklyResetCountdown) {
-          L(`${quota.weeklyResetCountdown} 后重置`);
-        }
+        const resetPart = quota.weeklyReset ? ` &nbsp; ↻${fmtTime(quota.weeklyReset)}` : '';
+        L(`周 **${quota.weekly}%**${resetPart}`);
       }
       if (quota.extraBalance !== null) {
-        L(`**额外余额：** &nbsp;&nbsp;&nbsp; **$${quota.extraBalance.toFixed(2)}**`);
+        L(`余额 **$${quota.extraBalance.toFixed(2)}**`);
       }
-      L('---');
-      L(`**${quota.plan || '计划'}**`);
-      L(`${account.email}`);
     }
   }
   if (S.pendingSwitchIndex >= 0) {
     const pendingAccount = S.am.get(S.pendingSwitchIndex);
     if (pendingAccount) {
       L('---');
-      L(`待确认切换 &nbsp; **#${S.pendingSwitchIndex + 1}**`);
-      L(`${pendingAccount.email}`);
+      L(`待确认 &nbsp; **#${S.pendingSwitchIndex + 1}** ${pendingAccount.email}`);
     }
   }
 
   L('---');
-  const poolStatus = [`**${pool.available}**可用 / **${pool.total}**总计`];
-  if (pool.depleted > 0) poolStatus.push(`${pool.depleted}耗尽`);
-  if (pool.rateLimited > 0) poolStatus.push(`${pool.rateLimited}限流`);
-  if (pool.expired > 0) poolStatus.push(`${pool.expired}过期`);
-  L(`**号池** &nbsp; ${poolStatus.join(' · ')}`);
-  if (pool.avgEffective !== null) {
-    L(`均剩 **${pool.avgEffective}%** (${pool.effectiveCount}个账号均值)`);
-  }
+  const poolParts = [`**${pool.available}/${pool.total}**`];
+  if (pool.depleted > 0) poolParts.push(`${pool.depleted}耗尽`);
+  if (pool.rateLimited > 0) poolParts.push(`${pool.rateLimited}限流`);
+  if (pool.expired > 0) poolParts.push(`${pool.expired}过期`);
+  L(`号池 ${poolParts.join(' · ')}`);
   if (pool.avgDaily !== null) {
-    const parts = [`天 **${pool.avgDaily}%**`];
-    if (pool.avgWeekly !== null) parts.push(`周 **${pool.avgWeekly}%**`);
+    const parts = [`天均 **${pool.avgDaily}%**`];
+    if (pool.avgWeekly !== null) parts.push(`周均 **${pool.avgWeekly}%**`);
     L(parts.join(' &nbsp; '));
+  } else if (pool.avgEffective !== null) {
+    L(`均剩 **${pool.avgEffective}%**`);
   }
-  if (pool.urgentCount > 0) L(`⚠ ${pool.urgentCount}个紧急(≤3天)`);
+  if (pool.urgentCount > 0) L(`⚠ ${pool.urgentCount}个≤3天到期`);
   if (pool.preResetWasteCount > 0) {
-    L(`⚠ ${pool.preResetWasteCount}个即将浪费${pool.preResetWasteTotal}%额度`);
+    const avgWaste = Math.round(pool.preResetWasteTotal / pool.preResetWasteCount);
+    L(`⚠ ${pool.preResetWasteCount}个账号均剩${avgWaste}%将随重置浪费`);
   }
 
   const hasRuntime =
@@ -205,6 +201,6 @@ export function _updatePoolBar() {
     if (probeFailCount > 0) L(`探测失败 &nbsp; **${probeFailCount}次**连续`);
   }
   L('---');
-  L(`${mode} · 阈值${threshold}% · 10层防御`);
+  L(`${mode} · 阈值${threshold}%`);
   S.statusBar.tooltip = md;
 }
