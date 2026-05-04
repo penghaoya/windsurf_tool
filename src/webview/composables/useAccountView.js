@@ -22,6 +22,7 @@ export const SORT_OPTIONS = [
 export const STATUS_OPTIONS = [
   { value: 'all',       label: '全部' },
   { value: 'available', label: '可用' },
+  { value: 'free',      label: 'Free' },
   { value: 'depleted',  label: '额度耗尽' },
   { value: 'expired',   label: '到期' },
 ]
@@ -57,18 +58,25 @@ export function resetView() {
   Object.assign(viewState, DEFAULT_VIEW)
 }
 
-// 'depleted' bucket merges ALL unusable states (depleted/RL/badauth/quarantine)
-// so every account belongs to exactly one of: available / depleted / expired.
-function matchesStatus(account, status) {
+// Mutually-exclusive buckets by priority: expired > free > depleted > available.
+// Every non-'all' account belongs to exactly one bucket.
+function categorize(account, threshold) {
+  if (account.isExpired) return 'expired'
+  // Trial/Pro that was downgraded to Free also lands here (tierName becomes 'free')
+  if (account.usage?.tierName === 'free') return 'free'
+  // Hard-unusable states
+  if (account.dailyDepleted || account.rateLimit ||
+      account.schedulerBlocked || account.invalidAuth) return 'depleted'
+  // Soft-depleted: effective quota at/below preemptive threshold
+  const eff = account.effective
+  if (typeof eff === 'number' && typeof threshold === 'number' && eff <= threshold) {
+    return 'depleted'
+  }
+  return 'available'
+}
+function matchesStatus(account, status, threshold) {
   if (status === 'all') return true
-  const isExp = !!account.isExpired
-  const isUnusable = !!account.dailyDepleted ||
-    !!account.rateLimit || !!account.schedulerBlocked ||
-    !!account.invalidAuth
-  if (status === 'expired') return isExp
-  if (status === 'depleted') return !isExp && isUnusable
-  if (status === 'available') return !isExp && !isUnusable
-  return true
+  return categorize(account, threshold) === status
 }
 
 function matchesSearch(account, search) {
@@ -106,13 +114,14 @@ function compareBy(sortBy) {
   }
 }
 
-/** Main entry: returns filtered+sorted computed for a reactive accounts ref */
-export function useAccountView(accountsRef) {
+/** Main entry: returns filtered+sorted computed for reactive accounts + threshold refs */
+export function useAccountView(accountsRef, thresholdRef) {
   const filteredAccounts = computed(() => {
     const list = accountsRef.value || []
+    const threshold = thresholdRef?.value ?? 15
     const { sortBy, statusFilter, searchText } = viewState
     const filtered = list.filter((a) =>
-      matchesStatus(a, statusFilter) &&
+      matchesStatus(a, statusFilter, threshold) &&
       matchesSearch(a, searchText),
     )
     return filtered.slice().sort(compareBy(sortBy))

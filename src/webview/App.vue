@@ -71,7 +71,10 @@ import AccountFilters from './components/AccountFilters.vue'
 import ToastMessage from './components/ToastMessage.vue'
 import { useAccountView } from './composables/useAccountView.js'
 
-const { filteredAccounts, hasFilters } = useAccountView(toRef(state, 'accounts'))
+const { filteredAccounts, hasFilters } = useAccountView(
+  toRef(state, 'accounts'),
+  toRef(state, 'threshold'),
+)
 
 const listExpanded = ref(true)
 const addOpen = ref(false)
