@@ -103,9 +103,20 @@ export function _updatePoolBar() {
     if (quota && account) {
       // Line 1: Plan + days remaining
       const planLabel = quota.plan || '计划';
-      const daysLabel = quota.planDays !== null
-        ? (quota.planDays > 0 ? ` · ${quota.planDays}天剩余` : ' · **已过期**')
-        : '';
+      const daysLabel = (() => {
+        if (quota.planDays === null) return '';
+        if (quota.planDays <= 0) return ' · **已过期**';
+        if (quota.planEnd) {
+          const diff = quota.planEnd - Date.now();
+          if (diff <= 0) return ' · **已过期**';
+          const h = Math.floor(diff / 3600000);
+          const d = Math.floor(h / 24);
+          const rh = h % 24;
+          if (d >= 1) return rh > 0 ? ` · ${d}天${rh}小时剩余` : ` · ${d}天剩余`;
+          return ` · ${h}小时剩余`;
+        }
+        return ` · ${quota.planDays}天剩余`;
+      })();
       L(`**${planLabel}**${daysLabel}`);
       L(`${account.email}`);
       L('---');

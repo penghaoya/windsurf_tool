@@ -429,10 +429,38 @@ async function _refreshOne(index, options = {}) {
         } catch (e) { _logWarn('额度补充', `cachedPlanInfo读取失败: ${e.message}`); }
       }
       S.am.updateUsage(index, usageInfo);
+      // v20.2: lazy fetch precise teamsTier from GetUserStatus (once per 24h per account)
+      _maybeEnrichUserStatus(index).catch(() => {});
       return { ok: true, credits: usageInfo.credits, usageInfo };
     }
   } catch (e) { _logWarn('刷新', `getUsageInfo失败: ${e.message}`); }
   return { ok: false, credits: undefined, errorType: 'refresh_failed' };
+}
+
+/** v20.2: Enrich account.usage with precise teamsTier via GetUserStatus.
+ *  Runs async after _refreshOne, only when stale. Failure is silent. */
+const USER_STATUS_TTL = 24 * 60 * 60 * 1000;  // 24h
+async function _maybeEnrichUserStatus(index) {
+  // readCurrentApiKey() returns active session's key — only safe for active account
+  if (index !== S.activeIndex) return;
+  const account = S.am.get(index);
+  if (!account?.usage) return;
+  const age = Date.now() - (account.usage.teamsTierCheckedAt || 0);
+  if (account.usage.teamsTier !== undefined && age < USER_STATUS_TTL) return;
+  const apiKey = S.auth?.readCurrentApiKey?.();
+  if (!apiKey) return;
+  try {
+    const status = await S.auth.getUserStatus(apiKey, { quiet: true });
+    if (!status) return;
+    const merged = {
+      ...account.usage,
+      teamsTier: status.teamsTier,
+      tierName: status.tierName,
+      tierLabel: status.tierLabel,
+      teamsTierCheckedAt: Date.now(),
+    };
+    S.am.updateUsage(index, merged);
+  } catch {}
 }
 
 /** Refresh all accounts through the shared queue.

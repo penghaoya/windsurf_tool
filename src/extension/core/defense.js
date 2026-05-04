@@ -231,6 +231,11 @@ export async function _probeCapacity() {
   const capacityState = _getCapacityState();
   if (!capacityState) return null;
 
+  // v20.1: Trial accounts always return -1/-1 (no precise data from server).
+  // L1 (Context Keys, 2s interval) + L3 (cachedPlanInfo, 5-10s) catch rate limits
+  // faster than L5's 45s interval. L5 is only valuable for Pro+ accounts.
+  if (_isTrialLikeAccount(S.activeIndex)) return null;
+
   // 指数退避 — 仅对网络错误/null响应 (failCount), NOT for NO_DATA
   const fc = capacityState.failCount || 0;
   const quiet = fc >= 3;

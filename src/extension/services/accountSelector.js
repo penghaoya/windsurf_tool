@@ -113,7 +113,7 @@ export function selectOptimal(
       const weeklyResetMs = account.usage?.weeklyReset || 0;
       const weeklyResetProximity =
         weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
-      const tier = getPlanTier(account.usage?.plan);
+      const tier = getPlanTier(account.usage || null);
       candidates.push({
         index: i,
         email: account.email,

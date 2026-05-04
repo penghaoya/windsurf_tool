@@ -27,10 +27,36 @@ export const CACHE_TTL = 5000;
 // Free=免费无extra usage, Pro=$20/月, Max=$200/月, Teams=$40/座/月, Enterprise=credits
 export const PLAN_TIERS = { FREE: 'free', PRO: 'pro', MAX: 'max', TEAMS: 'teams', ENTERPRISE: 'enterprise' };
 
-/** 从 plan 字符串 (GetPlanStatus 返回) 推断层级 */
-export function getPlanTier(planStr) {
-  if (!planStr) return PLAN_TIERS.FREE;
-  const p = String(planStr).toLowerCase().trim();
+/** TeamsTier enum → PLAN_TIERS 精确映射 (来自 GetUserStatus)
+ *  参考 proto: 1=Teams 2=Pro 3=EnterpriseSaaS 4=Hybrid 5=EnterpriseSelfHosted
+ *              6=WaitlistPro 7=TeamsUltimate 8=ProUltimate 9=Trial
+ *              10=EnterpriseSelfServe 11=EnterpriseSaaSPooled
+ *              12=DevinEnterprise 16=DevinPro 17=DevinMax 18=Max
+ *              19=DevinFree 20=DevinTrial */
+export function tierFromTeamsTier(tierNum) {
+  const n = Number(tierNum);
+  if (!Number.isFinite(n)) return null;
+  if (n === 18 || n === 17) return PLAN_TIERS.MAX;
+  if (n === 3 || n === 4 || n === 5 || n === 10 || n === 11 || n === 12) return PLAN_TIERS.ENTERPRISE;
+  if (n === 1 || n === 7 || n === 14 || n === 15) return PLAN_TIERS.TEAMS;
+  if (n === 2 || n === 8 || n === 16) return PLAN_TIERS.PRO;
+  if (n === 0 || n === 6 || n === 9 || n === 19 || n === 20) return PLAN_TIERS.FREE;
+  return null;  // unknown tier — caller falls back to string heuristic
+}
+
+/** 从 plan 字符串 (GetPlanStatus) 或 usage 对象 (含 teamsTier) 推断层级
+ *  优先使用精确的 teamsTier (来自 GetUserStatus), 退化到字符串匹配 */
+export function getPlanTier(planOrUsage) {
+  if (!planOrUsage) return PLAN_TIERS.FREE;
+  // Object with precise teamsTier (from GetUserStatus)
+  if (typeof planOrUsage === 'object') {
+    const precise = tierFromTeamsTier(planOrUsage.teamsTier);
+    if (precise) return precise;
+    // Fall back to plan string on this object
+    planOrUsage = planOrUsage.plan;
+    if (!planOrUsage) return PLAN_TIERS.FREE;
+  }
+  const p = String(planOrUsage).toLowerCase().trim();
   if (p.includes('enterprise')) return PLAN_TIERS.ENTERPRISE;
   if (p.includes('max')) return PLAN_TIERS.MAX;
   if (p.includes('team')) return PLAN_TIERS.TEAMS;

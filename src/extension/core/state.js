@@ -315,7 +315,8 @@ export function _getPlanTier(index) {
   if (!S.am || index < 0) return PLAN_TIERS.FREE;
   const account = S.am.get(index);
   if (!account) return PLAN_TIERS.FREE;
-  return getPlanTier(account.usage?.plan);
+  // v20.2: 优先使用 GetUserStatus 精确 teamsTier, 退化到 plan 字符串
+  return getPlanTier(account.usage || null);
 }
 
 /** 向后兼容: 账号是否 Free/Trial 类 */

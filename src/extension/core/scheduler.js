@@ -950,7 +950,7 @@ async function _poolTick(context) {
       })
       .map(({ index }) => index);
     if (scanIndexes.length === 0) {
-      _logInfo("全池扫描", `跳过: 无过期缓存账号 (稳定账号${Math.round(FULL_SCAN_FRESH_SKIP_MS * FULL_SCAN_STALE_MULTIPLIER / 60000)}min/活跃${Math.round(FULL_SCAN_FRESH_SKIP_MS / 60000)}min)`);
+      // silent: idle skip is the happy path, no need to log
       deps.updatePoolBar?.();
     } else {
       _logInfo("全池扫描", `后台刷新${scanIndexes.length}/${accounts.length}个账号额度 (并发=${FULL_SCAN_CONCURRENCY})...`);
