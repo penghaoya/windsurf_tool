@@ -11,6 +11,8 @@ import {
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR, PREHEAT_FRESHNESS_TTL, PREHEAT_TIMEOUT,
+  IDLE_STRETCH_AFTER, IDLE_POLL_MAX, IDLE_POLL_STEP,
+  FULL_SCAN_CONCURRENCY, FULL_SCAN_STALE_MULTIPLIER,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK,
   L5_ENABLED,
 } from '../shared/config.js';
@@ -167,6 +169,11 @@ export function _slopePredict() {
 function _getAdaptivePollMs() {
   if (S.burstMode) return POLL_BURST;
   if (_isBoost()) return POLL_BOOST;
+  // v19.1: idle de-rate — quota stable for N ticks → stretch interval
+  if (S.idleTickCount >= IDLE_STRETCH_AFTER) {
+    const extra = (S.idleTickCount - IDLE_STRETCH_AFTER + 1) * IDLE_POLL_STEP;
+    return Math.min(POLL_NORMAL + extra, IDLE_POLL_MAX);
+  }
   return POLL_NORMAL;
 }
 
@@ -863,6 +870,7 @@ async function _poolTick(context) {
   const quotaChanged = prevQuota !== null && prevQuota !== undefined && curQuota !== prevQuota;
   if (curQuota !== null) _trackVelocity(curQuota);
   if (quotaChanged) {
+    S.idleTickCount = 0;
     _trackMessageRate();
     _trackHourlyMsg();
     const vel = _getVelocity();
@@ -873,6 +881,8 @@ async function _poolTick(context) {
     _activateBoost();
     deps.updatePoolBar?.();
     _refreshPanel();
+  } else if (prevQuota !== null && prevQuota !== undefined) {
+    S.idleTickCount++;
   }
 
   // ═══ 响应式切换 (按账号类型差异化阈值) ═══
@@ -927,16 +937,23 @@ async function _poolTick(context) {
   } else if (fullScanAllowed && Date.now() - S.lastFullScanTs > fullScanInterval) {
     S.lastFullScanTs = Date.now();
     const scanStartedAt = Date.now();
+    // v19.1: stale accounts (snapshot unchanged) get extended skip TTL
     const scanIndexes = accounts
       .map((account, index) => ({ account, index }))
       .filter(({ index }) => !S.am.isInvalidAuth?.(index))
-      .filter(({ account }) => Date.now() - (account?.usage?.lastChecked || 0) >= FULL_SCAN_FRESH_SKIP_MS)
+      .filter(({ account, index }) => {
+        const snap = S.allQuotaSnapshot.get(index);
+        const rem = S.am.effectiveRemaining(index);
+        const stale = snap && snap.remaining === rem;
+        const skipMs = stale ? FULL_SCAN_FRESH_SKIP_MS * FULL_SCAN_STALE_MULTIPLIER : FULL_SCAN_FRESH_SKIP_MS;
+        return Date.now() - (account?.usage?.lastChecked || 0) >= skipMs;
+      })
       .map(({ index }) => index);
     if (scanIndexes.length === 0) {
-      _logInfo("全池扫描", `跳过: ${Math.round(FULL_SCAN_FRESH_SKIP_MS / 60000)}min内无过期缓存账号`);
+      _logInfo("全池扫描", `跳过: 无过期缓存账号 (稳定账号${Math.round(FULL_SCAN_FRESH_SKIP_MS * FULL_SCAN_STALE_MULTIPLIER / 60000)}min/活跃${Math.round(FULL_SCAN_FRESH_SKIP_MS / 60000)}min)`);
       deps.updatePoolBar?.();
     } else {
-      _logInfo("全池扫描", `后台慢速刷新${scanIndexes.length}/${accounts.length}个账号额度...`);
+      _logInfo("全池扫描", `后台刷新${scanIndexes.length}/${accounts.length}个账号额度 (并发=${FULL_SCAN_CONCURRENCY})...`);
       const updateSnapshot = (i) => {
         const rem = S.am.effectiveRemaining(i);
         const prev = S.allQuotaSnapshot.get(i);
@@ -956,7 +973,7 @@ async function _poolTick(context) {
         wait: false,
         indexes: scanIndexes,
         lane: FULL_SCAN_REFRESH_LANE,
-        laneConcurrency: 1,
+        laneConcurrency: FULL_SCAN_CONCURRENCY,
         minStartGapMs: FULL_SCAN_REFRESH_GAP_MS,
         onSettledIndex: (index) => {
           updateSnapshot(index);

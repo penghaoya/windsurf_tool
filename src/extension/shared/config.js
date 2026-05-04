@@ -51,6 +51,11 @@ export const POLL_BURST = 3000;
 export const BOOST_DURATION = 300000;
 export const DEFAULT_PREEMPTIVE_THRESHOLD = 15;
 
+// ═══ 空闲降频 (v19.1) ═══
+export const IDLE_STRETCH_AFTER = 3;          // 连续N次无变化后开始拉长
+export const IDLE_POLL_MAX = 90000;           // 空闲最大间隔 90s (normal 45s 的 2x)
+export const IDLE_POLL_STEP = 15000;          // 每多一次无变化 +15s
+
 // ═══ 斜率预测 ═══
 export const SLOPE_WINDOW = 5;
 export const SLOPE_HORIZON = 300000;
@@ -74,6 +79,8 @@ export const PREHEAT_FRESHNESS_TTL = 300000;  // 预热新鲜度: 5min内有数�
 export const PREHEAT_TIMEOUT = 5000;           // 预热网络超时 5s
 export const REACTIVE_SWITCH_CD = 10000;
 export const REACTIVE_DROP_MIN = 5;
+export const FULL_SCAN_CONCURRENCY = 3;       // 全池扫描并发数 (v19.1: 从1提升到3)
+export const FULL_SCAN_STALE_MULTIPLIER = 3;  // 连续无变化账号跳过倍率 (FRESH_SKIP×3=30min)
 export const UFEF_COOLDOWN = 600000;
 
 // ═══ 速度检测 ═══

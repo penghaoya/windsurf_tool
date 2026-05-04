@@ -375,15 +375,6 @@ async function _refreshOne(index, options = {}) {
     if (options.cacheOnly) {
       return { ok: true, skipped: true, errorType: 'cache_miss', source: 'cache_only_skip' };
     }
-    // apiKey path uses CURRENT active account's apiKey, only meaningful for active/pending account.
-    // Calling for non-active accounts during full_scan wastes one HTTP and triggers email mismatch.
-    if ((index === S.activeIndex || index === S.pendingSwitchIndex) && S.auth?.fetchUsageFromCurrentApiKey) {
-      const runtimeUsage = await S.auth.fetchUsageFromCurrentApiKey(account.email);
-      if (runtimeUsage) {
-        S.am.updateUsage(index, runtimeUsage);
-        return { ok: true, credits: runtimeUsage.credits, usageInfo: runtimeUsage, source: 'apikey_status' };
-      }
-    }
     const usageInfo = await S.auth.getUsageInfo(account.email, account.password, options);
     if (usageInfo?.ok === false) {
       if (usageInfo.cacheOnly) {

@@ -49,7 +49,6 @@ const REGISTER_JSON_FALLBACK_URLS = [
   'https://api.codeium.com/exa.language_server_pb.LanguageServerService/RegisterUser',
   'https://server.codeium.com/exa.language_server_pb.LanguageServerService/RegisterUser',
 ];
-const GET_USER_STATUS_URL = 'https://server.codeium.com/exa.language_server_pb.LanguageServerService/GetUserStatus';
 
 const TOKEN_TTL = 50 * 60 * 1000; // 50 minutes
 const AUTH_PROVIDER_TTL = 24 * 60 * 60 * 1000;
@@ -92,7 +91,6 @@ function _warnHttpErrorRaw(kind, hostname, pathLabel, status, body) {
 
 // Global cooldowns for upstream rate limits (process-wide, per-AuthService)
 const DEVIN_AUTH_COOLDOWN_MS = 60_000; // after 429 on /_devin-auth/*
-const GET_USER_STATUS_BREAKER_MS = 10 * 60_000; // after repeated 415
 
 class AuthService {
   constructor(storagePath) {
@@ -102,7 +100,6 @@ class AuthService {
     this._cachePath = null; // set lazily in _getCachePath()
     this._providerCachePath = null;
     this._devinAuthCooldownUntil = 0; // ts — skip devin-auth before this
-    this._getUserStatusBreakerUntil = 0; // ts — skip GetUserStatus before this
     this._loadCache();
     this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
@@ -1165,97 +1162,6 @@ class AuthService {
       }
     }
     return null;
-  }
-
-  _parseUsageFromGetUserStatus(data) {
-    const userStatus = data?.userStatus || data?.user_status || data;
-    if (!userStatus || typeof userStatus !== 'object') return null;
-    const planStatus = userStatus.planStatus || userStatus.plan_status || {};
-    const planInfo = userStatus.planInfo || userStatus.plan_info || planStatus.planInfo || planStatus.plan_info || {};
-    const quotaUsage = planInfo.quotaUsage || planInfo.quota_usage || planStatus.quotaUsage || planStatus.quota_usage || {};
-    const plan = planInfo.planName || planInfo.plan_name || planStatus.planName || planStatus.plan_name || null;
-    const billingRaw = planInfo.billingStrategy ?? planInfo.billing_strategy ?? planStatus.billingStrategy ?? planStatus.billing_strategy ?? null;
-    const billingStrategy = typeof billingRaw === 'string'
-      ? billingRaw.toLowerCase()
-      : billingRaw === 1
-        ? 'credits'
-        : billingRaw === 2
-          ? 'quota'
-          : null;
-    const dailyRemaining = quotaUsage.dailyRemainingPercent ?? quotaUsage.daily_remaining_percent ?? planStatus.dailyQuotaRemainingPercent ?? planStatus.daily_quota_remaining_percent;
-    const weeklyRemaining = quotaUsage.weeklyRemainingPercent ?? quotaUsage.weekly_remaining_percent ?? planStatus.weeklyQuotaRemainingPercent ?? planStatus.weekly_quota_remaining_percent;
-    const dailyResetUnix = Number(quotaUsage.dailyResetAtUnix ?? quotaUsage.daily_reset_at_unix ?? planStatus.dailyQuotaResetAtUnix ?? planStatus.daily_quota_reset_at_unix ?? 0);
-    const weeklyResetUnix = Number(quotaUsage.weeklyResetAtUnix ?? quotaUsage.weekly_reset_at_unix ?? planStatus.weeklyQuotaResetAtUnix ?? planStatus.weekly_quota_reset_at_unix ?? 0);
-    const availablePrompt = planStatus.availablePromptCredits ?? planStatus.available_prompt_credits ?? planInfo.monthlyPromptCredits ?? planInfo.monthly_prompt_credits;
-    const usedPrompt = planStatus.usedPromptCredits ?? planStatus.used_prompt_credits ?? 0;
-
-    if (!plan && dailyRemaining === undefined && weeklyRemaining === undefined && availablePrompt === undefined) {
-      return null;
-    }
-
-    const result = {
-      mode: billingStrategy === 'credits' ? 'credits' : 'quota',
-      billingStrategy: billingStrategy || (dailyRemaining !== undefined || weeklyRemaining !== undefined ? 'quota' : 'credits'),
-      credits: null,
-      plan,
-      daily: dailyRemaining !== undefined
-        ? { used: Math.max(0, 100 - Number(dailyRemaining)), total: 100, remaining: Number(dailyRemaining) }
-        : null,
-      weekly: weeklyRemaining !== undefined
-        ? { used: Math.max(0, 100 - Number(weeklyRemaining)), total: 100, remaining: Number(weeklyRemaining) }
-        : null,
-      resetTime: dailyResetUnix ? dailyResetUnix * 1000 : null,
-      weeklyReset: weeklyResetUnix ? weeklyResetUnix * 1000 : null,
-      extraBalance: Number(quotaUsage.overageBalanceMicros ?? quotaUsage.overage_balance_micros ?? 0) / 1000000,
-      planStart: null,
-      planEnd: null,
-      userEmail: userStatus.userEmail || userStatus.user_email || null,
-      source: 'apikey_status',
-    };
-    if (availablePrompt !== undefined && availablePrompt !== null) {
-      result.credits = Math.round((Number(availablePrompt) - Number(usedPrompt || 0)) / 100);
-      if (!result.daily && result.billingStrategy === 'credits') result.mode = 'credits';
-    }
-    return result;
-  }
-
-  async fetchUsageFromCurrentApiKey(expectedEmail = null) {
-    try {
-      const apiKey = this.readCurrentApiKey();
-      if (!apiKey) return null;
-      if (String(apiKey).startsWith('sk-ws-01-')) return null;
-      if (Date.now() < this._getUserStatusBreakerUntil) return null;
-      const body = {
-        metadata: {
-          apiKey,
-          ideName: 'vscode',
-          extensionName: 'codeium.windsurf-windsurf',
-          extensionVersion: '1.9.0',
-        },
-      };
-      const r = await this._httpsJson(GET_USER_STATUS_URL, 'POST', body, undefined, {
-        'Content-Type': 'application/connect+json',
-        'Connect-Protocol-Version': '1',
-      });
-      if (!r.ok) {
-        if (r.status === 415 || r.status === 404 || r.status === 501) {
-          this._getUserStatusBreakerUntil = Date.now() + GET_USER_STATUS_BREAKER_MS;
-          _warn('额度', `GetUserStatus ${r.status} → 熔断 ${GET_USER_STATUS_BREAKER_MS / 60000}min`);
-        }
-        return null;
-      }
-      const usage = this._parseUsageFromGetUserStatus(r.data);
-      if (!usage) return null;
-      if (!this._matchesExpectedEmail(usage.userEmail, expectedEmail)) {
-        _warn('额度', `GetUserStatus email mismatch: cached=${usage.userEmail || 'n/a'} expected=${expectedEmail}`);
-        return null;
-      }
-      _info('额度', `GetUserStatus → daily=${usage.daily?.remaining ?? '?'}% weekly=${usage.weekly?.remaining ?? '?'}% email=${usage.userEmail || 'n/a'}`);
-      return usage;
-    } catch (e) {
-      _warn('额度', `GetUserStatus失败: ${e.message}`);
-      return null;
-    }
   }
 
   // ========== RegisterUser → apiKey (for hot injection, mode-aware) ==========
