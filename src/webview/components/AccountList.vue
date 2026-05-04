@@ -21,6 +21,11 @@
             </div>
           </div>
         </div>
+        <div v-else-if="hasFilters && totalCount > 0" class="empty">
+          <div class="empty-icon">🔍</div>
+          没有匹配筛选条件的账号<br>
+          <button class="empty-reset" @click="resetView">重置筛选</button>
+        </div>
         <div v-else class="empty">
           <div class="empty-icon"></div>
           号池为空<br>
@@ -34,6 +39,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, shallowRef, triggerRef, watch } from 'vue'
 import AccountCard from './AccountCard.vue'
+import { resetView } from '../composables/useAccountView.js'
 
 const emit = defineEmits(['scrollAdjust'])
 
@@ -50,6 +56,8 @@ const props = defineProps({
   switchStatus: { type: Object, default: null },
   scrollTop: { type: Number, default: 0 },
   viewportHeight: { type: Number, default: 0 },
+  totalCount: { type: Number, default: 0 },
+  hasFilters: { type: Boolean, default: false },
 })
 
 const rowRefs = new Map()
@@ -227,4 +235,6 @@ onBeforeUnmount(() => {
 .virtual-row{width:100%;padding-bottom:3px;contain:layout style paint}
 .empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
 .empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
+.empty-reset{margin-top:6px;font-size:11px;padding:3px 12px;background:var(--ac-bg);border:none;color:var(--ac);border-radius:var(--R3);cursor:pointer;transition:background-color .12s}
+.empty-reset:hover{background:color-mix(in srgb,var(--ac) 18%,transparent)}
 </style>

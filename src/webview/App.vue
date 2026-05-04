@@ -24,10 +24,18 @@
       </transition>
       <div class="list-toggle" @click="listExpanded = !listExpanded">
         <span class="list-toggle-arr" :style="{ transform: listExpanded ? 'rotate(90deg)' : '' }">▶</span>
-        <span>{{ state.accounts.length }} 个账号</span>
+        <span v-if="filteredAccounts.length !== state.accounts.length">
+          {{ filteredAccounts.length }}/{{ state.accounts.length }} 个账号
+        </span>
+        <span v-else>{{ state.accounts.length }} 个账号</span>
         <span style="flex:1"></span>
         <button class="head-btn" :class="{active:batchMode}" @click.stop="toggleBatch">{{ batchMode ? '取消' : '选择' }}</button>
       </div>
+      <AccountFilters
+        v-if="!batchMode && listExpanded && state.accounts.length > 0"
+        :tierCounts="tierCounts"
+        :hasFilters="hasFilters"
+      />
     </div>
     <div
       ref="scrollEl"
@@ -38,13 +46,15 @@
     >
       <AccountList
         ref="accountListRef"
-        :accounts="state.accounts"
+        :accounts="filteredAccounts"
         :currentIndex="state.currentIndex"
         :threshold="state.threshold"
         :expanded="listExpanded"
         :switchStatus="state.switchStatus"
         :scrollTop="scrollTop"
         :viewportHeight="viewportHeight"
+        :totalCount="state.accounts.length"
+        :hasFilters="hasFilters"
         @scrollAdjust="onScrollAdjust"
       />
     </div>
@@ -62,12 +72,17 @@
 <script setup>
 import { ref, computed, reactive, provide, onBeforeUnmount, onMounted } from 'vue'
 import { state, toasts, isLoading, initMessageListener, postMessage } from './composables/useVscode.js'
+import { toRef } from 'vue'
 import PoolOverview from './components/PoolOverview.vue'
 import ActiveAccountCard from './components/ActiveAccountCard.vue'
 import QuickActions from './components/QuickActions.vue'
 import AddAccount from './components/AddAccount.vue'
 import AccountList from './components/AccountList.vue'
+import AccountFilters from './components/AccountFilters.vue'
 import ToastMessage from './components/ToastMessage.vue'
+import { useAccountView } from './composables/useAccountView.js'
+
+const { filteredAccounts, tierCounts, hasFilters } = useAccountView(toRef(state, 'accounts'))
 
 const listExpanded = ref(true)
 const addOpen = ref(false)
