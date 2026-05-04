@@ -11,6 +11,7 @@
         <svg v-if="isSelected" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
       </div>
       <span class="dot" :class="statusClass"></span>
+      <span class="ac-idx">#{{ index + 1 }}</span>
       <span v-if="account.usage?.plan" class="a-plan">{{ account.usage.plan }}</span>
       <span v-if="daysTag" class="a-days" :style="daysStyle">{{ daysTag }}</span>
       <div class="ac-acts">
@@ -87,10 +88,10 @@
       </div>
     </div>
 
-    <!-- Row 2: #序号 + 完整邮箱 -->
+    <!-- Row 2: 邮箱 + 右侧 meta (切换次数 / 加入时长 / 重置倒计时) -->
     <div class="ac-email-row">
-      <span class="ac-idx">#{{ index + 1 }}</span>
       <span class="ac-name" :title="account.email">{{ account.email }}</span>
+      <span v-if="metaText" class="ac-meta" :title="metaTitle">{{ metaText }}</span>
     </div>
 
     <div v-if="switchBadge" class="switch-badge" :class="switchBadge.kind">
@@ -148,7 +149,7 @@
 <script setup>
 import { ref, computed, watch, inject, onBeforeUnmount } from 'vue'
 import { actionResults, postMessage, pwdResults, requestAction } from '../composables/useVscode.js'
-import { dotClass, urgencyColor, formatPlanRemaining } from '../utils/format.js'
+import { dotClass, urgencyColor, formatPlanRemaining, fmtCompactReset, fmtAgo } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
 
 const props = defineProps({
@@ -276,6 +277,25 @@ const daysTag = computed(() => {
   return ''
 })
 
+// v20.3: compact meta shown on email row's right (login count / age / reset countdowns)
+const metaText = computed(() => {
+  const parts = []
+  const loginCount = props.account.loginCount || 0
+  if (loginCount > 0) parts.push(`切${loginCount}`)
+  const resetD = fmtCompactReset(props.account.usage?.resetTime)
+  const resetW = fmtCompactReset(props.account.usage?.weeklyReset)
+  if (resetD && resetW) parts.push(`↻天${resetD}·周${resetW}`)
+  else if (resetD) parts.push(`↻天${resetD}`)
+  else if (resetW) parts.push(`↻周${resetW}`)
+  return parts.join(' · ')
+})
+const metaTitle = computed(() => {
+  const bits = []
+  if (props.account.addedAt) bits.push(`添加于 ${fmtAgo(props.account.addedAt)}`)
+  if (props.account.loginCount) bits.push(`已切换 ${props.account.loginCount} 次`)
+  return bits.join(' · ')
+})
+
 const daysStyle = computed(() => {
   const color = props.account.isExpired ? 'var(--rd)' : urgencyColor(props.account.urgency ?? -1)
   return {
@@ -370,7 +390,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;transition:border-color .12s ease,background-color .12s ease;contain:layout style paint}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:5px 8px;transition:border-color .12s ease,background-color .12s ease;contain:layout style paint}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
 .ac.dep{opacity:.35}
@@ -378,12 +398,13 @@ onBeforeUnmount(() => {
 .ac.blk:not(.rl){opacity:.55}
 .ac.badauth{opacity:.38}
 .ac.exp{opacity:.3}
-.ac-head{display:flex;align-items:center;gap:4px;margin-bottom:2px}
+.ac-head{display:flex;align-items:center;gap:4px;margin-bottom:1px;min-height:22px}
 .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .dot.ok{background:var(--gn)}.dot.warn{background:var(--yw)}.dot.bad{background:var(--rd)}.dot.dm{background:var(--tx3)}
-.ac-email-row{display:flex;align-items:baseline;gap:4px;margin-bottom:3px}
-.ac-idx{font-size:11px;font-weight:700;color:var(--tx2);flex-shrink:0}
-.ac-name{font-weight:600;color:var(--tx);font-size:12px;word-break:break-all;line-height:1.3}
+.ac-email-row{display:flex;align-items:baseline;gap:6px;margin-bottom:2px}
+.ac-idx{font-size:10.5px;font-weight:700;color:var(--tx2);flex-shrink:0;letter-spacing:.2px}
+.ac-name{font-weight:600;color:var(--tx);font-size:12px;word-break:break-all;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.ac-meta{font-size:10px;color:var(--tx3);flex-shrink:0;font-feature-settings:"tnum";letter-spacing:.1px;cursor:help}
 .a-plan,.a-days{font-size:10.5px;font-weight:500;line-height:1.4;padding:1px 6px;border-radius:4px;letter-spacing:.1px;flex-shrink:0;white-space:nowrap}
 .a-plan{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
 /* .a-days bg/color via inline style (computed by daysStyle from urgency) */
