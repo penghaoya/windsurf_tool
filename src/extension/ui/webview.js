@@ -340,6 +340,33 @@ class AccountViewProvider {
           }
         }
         break;
+      case ACTION.BATCH_REMOVE:
+        if (Array.isArray(msg.emails) && msg.emails.length > 0) {
+          const curIdx = act ? act('getCurrentIndex') : -1;
+          const curEmail = curIdx >= 0 ? this._am.get(curIdx)?.email : null;
+          const targets = new Set(msg.emails);
+          if (curEmail) targets.delete(curEmail);
+          const all = this._am.getAll();
+          let removed = 0;
+          for (let i = all.length - 1; i >= 0; i--) {
+            if (targets.has(all[i].email)) { this._am.remove(i); removed++; }
+          }
+          const skipped = curEmail && msg.emails.includes(curEmail);
+          this._toast(removed > 0
+            ? `已删除 ${removed} 个账号${skipped ? '（当前账号已跳过）' : ''}`
+            : '无可删除账号');
+          this._pushState();
+        }
+        break;
+      case ACTION.BATCH_REFRESH:
+        if (Array.isArray(msg.indices) && msg.indices.length > 0 && act) {
+          await this._runRequest(msg, async () => {
+            for (const idx of msg.indices) await act('refreshOne', idx);
+            this._toast(`已刷新 ${msg.indices.length} 个账号`);
+            return { refreshed: msg.indices.length };
+          });
+        }
+        break;
     }
   }
 

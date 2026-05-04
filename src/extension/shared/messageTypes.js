@@ -31,4 +31,6 @@ export const ACTION = {
   CLEAR_RATE_LIMIT: 'clearRateLimit',
   COPY_PWD: 'copyPwd',
   SHOW_LOGS: 'showLogs',
+  BATCH_REMOVE: 'batchRemove',
+  BATCH_REFRESH: 'batchRefresh',
 };
