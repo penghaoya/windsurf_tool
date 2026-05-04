@@ -36,8 +36,9 @@ import { computed, onBeforeUnmount, onMounted, shallowRef, triggerRef, watch } f
 import AccountCard from './AccountCard.vue'
 
 const ITEM_HEIGHT = 118
-const OVERSCAN = 8
-const HEIGHT_EPSILON = 1
+const OVERSCAN = 12
+const HEIGHT_EPSILON = 2
+const SCROLL_SETTLE_MS = 120
 
 const props = defineProps({
   accounts: { type: Array, default: () => [] },
@@ -55,6 +56,8 @@ const rowHeights = shallowRef(new Map())
 let rowResizeObserver = null
 let pendingHeightUpdates = null
 let heightUpdateRaf = null
+let scrolling = false
+let scrollSettleTimer = null
 
 const accountItems = computed(() =>
   props.accounts
@@ -122,6 +125,9 @@ function scheduleHeightUpdate(key, height) {
   if (prev !== undefined && Math.abs(prev - nextHeight) <= HEIGHT_EPSILON) return
   if (!pendingHeightUpdates) pendingHeightUpdates = new Map()
   pendingHeightUpdates.set(key, nextHeight)
+  // Defer flush while actively scrolling — prevents feedback loop:
+  // scroll → mount row → ResizeObserver → triggerRef → recompute offsets → re-render → mount row ...
+  if (scrolling) return
   if (!heightUpdateRaf) {
     heightUpdateRaf = requestAnimationFrame(flushHeightUpdates)
   }
@@ -158,6 +164,21 @@ function setRowRef(el, key) {
   scheduleHeightUpdate(key, el.offsetHeight)
 }
 
+// Expose scroll state so parent can notify us
+function onScrollStateChange(isScrolling) {
+  scrolling = isScrolling
+  if (scrollSettleTimer) clearTimeout(scrollSettleTimer)
+  if (isScrolling) return
+  // Scroll settled — flush any deferred height updates
+  scrollSettleTimer = setTimeout(() => {
+    if (pendingHeightUpdates && !heightUpdateRaf) {
+      heightUpdateRaf = requestAnimationFrame(flushHeightUpdates)
+    }
+  }, 16)
+}
+
+defineExpose({ onScrollStateChange })
+
 onMounted(() => {
   rowResizeObserver = new ResizeObserver((entries) => {
     for (const entry of entries) {
@@ -179,6 +200,7 @@ watch(accountItems, () => {
 onBeforeUnmount(() => {
   rowResizeObserver?.disconnect()
   if (heightUpdateRaf) cancelAnimationFrame(heightUpdateRaf)
+  if (scrollSettleTimer) clearTimeout(scrollSettleTimer)
 })
 </script>
 
@@ -186,9 +208,9 @@ onBeforeUnmount(() => {
 .sect{margin-top:0}
 .sbox{max-height:0;overflow:hidden;transition:max-height .3s ease,opacity .25s ease;opacity:0;padding:0}
 .sbox.open{max-height:9999px;opacity:1;padding:2px 0}
-.virtual-list{position:relative;width:100%}
-.virtual-offset{position:absolute;left:0;right:0;top:0}
-.virtual-row{width:100%;padding-bottom:3px;contain:layout paint}
+.virtual-list{position:relative;width:100%;will-change:contents}
+.virtual-offset{position:absolute;left:0;right:0;top:0;will-change:transform}
+.virtual-row{width:100%;padding-bottom:3px;contain:layout style paint;content-visibility:auto;contain-intrinsic-size:auto 118px}
 .empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
 .empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
 </style>

@@ -30,12 +30,12 @@
     <div
       ref="scrollEl"
       class="app-scroll"
-      @scroll="onScroll"
       @mouseenter="scrollHover=true"
       @mouseleave="scrollHover=false"
       :class="{scrolling:scrollHover}"
     >
       <AccountList
+        ref="accountListRef"
         :accounts="state.accounts"
         :currentIndex="state.currentIndex"
         :threshold="state.threshold"
@@ -63,9 +63,12 @@ const listExpanded = ref(true)
 const addOpen = ref(false)
 const scrollHover = ref(false)
 const scrollEl = ref(null)
+const accountListRef = ref(null)
 const scrollTop = ref(0)
 const viewportHeight = ref(0)
 let resizeObserver = null
+let scrollSettleTimer = null
+const SCROLL_SETTLE_MS = 120
 
 function updateViewport() {
   viewportHeight.value = scrollEl.value?.clientHeight || 0
@@ -73,6 +76,12 @@ function updateViewport() {
 
 let scrollRaf = null
 function onScroll() {
+  // Notify AccountList that scroll is active — suppress height measurements
+  accountListRef.value?.onScrollStateChange(true)
+  if (scrollSettleTimer) clearTimeout(scrollSettleTimer)
+  scrollSettleTimer = setTimeout(() => {
+    accountListRef.value?.onScrollStateChange(false)
+  }, SCROLL_SETTLE_MS)
   if (scrollRaf) return
   scrollRaf = requestAnimationFrame(() => {
     scrollTop.value = scrollEl.value?.scrollTop || 0
@@ -84,18 +93,24 @@ onMounted(() => {
   initMessageListener()
   updateViewport()
   resizeObserver = new ResizeObserver(updateViewport)
-  if (scrollEl.value) resizeObserver.observe(scrollEl.value)
+  if (scrollEl.value) {
+    resizeObserver.observe(scrollEl.value)
+    // Use passive listener for better scroll performance (tells browser we won't preventDefault)
+    scrollEl.value.addEventListener('scroll', onScroll, { passive: true })
+  }
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  if (scrollSettleTimer) clearTimeout(scrollSettleTimer)
+  scrollEl.value?.removeEventListener('scroll', onScroll)
 })
 </script>
 
 <style>
 .app-root{display:flex;flex-direction:column;height:100vh;overflow:hidden}
 .app-fixed{flex-shrink:0;padding:6px 8px 0}
-.app-scroll{flex:1;overflow-y:auto;min-height:0;padding:0 8px 6px}
+.app-scroll{flex:1;overflow-y:auto;min-height:0;padding:0 8px 6px;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch}
 .app-scroll::-webkit-scrollbar-thumb{background:transparent}
 .app-scroll.scrolling::-webkit-scrollbar-thumb{background:var(--bd2)}
 .list-toggle{cursor:pointer;font-size:11px;color:var(--tx2);padding:4px 2px;display:flex;align-items:center;gap:5px;user-select:none;font-weight:500;transition:color .15s}
