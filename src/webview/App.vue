@@ -23,7 +23,7 @@
         <AddAccount v-if="addOpen" />
       </transition>
       <div class="list-toggle" @click="listExpanded = !listExpanded">
-        <span class="list-toggle-arr" :style="{ transform: listExpanded ? 'rotate(90deg)' : '' }">▶</span>
+        <svg class="list-toggle-arr" :class="{open:listExpanded}" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
         <span v-if="filteredAccounts.length !== state.accounts.length">
           {{ filteredAccounts.length }}/{{ state.accounts.length }} 个账号
         </span>
@@ -196,7 +196,8 @@ onBeforeUnmount(() => {
 .app-scroll.is-scrolling *{pointer-events:none !important}
 .list-toggle{cursor:pointer;font-size:11px;color:var(--tx2);padding:4px 2px;display:flex;align-items:center;gap:5px;user-select:none;font-weight:500;transition:color .15s}
 .list-toggle:hover{color:var(--tx)}
-.list-toggle-arr{transition:transform .2s ease;font-size:8px;color:var(--tx3)}
+.list-toggle-arr{transition:transform .2s ease;color:var(--tx3);flex-shrink:0}
+.list-toggle-arr.open{transform:rotate(90deg)}
 .loading { opacity: .35; pointer-events: none; transition: opacity .2s }
 .head-btn{background:none;border:none;color:var(--tx3);font-size:10px;cursor:pointer;padding:1px 4px;border-radius:var(--R3);transition:color .12s}
 .head-btn:hover,.head-btn.active{color:var(--ac)}
