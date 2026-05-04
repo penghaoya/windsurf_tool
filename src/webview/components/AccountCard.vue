@@ -149,7 +149,7 @@
 <script setup>
 import { ref, computed, watch, inject, onBeforeUnmount } from 'vue'
 import { actionResults, postMessage, pwdResults, requestAction } from '../composables/useVscode.js'
-import { dotClass, urgencyColor, formatPlanRemaining, fmtCompactReset, fmtAgo } from '../utils/format.js'
+import { dotClass, urgencyColor, formatPlanRemaining, fmtAgo } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
 
 const props = defineProps({
@@ -277,17 +277,13 @@ const daysTag = computed(() => {
   return ''
 })
 
-// v20.3: compact meta shown on email row's right (login count / age / reset countdowns)
+// v20.4: per-account meta only (loginCount differs per account; reset times are global → PoolOverview)
 const metaText = computed(() => {
-  const parts = []
   const loginCount = props.account.loginCount || 0
-  if (loginCount > 0) parts.push(`切${loginCount}`)
-  const resetD = fmtCompactReset(props.account.usage?.resetTime)
-  const resetW = fmtCompactReset(props.account.usage?.weeklyReset)
-  if (resetD && resetW) parts.push(`↻天${resetD}·周${resetW}`)
-  else if (resetD) parts.push(`↻天${resetD}`)
-  else if (resetW) parts.push(`↻周${resetW}`)
-  return parts.join(' · ')
+  if (loginCount > 0) return `切${loginCount}次`
+  // Fresh account never used → show how long it has been in the pool
+  if (props.account.addedAt) return `添加${fmtAgo(props.account.addedAt)}`
+  return ''
 })
 const metaTitle = computed(() => {
   const bits = []
