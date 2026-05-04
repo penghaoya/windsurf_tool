@@ -40,7 +40,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { meterColor, urgencyColor, urgencyLabel } from '../utils/format.js'
+import { meterColor, urgencyColor, urgencyLabel, formatPlanRemaining } from '../utils/format.js'
 import ModeSwitcher from './ModeSwitcher.vue'
 
 const props = defineProps({
@@ -85,7 +85,10 @@ const expiryHtml = computed(() => {
   const urgency = q.urgency ?? -1
   const color = urgencyColor(urgency)
   const label = urgencyLabel(urgency)
-  if (q.planDays > 0) return `<span style="color:${color}">${q.planDays}天${label}</span>`
+  if (q.planDays > 0) {
+    const text = q.planEnd ? formatPlanRemaining(q.planEnd) : `${q.planDays}天`
+    return `<span style="color:${color}">${text}${label}</span>`
+  }
   return '<span style="color:var(--rd)">已过期</span>'
 })
 

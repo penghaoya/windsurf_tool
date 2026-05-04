@@ -35,6 +35,31 @@ export function urgencyLabel(urgency) {
   return ''
 }
 
+/** 到期剩余时间格式化 (精确到小时)
+ *  >3d  → "5天12小时"
+ *  1-3d → "1天6小时"
+ *  <1d  → "8小时" / "30分钟"
+ *  ≤0   → "已过期"
+ *  null → ''
+ */
+export function formatPlanRemaining(planEnd) {
+  if (!planEnd) return ''
+  const diff = planEnd - Date.now()
+  if (diff <= 0) return '已过期'
+  const totalMin = Math.floor(diff / 60000)
+  const totalHours = Math.floor(totalMin / 60)
+  const days = Math.floor(totalHours / 24)
+  const hours = totalHours % 24
+  if (days >= 1) {
+    return hours > 0 ? `${days}天${hours}小时` : `${days}天`
+  }
+  if (totalHours >= 1) {
+    const mins = totalMin % 60
+    return mins > 0 ? `${totalHours}小时${mins}分` : `${totalHours}小时`
+  }
+  return totalMin > 0 ? `${totalMin}分钟` : '<1分钟'
+}
+
 /** 状态 dot class */
 export function dotClass(rem, threshold, isExpired) {
   if (isExpired) return 'bad'

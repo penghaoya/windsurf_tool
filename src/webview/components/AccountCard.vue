@@ -148,7 +148,7 @@
 <script setup>
 import { ref, computed, watch, inject, onBeforeUnmount } from 'vue'
 import { actionResults, postMessage, pwdResults, requestAction } from '../composables/useVscode.js'
-import { dotClass, urgencyColor } from '../utils/format.js'
+import { dotClass, urgencyColor, formatPlanRemaining } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
 
 const props = defineProps({
@@ -269,6 +269,8 @@ const weeklyPct = computed(() => props.account.usage?.weekly?.remaining ?? null)
 
 const daysTag = computed(() => {
   if (props.account.isExpired) return '已过期'
+  const end = props.account.planEnd
+  if (end) return formatPlanRemaining(end)
   const d = props.account.planDays
   if (d !== null && d !== undefined) return `${d}天`
   return ''
