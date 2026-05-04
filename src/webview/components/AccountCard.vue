@@ -1,18 +1,14 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth, sel: isSelected, 'batch-on': batchMode }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth }"
     :id="`row${index}`"
-    @click.capture="onCardClick"
   >
     <!-- Row 1: Tags left + Actions right -->
     <div class="ac-head">
-      <div v-if="batchMode" class="ac-chk" :class="{on: isSelected}">
-        <svg v-if="isSelected" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
-      </div>
       <span class="dot" :class="statusClass"></span>
       <span class="ac-idx">#{{ index + 1 }}</span>
-      <span v-if="account.usage?.plan" class="a-plan">{{ account.usage.plan }}</span>
+      <span v-if="account.usage?.plan" class="a-plan" :class="planClass">{{ account.usage.plan }}</span>
       <span v-if="daysTag" class="a-days" :style="daysStyle">{{ daysTag }}</span>
       <div class="ac-acts">
         <button
@@ -147,7 +143,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, inject, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { actionResults, postMessage, pwdResults, requestAction } from '../composables/useVscode.js'
 import { dotClass, urgencyColor, formatPlanRemaining, fmtAgo } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
@@ -159,18 +155,6 @@ const props = defineProps({
   threshold: { type: Number, default: 5 },
   switchStatus: { type: Object, default: null },
 })
-
-const batchMode = inject('batchMode', ref(false))
-const batchSelected = inject('batchSelected', {})
-const batchToggle = inject('batchToggle', () => {})
-const isSelected = computed(() => batchMode.value && !!batchSelected[props.account.email])
-
-function onCardClick(e) {
-  if (!batchMode.value) return
-  e.stopPropagation()
-  e.preventDefault()
-  batchToggle(props.account.email)
-}
 
 const now = ref(Date.now())
 let clockTimer = null
@@ -267,6 +251,18 @@ const statusClass = computed(() =>
 
 const dailyPct = computed(() => props.account.usage?.daily?.remaining ?? null)
 const weeklyPct = computed(() => props.account.usage?.weekly?.remaining ?? null)
+
+// Tier-based plan-tag color class (Trial takes priority — free-trial with pro should still show as trial)
+const planClass = computed(() => {
+  const p = String(props.account.usage?.plan || '').toLowerCase()
+  if (!p) return 't-free'
+  if (p.includes('trial')) return 't-trial'
+  if (p.includes('enterprise')) return 't-enterprise'
+  if (p.includes('max')) return 't-max'
+  if (p.includes('team')) return 't-teams'
+  if (p.includes('pro')) return 't-pro'
+  return 't-free'
+})
 
 const daysTag = computed(() => {
   if (props.account.isExpired) return '已过期'
@@ -402,7 +398,13 @@ onBeforeUnmount(() => {
 .ac-name{font-weight:600;color:var(--tx);font-size:12px;word-break:break-all;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
 .ac-meta{font-size:10px;color:var(--tx3);flex-shrink:0;font-feature-settings:"tnum";letter-spacing:.1px;cursor:help}
 .a-plan,.a-days{font-size:10.5px;font-weight:500;line-height:1.4;padding:1px 6px;border-radius:4px;letter-spacing:.1px;flex-shrink:0;white-space:nowrap}
-.a-plan{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+/* Tier-tinted plan tags — same shape, distinct hue per tier */
+.a-plan.t-free{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+.a-plan.t-trial{color:var(--yw);background:color-mix(in srgb,var(--yw) 14%,transparent)}
+.a-plan.t-pro{color:var(--ac);background:var(--ac-bg)}
+.a-plan.t-max{color:#a78bfa;background:color-mix(in srgb,#a78bfa 16%,transparent)}
+.a-plan.t-teams{color:#22c55e;background:color-mix(in srgb,#22c55e 14%,transparent)}
+.a-plan.t-enterprise{color:#f59e0b;background:color-mix(in srgb,#f59e0b 16%,transparent)}
 /* .a-days bg/color via inline style (computed by daysStyle from urgency) */
 .ac-acts{display:flex;gap:2px;flex-shrink:0;margin-left:auto}
 .r-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:background-color .1s ease,color .1s ease}
@@ -446,9 +448,4 @@ onBeforeUnmount(() => {
 .ac-pc{color:var(--ac)}
 .ac-dep{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--tx3);margin-top:3px}
 .ac-auth{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--rd);margin-top:3px}
-.ac.sel{border-color:var(--ac);background:color-mix(in srgb, var(--ac) 8%, var(--sf))}
-.ac.batch-on{cursor:pointer}
-.ac.batch-on .ac-acts{opacity:.3;pointer-events:none}
-.ac-chk{width:14px;height:14px;border-radius:3px;border:1.5px solid var(--bd2);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .12s}
-.ac-chk.on{background:var(--ac);border-color:var(--ac);color:#fff}
 </style>

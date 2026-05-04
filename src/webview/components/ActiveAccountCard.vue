@@ -5,7 +5,7 @@
       <span class="ac-dot" :title="dotTitle"></span>
       <span class="ac-idx">#{{ currentIndex + 1 }}</span>
       <span class="ac-name" :title="activeAccount.email">{{ activeAccount.email }}</span>
-      <span v-if="activeQuota?.plan" class="ac-plan">{{ activeQuota.plan }}</span>
+      <span v-if="activeQuota?.plan" class="ac-plan" :class="planClass">{{ activeQuota.plan }}</span>
       <span v-if="expiryText" class="ac-expiry" :style="expiryStyle">{{ expiryText }}</span>
     </div>
 
@@ -78,6 +78,18 @@ const dotTitle = computed(() => {
   return '正常'
 })
 
+// Tier-based plan-tag color class (Trial takes priority)
+const planClass = computed(() => {
+  const p = String(props.activeQuota?.plan || '').toLowerCase()
+  if (!p) return 't-free'
+  if (p.includes('trial')) return 't-trial'
+  if (p.includes('enterprise')) return 't-enterprise'
+  if (p.includes('max')) return 't-max'
+  if (p.includes('team')) return 't-teams'
+  if (p.includes('pro')) return 't-pro'
+  return 't-free'
+})
+
 // Expiry text + tinted-pill style (与 AccountCard 一致: 柔和胶囊, 颜色表达紧急度, 不加“将到期”文字)
 const expiryText = computed(() => {
   const q = props.activeQuota
@@ -135,7 +147,13 @@ const resetInfo = computed(() => {
   padding:1px 6px;border-radius:4px;letter-spacing:.1px;
   flex-shrink:0;white-space:nowrap;
 }
-.ac-plan{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+/* Tier-tinted plan tags — same shape, distinct hue per tier */
+.ac-plan.t-free{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+.ac-plan.t-trial{color:var(--yw);background:color-mix(in srgb,var(--yw) 14%,transparent)}
+.ac-plan.t-pro{color:var(--ac);background:var(--ac-bg)}
+.ac-plan.t-max{color:#a78bfa;background:color-mix(in srgb,#a78bfa 16%,transparent)}
+.ac-plan.t-teams{color:#22c55e;background:color-mix(in srgb,#22c55e 14%,transparent)}
+.ac-plan.t-enterprise{color:#f59e0b;background:color-mix(in srgb,#f59e0b 16%,transparent)}
 /* .ac-expiry: color/background via :style="expiryStyle" */
 
 .ac-quota{

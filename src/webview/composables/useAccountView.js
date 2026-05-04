@@ -22,25 +22,13 @@ export const SORT_OPTIONS = [
 export const STATUS_OPTIONS = [
   { value: 'all',       label: '全部' },
   { value: 'available', label: '可用' },
-  { value: 'rl',        label: '限流' },
-  { value: 'badauth',   label: '坏号' },
-  { value: 'expired',   label: '过期' },
-]
-
-// Tier value must match PLAN_TIERS in shared/config.js
-export const TIER_OPTIONS = [
-  { value: 'all',        label: '全部' },
-  { value: 'free',       label: 'Free/Trial' },
-  { value: 'pro',        label: 'Pro' },
-  { value: 'max',        label: 'Max' },
-  { value: 'teams',      label: 'Teams' },
-  { value: 'enterprise', label: 'Enterprise' },
+  { value: 'depleted',  label: '额度耗尽' },
+  { value: 'expired',   label: '到期' },
 ]
 
 const DEFAULT_VIEW = {
   sortBy: 'default',
   statusFilter: 'all',
-  tierFilter: 'all',
   searchText: '',
 }
 
@@ -49,7 +37,7 @@ function loadPersisted() {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULT_VIEW }
     const data = JSON.parse(raw)
-    // Don't persist searchText across sessions (ephemeral UX)
+    // searchText stays ephemeral (don't persist across sessions)
     return { ...DEFAULT_VIEW, ...data, searchText: '' }
   } catch { return { ...DEFAULT_VIEW } }
 }
@@ -58,7 +46,7 @@ function loadPersisted() {
 export const viewState = reactive(loadPersisted())
 
 watch(
-  () => ({ sortBy: viewState.sortBy, statusFilter: viewState.statusFilter, tierFilter: viewState.tierFilter }),
+  () => ({ sortBy: viewState.sortBy, statusFilter: viewState.statusFilter }),
   (v) => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(v)) } catch {}
   },
@@ -69,42 +57,22 @@ export function resetView() {
   Object.assign(viewState, DEFAULT_VIEW)
 }
 
-// Heuristic tier derivation: prefer precise teamsTier (via usage.tierName),
-// fall back to plan string matching. Keep in sync with shared/config.js getPlanTier.
-function deriveTier(account) {
-  const u = account?.usage
-  if (!u) return 'free'
-  if (u.tierName === 'free') return 'free'
-  const p = String(u.plan || '').toLowerCase()
-  if (p.includes('enterprise')) return 'enterprise'
-  if (p.includes('max')) return 'max'
-  if (p.includes('team')) return 'teams'
-  if (p.includes('pro')) return 'pro'
-  // tierName === 'pro' but plan doesn't match → default to pro
-  if (u.tierName === 'pro') return 'pro'
-  return 'free'
-}
-
+// 'depleted' bucket merges ALL unusable states (depleted/RL/badauth/quarantine)
+// so every account belongs to exactly one of: available / depleted / expired.
 function matchesStatus(account, status) {
   if (status === 'all') return true
-  const isRL = !!account.rateLimit || !!account.schedulerBlocked
-  const isBad = !!account.invalidAuth
   const isExp = !!account.isExpired
-  if (status === 'rl') return isRL
-  if (status === 'badauth') return isBad
+  const isUnusable = !!account.dailyDepleted ||
+    !!account.rateLimit || !!account.schedulerBlocked ||
+    !!account.invalidAuth
   if (status === 'expired') return isExp
-  if (status === 'available') return !isRL && !isBad && !isExp && !account.dailyDepleted
+  if (status === 'depleted') return !isExp && isUnusable
+  if (status === 'available') return !isExp && !isUnusable
   return true
 }
 
-function matchesTier(account, tier) {
-  if (tier === 'all') return true
-  return deriveTier(account) === tier
-}
-
 function matchesSearch(account, search) {
-  if (!search) return true
-  const q = search.toLowerCase().trim()
+  const q = (search || '').toLowerCase().trim()
   if (!q) return true
   return String(account.email || '').toLowerCase().includes(q)
 }
@@ -142,30 +110,18 @@ function compareBy(sortBy) {
 export function useAccountView(accountsRef) {
   const filteredAccounts = computed(() => {
     const list = accountsRef.value || []
-    const { sortBy, statusFilter, tierFilter, searchText } = viewState
+    const { sortBy, statusFilter, searchText } = viewState
     const filtered = list.filter((a) =>
       matchesStatus(a, statusFilter) &&
-      matchesTier(a, tierFilter) &&
       matchesSearch(a, searchText),
     )
     return filtered.slice().sort(compareBy(sortBy))
   })
 
-  // Tier counts: how many accounts fall into each tier (for adaptive chips)
-  const tierCounts = computed(() => {
-    const counts = { free: 0, pro: 0, max: 0, teams: 0, enterprise: 0 }
-    for (const a of accountsRef.value || []) {
-      const t = deriveTier(a)
-      if (counts[t] !== undefined) counts[t]++
-    }
-    return counts
-  })
-
   const hasFilters = computed(() =>
     viewState.statusFilter !== 'all' ||
-    viewState.tierFilter !== 'all' ||
     !!viewState.searchText,
   )
 
-  return { filteredAccounts, tierCounts, hasFilters }
+  return { filteredAccounts, hasFilters }
 }
