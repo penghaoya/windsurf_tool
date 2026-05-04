@@ -5,7 +5,7 @@
 import vscode from 'vscode';
 import fs from 'fs';
 import path from 'path';
-import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily, getPlanTier, isTierFree, PLAN_TIERS } from '../shared/config.js';
+import { MAX_EVENT_LOG, DEFAULT_PREEMPTIVE_THRESHOLD, BOOST_DURATION, getModelFamily, getPlanTier, isTierFree, isTrialPlan, PLAN_TIERS } from '../shared/config.js';
 
 const LOG_MAX_BYTES = 2 * 1024 * 1024;
 const LOG_ROTATE_KEEP = 3;
@@ -319,9 +319,15 @@ export function _getPlanTier(index) {
   return getPlanTier(account.usage || null);
 }
 
-/** 向后兼容: 账号是否 Free/Trial 类 */
+/** 账号是否 Free/Trial 类 (共享同一限流池, L5 不报告精确数据)
+ *  双通道检测: plan 字符串含 'trial' OR tier 为 FREE
+ *  Trial 账号 teamsTier=2 (PRO), 但服务端 L5 仍返回 -1/-1, 必须按 Trial 处理 */
 export function _isTrialLikeAccount(index) {
-  return isTierFree(_getPlanTier(index));
+  if (!S.am || index < 0) return false;
+  const account = S.am.get(index);
+  if (!account) return false;
+  if (isTrialPlan(account)) return true;
+  return isTierFree(getPlanTier(account.usage || null));
 }
 
 export function _resetAccountRuntimeByEmail(email) {

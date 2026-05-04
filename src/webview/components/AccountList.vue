@@ -22,7 +22,9 @@
           </div>
         </div>
         <div v-else-if="hasFilters && totalCount > 0" class="empty">
-          <div class="empty-icon">🔍</div>
+          <svg class="empty-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
           没有匹配筛选条件的账号<br>
           <button class="empty-reset" @click="resetView">重置筛选</button>
         </div>
@@ -234,7 +236,7 @@ onBeforeUnmount(() => {
 .virtual-offset{position:absolute;left:0;right:0;top:0;will-change:transform}
 .virtual-row{width:100%;padding-bottom:3px;contain:layout style paint}
 .empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
-.empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
+.empty svg.empty-icon{display:block;margin:0 auto 8px;opacity:.5}
 .empty-reset{margin-top:6px;font-size:11px;padding:3px 12px;background:var(--ac-bg);border:none;color:var(--ac);border-radius:var(--R3);cursor:pointer;transition:background-color .12s}
 .empty-reset:hover{background:color-mix(in srgb,var(--ac) 18%,transparent)}
 </style>

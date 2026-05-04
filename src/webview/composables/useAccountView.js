@@ -22,8 +22,8 @@ export const SORT_OPTIONS = [
 export const STATUS_OPTIONS = [
   { value: 'all',       label: '全部' },
   { value: 'available', label: '可用' },
-  { value: 'free',      label: 'Free' },
   { value: 'depleted',  label: '额度耗尽' },
+  { value: 'free',      label: 'Free' },
   { value: 'expired',   label: '到期' },
 ]
 
