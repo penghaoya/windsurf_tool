@@ -20,7 +20,7 @@
           <div class="meter-track">
             <div class="meter-fill" :style="{ width: `${avgDayPct ?? 0}%`, background: dayBarColor }"></div>
           </div>
-          <span class="meter-val" :style="{ color: dayBarColor }">{{ avgDayPct !== null ? avgDayPct.toFixed(1) + '%' : '--' }}</span>
+          <span class="meter-val" :style="{ color: dayBarColor }">{{ avgDayPct !== null ? Math.round(avgDayPct) + '%' : '--' }}</span>
         </div>
       </div>
       <div class="meter">
@@ -32,7 +32,7 @@
           <div class="meter-track">
             <div class="meter-fill" :style="{ width: `${avgWeekPct ?? 0}%`, background: weekBarColor }"></div>
           </div>
-          <span class="meter-val" :style="{ color: weekBarColor }">{{ avgWeekPct !== null ? avgWeekPct.toFixed(1) + '%' : '--' }}</span>
+          <span class="meter-val" :style="{ color: weekBarColor }">{{ avgWeekPct !== null ? Math.round(avgWeekPct) + '%' : '--' }}</span>
         </div>
       </div>
     </div>

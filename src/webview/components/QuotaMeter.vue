@@ -26,7 +26,7 @@ const clampedPct = computed(() =>
 const color = computed(() => meterColor(clampedPct.value))
 const fillWidth = computed(() => `${clampedPct.value ?? 0}%`)
 const displayVal = computed(() =>
-  clampedPct.value !== null ? clampedPct.value.toFixed(1) + '%' : '--'
+  clampedPct.value !== null ? Math.round(clampedPct.value) + '%' : '--'
 )
 const resetStr = computed(() =>
   fmtReset(props.resetTime) || props.resetCountdown || null
@@ -38,6 +38,6 @@ const resetStr = computed(() =>
 .am-l{font-size:11px;color:var(--tx2);font-weight:600;width:13px;flex-shrink:0}
 .am-track{flex:1;height:5px;border-radius:2.5px;background:var(--bg);overflow:hidden}
 .am-fill{height:100%;border-radius:2.5px}
-.am-v{font-size:11px;font-weight:700;min-width:34px;text-align:right}
+.am-v{font-size:11px;font-weight:700;min-width:28px;text-align:right}
 .am-r{font-size:10px;color:var(--tx3);min-width:50px;text-align:right;flex-shrink:0}
 </style>

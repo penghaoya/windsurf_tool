@@ -30,7 +30,7 @@
       "windsurf-assistant": [
         {
           "id": "windsurf-assistant.assistantView",
-          "name": "账号池",
+          "name": "搞薯条",
           "type": "webview",
           "when": "windsurf-tools.active"
         }
