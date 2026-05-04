@@ -20,7 +20,6 @@ import path from 'path';
 import os from 'os';
 import {
   parseProtoString, encodeProtoString, parseUsageInfo, parseProtoMsg,
-  encodeCheckRateLimitRequest, parseCheckRateLimitResponse,
 } from './protobuf.js';
 import net from 'net';
 import { execSync } from 'child_process';
@@ -39,6 +38,7 @@ const RELAYS = [];
 const PLAN_STATUS_URLS = [
   'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
   'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
+  'https://server.self-serve.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
 ];
 const REGISTER_URLS = [
   'https://register.windsurf.com/exa.seat_management_pb.SeatManagementService/RegisterUser',
@@ -50,7 +50,8 @@ const REGISTER_JSON_FALLBACK_URLS = [
   'https://server.codeium.com/exa.language_server_pb.LanguageServerService/RegisterUser',
 ];
 
-const TOKEN_TTL = 50 * 60 * 1000; // 50 minutes
+const TOKEN_TTL = 50 * 60 * 1000; // 50 minutes (Firebase idToken)
+const AUTH1_TOKEN_TTL = 14 * 24 * 60 * 60 * 1000; // 14 days (Auth1 sessionToken, matches windsurf-switch)
 const AUTH_PROVIDER_TTL = 24 * 60 * 60 * 1000;
 const PROXY_HOST = '127.0.0.1';
 const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080, 8080, 8118, 3128, 9090]; // 按优先级探测
@@ -344,6 +345,11 @@ class AuthService {
         }
       }
     } catch {}
+    // v20.0: Auth1 sessionToken is not standard JWT (may lack exp), use 14-day TTL
+    const provider = this._getCachedAuthProvider(email);
+    if (expireTime <= Date.now() + TOKEN_TTL && (provider === 'devin-auth' || provider === 'auth1')) {
+      expireTime = Date.now() + AUTH1_TOKEN_TTL;
+    }
     const entry = { idToken, expireTime };
     // preserve existing refreshToken if caller doesn't provide a new one
     if (refreshToken) {
@@ -778,26 +784,61 @@ class AuthService {
     };
   }
 
+  static WINDSURF_POST_AUTH_URLS = [
+    'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
+    'https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
+  ];
+
   async _windsurfPostAuth(auth1Token) {
-    const body = Buffer.concat([
+    const protoBody = Buffer.concat([
       encodeProtoString(auth1Token, 1),
       encodeProtoString('', 2),
     ]);
-    const resp = await this._httpsBinary(
-      'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
-      'POST',
-      body,
-      undefined,
-      {
-        Accept: 'application/proto',
-        'User-Agent': 'Mozilla/5.0',
-        'X-Devin-Auth1-Token': auth1Token,
-      },
-    );
-    if (!resp?.ok || !resp.buffer?.length) {
-      throw new Error(`WindsurfPostAuth failed: HTTP ${resp?.status || 'no_response'}`);
+    const protoHeaders = {
+      Accept: 'application/proto',
+      'User-Agent': 'Mozilla/5.0',
+      'X-Devin-Auth1-Token': auth1Token,
+    };
+
+    // Try binary proto on all endpoints first (faster, existing behavior)
+    for (const url of AuthService.WINDSURF_POST_AUTH_URLS) {
+      try {
+        const resp = await this._httpsBinary(url, 'POST', protoBody, undefined, protoHeaders);
+        if (resp?.ok && resp.buffer?.length) {
+          return this._decodeProtoStringFields(resp.buffer);
+        }
+      } catch {}
     }
-    return this._decodeProtoStringFields(resp.buffer);
+
+    // Fallback: JSON path (can detect multi-org accounts, referencing windsurf-switch)
+    const jsonHeaders = {
+      'X-Devin-Auth1-Token': auth1Token,
+      Referer: 'https://windsurf.com/editor/signin',
+    };
+    for (const url of AuthService.WINDSURF_POST_AUTH_URLS) {
+      try {
+        const r = await this._httpsJson(url, 'POST', { auth1Token, orgId: '' }, undefined, jsonHeaders);
+        if (r.ok && r.data) {
+          // Multi-org check: server returns orgs array but no sessionToken
+          if (Array.isArray(r.data.orgs) && r.data.orgs.length > 0 && !r.data.sessionToken) {
+            throw new Error('此账号有多个组织,请先在 windsurf.com 网页端选好组织再来使用');
+          }
+          if (r.data.sessionToken) {
+            return {
+              sessionToken: r.data.sessionToken,
+              auth1Token: r.data.auth1Token || auth1Token,
+              accountId: String(r.data.accountId || ''),
+              primaryOrgId: String(r.data.primaryOrgId || ''),
+            };
+          }
+        }
+      } catch (e) {
+        // Re-throw multi-org error directly (user-facing)
+        if (/多个组织/.test(e.message)) throw e;
+      }
+    }
+
+    throw new Error('WindsurfPostAuth failed: all endpoints exhausted');
   }
 
   async _signInWithDevinAuth(email, password) {
@@ -1144,6 +1185,8 @@ class AuthService {
     const headers = {
       'X-Auth-Token': idToken,
       'User-Agent': 'Mozilla/5.0',
+      'x-client-version': 'Chrome/JsCore/11.0.0/FirebaseCore-web',
+      'Connect-Protocol-Version': '1',
     };
     const urls = [
       'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetPlanStatus',
@@ -1547,13 +1590,13 @@ class AuthService {
   }
 
   // ========== Proactive Rate Limit Capacity Check ==========
-  // 逆向自 @exa/chat-client: CheckUserMessageRateLimit 是 Cascade 发送消息前的预检端点
-  // 服务端对每个(apiKey, model)维护滑动窗口速率桶，此端点返回精确容量数据
+  // v20.0: 从 binary proto 迁移到 JSON Connect-RPC (参考 WindsurfAPI)
+  // 旧 proto schema 已变更导致 400, JSON 格式需要完整 metadata 而非仅 api_key
   // WAM主动调用此端点 → 在用户消息失败前获知容量 → 提前切号 = 永不触发rate limit
 
-  // ApiServerService returns 400 (recognized), LanguageServerService returns 404 (missing)
   static CHECK_RATE_LIMIT_URLS = [
     'https://server.codeium.com/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit',
+    'https://server.self-serve.windsurf.com/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit',
     'https://web-backend.windsurf.com/exa.api_server_pb.ApiServerService/CheckUserMessageRateLimit',
   ];
 
@@ -1576,9 +1619,21 @@ class AuthService {
     }
   }
 
+  /** Build Connect-RPC metadata matching Windsurf client fingerprint */
+  static _buildConnectMetadata(apiKey) {
+    return {
+      apiKey,
+      ideName: 'windsurf',
+      ideVersion: '1.9600.41',
+      extensionName: 'windsurf',
+      extensionVersion: '1.9600.41',
+      locale: 'en',
+    };
+  }
+
   /**
-   * Proactive Rate Limit Capacity Check
-   * Calls CheckUserMessageRateLimit gRPC endpoint to get real-time capacity data.
+   * Proactive Rate Limit Capacity Check (v20.0: JSON Connect-RPC)
+   * Calls CheckUserMessageRateLimit via JSON instead of binary proto.
    * Returns: { hasCapacity, message, messagesRemaining, maxMessages, resetsInSeconds } or null
    *
    * @param {string} apiKey - Session apiKey (from windsurfAuthStatus or RegisterUser)
@@ -1588,30 +1643,131 @@ class AuthService {
     if (!apiKey || !modelUid) return null;
     if (!PROXY_CHECKED) await this._probeProxy();
 
-    const reqData = encodeCheckRateLimitRequest(apiKey, modelUid);
+    const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
+    const headers = {
+      'Connect-Protocol-Version': '1',
+    };
 
-    // Try direct endpoints (via proxy if needed)
     for (const url of AuthService.CHECK_RATE_LIMIT_URLS) {
       try {
-        const resp = await this._httpsBinary(url, 'POST', reqData);
-        if (resp.ok && resp.buffer && resp.buffer.length > 0) {
-          const result = parseCheckRateLimitResponse(resp.buffer);
+        const r = await this._httpsJson(url, 'POST', body, undefined, headers);
+        if (r.ok && r.data) {
+          const d = r.data;
+          const result = {
+            hasCapacity: d.hasCapacity !== false,
+            message: d.message || '',
+            messagesRemaining: d.messagesRemaining ?? -1,
+            maxMessages: d.maxMessages ?? -1,
+            resetsInSeconds: Number.isFinite(d.retryAfterMs) ? Math.ceil(d.retryAfterMs / 1000) : (d.resetsInSeconds ?? 0),
+          };
           _info('L5探测', `hasCapacity=${result.hasCapacity} remaining=${result.messagesRemaining}/${result.maxMessages} resets=${result.resetsInSeconds}s msg="${result.message}" (via ${new URL(url).hostname})`);
           return result;
         }
-        // Non-200 — log only when not in quiet (backoff) mode
-        if (!quiet && resp.buffer && resp.buffer.length > 0) {
-          try {
-            const errText = resp.buffer.toString('utf8');
-            _warn('L5探测', `non-ok response (${resp.status}): ${errText.substring(0, 200)}`);
-          } catch {}
-        }
+        if (!quiet) _warn('L5探测', `${new URL(url).hostname} → ${r.status}`);
       } catch (e) {
         if (!quiet) _warn('L5探测', `${new URL(url).hostname} error: ${e.message}`);
       }
     }
 
     return null;
+  }
+
+  /**
+   * GetUserStatus via JSON Connect-RPC (v20.0, 参考 WindsurfAPI)
+   * Returns authoritative tier, email, allowedModels, trialEndMs, credit usage.
+   * Requires apiKey (not idToken).
+   */
+  static GET_USER_STATUS_URLS = [
+    'https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus',
+    'https://server.self-serve.windsurf.com/exa.seat_management_pb.SeatManagementService/GetUserStatus',
+  ];
+
+  async getUserStatus(apiKey, { quiet = false } = {}) {
+    if (!apiKey) return null;
+    if (!PROXY_CHECKED) await this._probeProxy();
+
+    const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
+    const headers = { 'Connect-Protocol-Version': '1' };
+
+    for (const url of AuthService.GET_USER_STATUS_URLS) {
+      try {
+        const r = await this._httpsJson(url, 'POST', body, undefined, headers);
+        if (r.ok && r.data) {
+          const parsed = AuthService._parseUserStatusJson(r.data);
+          if (parsed) {
+            if (!quiet) _info('UserStatus', `tier=${parsed.tierName}(${parsed.teamsTier}) email=${parsed.email || 'n/a'} plan=${parsed.planName} models=${parsed.allowedModels.length} (via ${new URL(url).hostname})`);
+            return parsed;
+          }
+        }
+        if (!quiet) _warn('UserStatus', `${new URL(url).hostname} → ${r.status}`);
+      } catch (e) {
+        if (!quiet) _warn('UserStatus', `${new URL(url).hostname} error: ${e.message}`);
+      }
+    }
+    return null;
+  }
+
+  /** Parse GetUserStatus JSON response into flat object */
+  static _parseUserStatusJson(data) {
+    if (!data) return null;
+    const us = data.userStatus || {};
+    const pi = data.planInfo || us.planInfo || {};
+
+    const teamsTier = us.teamsTier ?? us.teams_tier ?? pi.teamsTier ?? pi.teams_tier ?? 0;
+    const tierNum = typeof teamsTier === 'number' ? teamsTier : parseInt(teamsTier) || 0;
+    // TeamsTier enum: 0=Unspecified,6=WaitlistPro,19=DevinFree → free; rest → pro
+    const tierName = (tierNum === 0 || tierNum === 6 || tierNum === 19) ? 'free' : 'pro';
+
+    const TIER_LABELS = {
+      0: 'Unspecified', 1: 'Teams', 2: 'Pro', 3: 'Enterprise (SaaS)',
+      4: 'Hybrid', 5: 'Enterprise (Self-Hosted)', 6: 'Waitlist Pro',
+      7: 'Teams Ultimate', 8: 'Pro Ultimate', 9: 'Trial',
+      10: 'Enterprise (Self-Serve)', 11: 'Enterprise (SaaS Pooled)',
+      12: 'Devin Enterprise', 14: 'Devin Teams', 15: 'Devin Teams V2',
+      16: 'Devin Pro', 17: 'Devin Max', 18: 'Max',
+      19: 'Devin Free', 20: 'Devin Trial',
+    };
+
+    // Parse allowedModels from planInfo.cascadeAllowedModelsConfig
+    const allowedModels = [];
+    const modelConfigs = pi.cascadeAllowedModelsConfig || pi.cascade_allowed_models_config || [];
+    for (const entry of modelConfigs) {
+      const moa = entry.modelOrAlias || entry.model_or_alias || {};
+      allowedModels.push({
+        modelEnum: moa.model ?? 0,
+        alias: moa.alias ?? 0,
+        multiplier: entry.creditMultiplier ?? entry.credit_multiplier ?? 1.0,
+      });
+    }
+
+    // Parse trialEndMs from windsurf_pro_trial_end_time
+    let trialEndMs = 0;
+    const trialEnd = us.windsurfProTrialEndTime || us.windsurf_pro_trial_end_time;
+    if (trialEnd) {
+      const secs = typeof trialEnd === 'object' ? (trialEnd.seconds || 0) : (typeof trialEnd === 'number' ? trialEnd : 0);
+      trialEndMs = secs * 1000;
+    }
+
+    return {
+      pro: us.pro === true,
+      teamsTier: tierNum,
+      tierName,
+      tierLabel: TIER_LABELS[tierNum] || `Tier ${tierNum}`,
+      email: us.email || '',
+      displayName: us.name || us.displayName || '',
+      teamId: us.teamId || us.team_id || '',
+      userUsedPromptCredits: Number(us.userUsedPromptCredits ?? us.user_used_prompt_credits ?? 0),
+      userUsedFlowCredits: Number(us.userUsedFlowCredits ?? us.user_used_flow_credits ?? 0),
+      trialEndMs,
+      maxPremiumChatMessages: Number(us.maxNumPremiumChatMessages ?? us.max_num_premium_chat_messages ?? 0),
+      planName: pi.planName || pi.plan_name || '',
+      monthlyPromptCredits: Number(pi.monthlyPromptCredits ?? pi.monthly_prompt_credits ?? 0),
+      monthlyFlowCredits: Number(pi.monthlyFlowCredits ?? pi.monthly_flow_credits ?? 0),
+      hasPaidFeatures: pi.hasPaidFeatures === true || pi.has_paid_features === true,
+      isTeams: pi.isTeams === true || pi.is_teams === true,
+      isEnterprise: pi.isEnterprise === true || pi.is_enterprise === true,
+      allowedModels,
+    };
   }
 
   dispose() {

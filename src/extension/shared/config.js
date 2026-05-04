@@ -103,7 +103,7 @@ export const SWE_FREE_FALLBACK = 'swe-1.5';  // 免费模型,不消耗 quota
 export const CAPACITY_CHECK_THINKING = 3000;
 
 // ═══ L5容量探测 ═══
-export const L5_ENABLED = false;  // gRPC CheckUserMessageRateLimit (Proto schema 已变更, 服务端返回400, 暂禁用)
+export const L5_ENABLED = true;  // JSON Connect-RPC CheckUserMessageRateLimit (v20.0: 从 binary proto 迁移到 JSON, 参考 WindsurfAPI)
 export const CAPACITY_CHECK_INTERVAL = 45000;
 export const CAPACITY_CHECK_FAST = 15000;
 export const CAPACITY_PREEMPT_REMAINING = 2;
