@@ -111,18 +111,8 @@
 
     <!-- Quota Meters -->
     <div class="ac-meters">
-      <QuotaMeter
-        label="天"
-        :pct="dailyPct"
-        :resetTime="account.usage?.daily?.resetTime || account.usage?.resetTime"
-        :resetCountdown="null"
-      />
-      <QuotaMeter
-        label="周"
-        :pct="weeklyPct"
-        :resetTime="account.usage?.weekly?.resetTime || account.usage?.weeklyReset"
-        :resetCountdown="null"
-      />
+      <QuotaMeter label="天" :pct="dailyPct" />
+      <QuotaMeter label="周" :pct="weeklyPct" />
     </div>
 
     <!-- Daily Depleted Badge -->
@@ -404,7 +394,7 @@ onBeforeUnmount(() => {
 .del-confirm{border:none;background:transparent;color:var(--rd);cursor:pointer;border-radius:var(--R3);font-size:10px;font-weight:500;padding:2px 5px;height:22px;white-space:nowrap;text-decoration:underline;text-underline-offset:2px;animation:confirm-in .15s ease}
 .del-confirm:hover{background:var(--rd-bg)}
 @keyframes confirm-in{from{opacity:0;transform:translateX(4px)}to{opacity:1;transform:translateX(0)}}
-.ac-meters{display:flex;flex-direction:column;gap:2px}
+.ac-meters{display:flex;gap:6px}
 .switch-badge{display:flex;align-items:center;gap:6px;margin:3px 0 4px;font-size:11px;line-height:1.6}
 .switch-badge.pending{color:var(--ac)}
 .switch-badge.ok{color:var(--gn)}

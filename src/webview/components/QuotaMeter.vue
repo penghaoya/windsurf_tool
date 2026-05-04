@@ -34,7 +34,7 @@ const resetStr = computed(() =>
 </script>
 
 <style scoped>
-.am{display:flex;align-items:center;gap:4px}
+.am{display:flex;align-items:center;gap:4px;flex:1;min-width:0}
 .am-l{font-size:11px;color:var(--tx2);font-weight:600;width:13px;flex-shrink:0}
 .am-track{flex:1;height:5px;border-radius:2.5px;background:var(--bg);overflow:hidden}
 .am-fill{height:100%;border-radius:2.5px}
