@@ -35,6 +35,8 @@
 import { computed, onBeforeUnmount, onMounted, shallowRef, triggerRef, watch } from 'vue'
 import AccountCard from './AccountCard.vue'
 
+const emit = defineEmits(['scrollAdjust'])
+
 const ITEM_HEIGHT = 118
 const OVERSCAN = 12
 const HEIGHT_EPSILON = 2
@@ -138,6 +140,11 @@ function flushHeightUpdates() {
   if (!pendingHeightUpdates) return
   const batch = pendingHeightUpdates
   pendingHeightUpdates = null
+
+  // Anchor on first visible row so we can compensate scroll after height changes
+  const anchorIdx = virtualWindow.value.start
+  const preAnchorOffset = heightOffsets.value[anchorIdx] || 0
+
   const map = rowHeights.value
   let changed = false
   for (const [k, h] of batch) {
@@ -147,7 +154,14 @@ function flushHeightUpdates() {
       changed = true
     }
   }
-  if (changed) triggerRef(rowHeights)
+  if (changed) {
+    triggerRef(rowHeights)
+    // Computed refs re-evaluate synchronously on next access — check if
+    // heights above the anchor shifted and compensate scroll to prevent jump
+    const postAnchorOffset = heightOffsets.value[anchorIdx] || 0
+    const delta = postAnchorOffset - preAnchorOffset
+    if (delta !== 0) emit('scrollAdjust', delta)
+  }
 }
 
 function setRowRef(el, key) {
@@ -208,9 +222,9 @@ onBeforeUnmount(() => {
 .sect{margin-top:0}
 .sbox{max-height:0;overflow:hidden;transition:max-height .3s ease,opacity .25s ease;opacity:0;padding:0}
 .sbox.open{max-height:9999px;opacity:1;padding:2px 0}
-.virtual-list{position:relative;width:100%;will-change:contents}
+.virtual-list{position:relative;width:100%}
 .virtual-offset{position:absolute;left:0;right:0;top:0;will-change:transform}
-.virtual-row{width:100%;padding-bottom:3px;contain:layout style paint;content-visibility:auto;contain-intrinsic-size:auto 118px}
+.virtual-row{width:100%;padding-bottom:3px;contain:layout style paint}
 .empty{text-align:center;padding:32px 16px;color:var(--tx3);font-size:13px;line-height:2}
 .empty-icon{font-size:32px;margin-bottom:8px;opacity:.4}
 </style>

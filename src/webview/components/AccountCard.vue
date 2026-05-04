@@ -360,7 +360,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;transition:border-color .15s ease,background-color .15s ease;contain:layout paint}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:6px 8px;transition:border-color .12s ease,background-color .12s ease;contain:layout style paint}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
 .ac.dep{opacity:.35}
@@ -377,7 +377,7 @@ onBeforeUnmount(() => {
 .a-plan{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
 .a-days{font-size:11px;font-weight:500;flex-shrink:0}
 .ac-acts{display:flex;gap:2px;flex-shrink:0;margin-left:auto}
-.r-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:all .12s ease}
+.r-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:background-color .1s ease,color .1s ease}
 .r-btn:hover{background:var(--bg2);color:var(--tx)}
 .r-btn:active{transform:scale(.9)}
 .r-btn.login{color:var(--ac)}

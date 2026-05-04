@@ -32,7 +32,7 @@
       class="app-scroll"
       @mouseenter="scrollHover=true"
       @mouseleave="scrollHover=false"
-      :class="{scrolling:scrollHover}"
+      :class="{scrolling:scrollHover, 'is-scrolling':isScrolling}"
     >
       <AccountList
         ref="accountListRef"
@@ -43,6 +43,7 @@
         :switchStatus="state.switchStatus"
         :scrollTop="scrollTop"
         :viewportHeight="viewportHeight"
+        @scrollAdjust="onScrollAdjust"
       />
     </div>
   </div>
@@ -62,6 +63,7 @@ import ToastMessage from './components/ToastMessage.vue'
 const listExpanded = ref(true)
 const addOpen = ref(false)
 const scrollHover = ref(false)
+const isScrolling = ref(false)
 const scrollEl = ref(null)
 const accountListRef = ref(null)
 const scrollTop = ref(0)
@@ -74,12 +76,21 @@ function updateViewport() {
   viewportHeight.value = scrollEl.value?.clientHeight || 0
 }
 
+function onScrollAdjust(delta) {
+  if (!scrollEl.value || !delta) return
+  scrollEl.value.scrollTop += delta
+  scrollTop.value = scrollEl.value.scrollTop
+}
+
 let scrollRaf = null
 function onScroll() {
+  // Suppress hover effects during scroll — prevents repaint storms
+  if (!isScrolling.value) isScrolling.value = true
   // Notify AccountList that scroll is active — suppress height measurements
   accountListRef.value?.onScrollStateChange(true)
   if (scrollSettleTimer) clearTimeout(scrollSettleTimer)
   scrollSettleTimer = setTimeout(() => {
+    isScrolling.value = false
     accountListRef.value?.onScrollStateChange(false)
   }, SCROLL_SETTLE_MS)
   if (scrollRaf) return
@@ -113,6 +124,9 @@ onBeforeUnmount(() => {
 .app-scroll{flex:1;overflow-y:auto;min-height:0;padding:0 8px 6px;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch}
 .app-scroll::-webkit-scrollbar-thumb{background:transparent}
 .app-scroll.scrolling::-webkit-scrollbar-thumb{background:var(--bd2)}
+/* Kill hover effects during scroll — prevents repaint storms from hover transitions.
+   pointer-events:none on children (not container) so scroll events still work. */
+.app-scroll.is-scrolling *{pointer-events:none !important}
 .list-toggle{cursor:pointer;font-size:11px;color:var(--tx2);padding:4px 2px;display:flex;align-items:center;gap:5px;user-select:none;font-weight:500;transition:color .15s}
 .list-toggle:hover{color:var(--tx)}
 .list-toggle-arr{transition:transform .2s ease;font-size:8px;color:var(--tx3)}
