@@ -331,11 +331,11 @@ class AuthService {
   _getCachedToken(email) {
     const entry = this._tokenCache.get(email);
     if (entry && entry.expireTime > Date.now()) return entry.idToken;
-    this._tokenCache.delete(email);
+    // don't delete entry — refreshToken may still be usable for silent renew
     return null;
   }
 
-  _setCachedToken(email, idToken) {
+  _setCachedToken(email, idToken, refreshToken = null) {
     // 优先从JWT exp字段计算精确过期时间(提前2min buffer), 失败时降级到固定TTL
     let expireTime = Date.now() + TOKEN_TTL;
     try {
@@ -347,8 +347,79 @@ class AuthService {
         }
       }
     } catch {}
-    this._tokenCache.set(email, { idToken, expireTime });
+    const entry = { idToken, expireTime };
+    // preserve existing refreshToken if caller doesn't provide a new one
+    if (refreshToken) {
+      entry.refreshToken = refreshToken;
+    } else {
+      const existing = this._tokenCache.get(email);
+      if (existing?.refreshToken) entry.refreshToken = existing.refreshToken;
+    }
+    this._tokenCache.set(email, entry);
     this._saveCache();
+  }
+
+  /**
+   * Silently renew idToken via Firebase refresh_token endpoint.
+   * Avoids re-sending password and bypasses App Check.
+   */
+  async _refreshIdToken(email) {
+    const entry = this._tokenCache.get(email);
+    if (!entry?.refreshToken) return null;
+    const _emailPrefix = email.split('@')[0];
+    for (const key of FIREBASE_KEYS) {
+      const url = `https://securetoken.googleapis.com/v1/token?key=${key}`;
+      const formBody = `grant_type=refresh_token&refresh_token=${encodeURIComponent(entry.refreshToken)}`;
+      try {
+        const r = await this._httpsForm(url, formBody);
+        if (r.ok && r.data.id_token) {
+          this._setCachedToken(email, r.data.id_token, r.data.refresh_token || entry.refreshToken);
+          const provider = this._getCachedAuthProvider(email);
+          _info('登录', `${_emailPrefix} → refreshToken OK`);
+          return { ok: true, idToken: r.data.id_token, email, channel: 'refresh_token', provider };
+        }
+        const msg = r.data?.error?.message || `HTTP ${r.status}`;
+        if (this._isFatalFirebaseAuthError(msg)) {
+          _warn('登录', `${_emailPrefix} → refreshToken fatal: ${msg}`);
+          entry.refreshToken = null;
+          this._saveCache();
+          return null;
+        }
+      } catch (e) {
+        _warn('登录', `${_emailPrefix} → refreshToken failed: ${e.message}`);
+      }
+    }
+    return null;
+  }
+
+  _httpsForm(url, formBody) {
+    return new Promise((resolve, reject) => {
+      const u = new URL(url);
+      const req = https.request({
+        hostname: u.hostname, port: 443,
+        path: u.pathname + u.search,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(formBody),
+          Referer: 'https://windsurf.com/',
+          Origin: 'https://windsurf.com',
+        },
+        timeout: 10_000,
+      }, (res) => {
+        let buf = '';
+        res.on('data', c => buf += c);
+        res.on('end', () => {
+          try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf) }); }
+          catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {} }); }
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(new Error('refreshToken request timeout')); });
+      req.write(formBody);
+      req.end();
+    });
   }
 
   clearTokenCache(email) {
@@ -795,6 +866,9 @@ class AuthService {
         const provider = this._getCachedAuthProvider(email);
         return { ok: true, idToken: cached, email, cached: true, provider };
       }
+      // idToken expired but refreshToken available — try silent renew before full re-login
+      const refreshed = await this._refreshIdToken(email);
+      if (refreshed) return refreshed;
     }
 
     if (cacheOnly) {
@@ -836,7 +910,7 @@ class AuthService {
         try {
           const r = await this._httpsJson(url, 'POST', payload, useProxy, fbHeaders);
           if (r.ok && r.data.idToken) {
-            this._setCachedToken(email, r.data.idToken);
+            this._setCachedToken(email, r.data.idToken, r.data.refreshToken || null);
             this._setCachedAuthProvider(email, 'firebase');
             const channel = useProxy === true ? 'firebase-proxy' : 'firebase-local';
             _info('登录', `${_emailPrefix} → ${channel} (${Date.now() - _t0}ms)`);
@@ -858,7 +932,7 @@ class AuthService {
       try {
         const r = await this._tryRelaysJson('/firebase/login', payload);
         if (r && r.ok && r.data.idToken) {
-          this._setCachedToken(email, r.data.idToken);
+          this._setCachedToken(email, r.data.idToken, r.data.refreshToken || null);
           this._setCachedAuthProvider(email, 'firebase');
           _info('登录', `${_emailPrefix} → relay (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay' };
@@ -882,7 +956,7 @@ class AuthService {
       try {
         const r = await this._tryRelaysJson('/firebase/login', payload);
         if (r && r.ok && r.data.idToken) {
-          this._setCachedToken(email, r.data.idToken);
+          this._setCachedToken(email, r.data.idToken, r.data.refreshToken || null);
           this._setCachedAuthProvider(email, 'firebase');
           _info('登录', `${_emailPrefix} → relay-fallback (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay-fallback' };
