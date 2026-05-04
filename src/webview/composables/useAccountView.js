@@ -58,12 +58,27 @@ export function resetView() {
   Object.assign(viewState, DEFAULT_VIEW)
 }
 
+// Free detection: tierName is the authoritative signal (set by teamsTier API),
+// but it's only populated after a separate enrichment call. Fall back to the
+// plan-string heuristic (same source the UI uses for the "Free"/"Trial" tag)
+// so newly-added accounts still classify correctly before enrichment lands.
+function isFreeAccount(account) {
+  const tn = account.usage?.tierName
+  if (tn === 'free') return true
+  if (tn === 'pro') return false  // Pro/Trial → definitively NOT free
+  // tierName not yet enriched — use plan string
+  const p = String(account.usage?.plan || '').toLowerCase().trim()
+  if (!p) return false
+  if (p.includes('trial')) return false  // Trial is on the pro tier
+  return p === 'free' || p.startsWith('free ') || p.startsWith('free(')
+}
+
 // Mutually-exclusive buckets by priority: expired > free > depleted > available.
 // Every non-'all' account belongs to exactly one bucket.
 function categorize(account, threshold) {
   if (account.isExpired) return 'expired'
-  // Trial/Pro that was downgraded to Free also lands here (tierName becomes 'free')
-  if (account.usage?.tierName === 'free') return 'free'
+  // Trial/Pro that was downgraded to Free also lands here
+  if (isFreeAccount(account)) return 'free'
   // Hard-unusable states
   if (account.dailyDepleted || account.rateLimit ||
       account.schedulerBlocked || account.invalidAuth) return 'depleted'
