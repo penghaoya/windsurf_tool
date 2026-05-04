@@ -1653,15 +1653,13 @@ class AuthService {
         const r = await this._httpsJson(url, 'POST', body, undefined, headers);
         if (r.ok && r.data) {
           const d = r.data;
-          const result = {
+          return {
             hasCapacity: d.hasCapacity !== false,
             message: d.message || '',
             messagesRemaining: d.messagesRemaining ?? -1,
             maxMessages: d.maxMessages ?? -1,
             resetsInSeconds: Number.isFinite(d.retryAfterMs) ? Math.ceil(d.retryAfterMs / 1000) : (d.resetsInSeconds ?? 0),
           };
-          _info('L5探测', `hasCapacity=${result.hasCapacity} remaining=${result.messagesRemaining}/${result.maxMessages} resets=${result.resetsInSeconds}s msg="${result.message}" (via ${new URL(url).hostname})`);
-          return result;
         }
         if (!quiet) _warn('L5探测', `${new URL(url).hostname} → ${r.status}`);
       } catch (e) {

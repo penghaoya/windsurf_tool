@@ -231,21 +231,17 @@ export async function _probeCapacity() {
   const capacityState = _getCapacityState();
   if (!capacityState) return null;
 
-  // 指数退避: 5次失败→60s, 10次→120s, 20次→300s, 30次+→600s
+  // 指数退避 — 仅对网络错误/null响应 (failCount), NOT for NO_DATA
   const fc = capacityState.failCount || 0;
-  const quiet = fc >= 5;
-  if (fc >= 5) {
-    const backoff = fc >= 30 ? 600000 : fc >= 20 ? 300000 : fc >= 10 ? 120000 : 60000;
+  const quiet = fc >= 3;
+  if (fc >= 3) {
+    const backoff = fc >= 20 ? 600000 : fc >= 10 ? 300000 : fc >= 5 ? 120000 : 60000;
     if (Date.now() - capacityState.lastCheck < backoff) return capacityState.lastResult;
-    // 每 10 次长间隔探测时输出一条汇总
-    if (fc % 10 === 0) _logWarn('L5探测', `连续${fc}次失败, 退避间隔${backoff / 1000}s (Proto schema可能已变更)`);
+    if (fc % 10 === 0) _logWarn('L5探测', `连续${fc}次网络失败, 退避${backoff / 1000}s`);
   }
 
   const apiKey = _getCachedApiKey();
-  if (!apiKey) {
-    _logWarn('L5探测', 'apiKey未获取，跳过容量探测');
-    return null;
-  }
+  if (!apiKey) return null;
 
   const modelUid = _readCurrentModelUid();
   if (!modelUid) return null;
@@ -255,45 +251,59 @@ export async function _probeCapacity() {
 
   try {
     const result = await S.auth.checkRateLimitCapacity(apiKey, modelUid, { quiet });
-    if (result) {
-      const hasUsefulData = result.messagesRemaining >= 0 || result.maxMessages >= 0 || !result.hasCapacity;
-      if (hasUsefulData) {
-        capacityState.failCount = 0;
-        capacityState.consecutiveNoData = 0;
-        capacityState.lastSuccessfulProbe = Date.now();
-      } else {
-        capacityState.failCount++;
-        capacityState.consecutiveNoData = (capacityState.consecutiveNoData || 0) + 1;
-      }
+    if (!result) {
+      capacityState.failCount++;
+      return null;
+    }
 
-      capacityState.lastResult = result;
+    // Reset network failure counter on any valid response
+    capacityState.failCount = 0;
 
+    const hasUsefulData = result.messagesRemaining >= 0 || result.maxMessages >= 0 || !result.hasCapacity;
+    if (hasUsefulData) {
+      capacityState.consecutiveNoData = 0;
+      capacityState.lastSuccessfulProbe = Date.now();
+    } else {
+      // NO_DATA is normal for Trial accounts — only increment noData counter, NOT failCount
+      capacityState.consecutiveNoData = (capacityState.consecutiveNoData || 0) + 1;
+    }
+
+    capacityState.lastResult = result;
+    const modelShort = modelUid.replace('claude-', '').replace(/-\d{4}.*$/, '');
+
+    // === Logging: only meaningful state changes, not every probe ===
+    if (!result.hasCapacity) {
+      // CRITICAL: always log capacity exhaustion
+      _logWarn('L5探测', `🚫 容量耗尽! remaining=${result.messagesRemaining}/${result.maxMessages} resets=${result.resetsInSeconds}s msg="${result.message}" (${modelShort}) → 即将切号`);
+    } else if (hasUsefulData) {
+      // Log maxMessages changes
       if (result.maxMessages > 0 && result.maxMessages !== capacityState.realMaxMessages) {
         const old = capacityState.realMaxMessages;
         capacityState.realMaxMessages = result.maxMessages;
-        _logInfo('L5探测', `服务端消息上限更新: ${old} → ${capacityState.realMaxMessages}条 (模型=${modelUid})`);
+        _logInfo('L5探测', `消息上限: ${old} → ${result.maxMessages}条 (${modelShort})`);
       }
-
-      const modelShort = modelUid.replace('claude-', '').replace(/-\d{4}.*$/, '');
-      if (!result.hasCapacity) {
-        _logWarn('L5探测', `🚫 #${S.capacityProbeCount} 容量耗尽! 剩余${result.messagesRemaining}/${result.maxMessages}条 ${result.resetsInSeconds}s后恢复 (${modelShort}) → 即将切号`);
-      } else if (hasUsefulData) {
-        if (S.capacityProbeCount % 5 === 0 || result.messagesRemaining <= 2) {
-          _logInfo('L5探测', `✅ #${S.capacityProbeCount} 剩余${result.messagesRemaining}/${result.maxMessages}条 (${modelShort})`);
-        }
-      } else {
-        if (S.capacityProbeCount <= 1 || S.capacityProbeCount % 10 === 0) {
-          _logInfo('L5探测', `✅ #${S.capacityProbeCount} 可用(无精确数据—Trial账号服务端不报告剩余条数) (${modelShort})`);
-        }
+      // Log when remaining is low (≤5) or periodically every 30 probes
+      if (result.messagesRemaining <= 5) {
+        _logInfo('L5探测', `⚠ 剩余${result.messagesRemaining}/${result.maxMessages}条 (${modelShort})`);
+      } else if (S.capacityProbeCount % 30 === 0) {
+        _logInfo('L5探测', `剩余${result.messagesRemaining}/${result.maxMessages}条 (${modelShort})`);
       }
-
-      return result;
+    } else {
+      // NO_DATA: only log first occurrence and when slowdown kicks in
+      const nd = capacityState.consecutiveNoData;
+      if (nd === 1) {
+        _logInfo('L5探测', `可用 (Trial不报告精确剩余) (${modelShort})`);
+      } else if (nd === L5_NODATA_SLOWDOWN_AFTER) {
+        _logInfo('L5探测', `连续${nd}次无精确数据, 开始降频探测 (${modelShort})`);
+      }
     }
-    capacityState.failCount++;
-    return null;
+
+    return result;
   } catch (e) {
     capacityState.failCount++;
-    _logWarn('L5探测', `探测失败 (第${capacityState.failCount}次): ${e.message}`);
+    if (capacityState.failCount <= 3 || capacityState.failCount % 10 === 0) {
+      _logWarn('L5探测', `网络错误 (第${capacityState.failCount}次): ${e.message}`);
+    }
     return null;
   }
 }
