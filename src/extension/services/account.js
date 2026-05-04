@@ -31,6 +31,8 @@ class AccountManager {
     this._filePath = null;
     this._persistentPaths = []; // Additional persistent paths outside extension dir
     this._accounts = [];
+    this._revision = 0; // optimistic lock — monotonically increasing version counter
+    this._updatedAt = ''; // ISO timestamp of last write
     this._watcher = null;
     this._writing = false;
     this._listeners = [];
@@ -96,13 +98,17 @@ class AccountManager {
     } catch { return null; }
   }
 
-  /** Load accounts from a single file path, returns array or [] */
+  /** Load accounts from a single file path, returns { accounts, revision } */
   _loadFrom(filePath) {
     try {
       const data = safeReadJsonSync(filePath, []);
-      if (Array.isArray(data)) return data;
+      // v19.1: support envelope format { revision, updatedAt, accounts }
+      if (data && !Array.isArray(data) && Array.isArray(data.accounts)) {
+        return { accounts: data.accounts, revision: data.revision || 0, updatedAt: data.updatedAt || '' };
+      }
+      if (Array.isArray(data)) return { accounts: data, revision: 0, updatedAt: '' };
     } catch {}
-    return [];
+    return { accounts: [], revision: 0, updatedAt: '' };
   }
 
   /** Auto-discover any extension storage dirs that contain accounts (handles publisher name changes) */
@@ -121,7 +127,7 @@ class AccountManager {
         const candidate2 = path.join(gsRoot, entry.name, 'windsurf-login-accounts.json');
         const candidate = fs.existsSync(candidate1) ? candidate1 : candidate2;
         if (fs.existsSync(candidate) && candidate !== this._filePath && !this._persistentPaths.includes(candidate)) {
-          const data = this._loadFrom(candidate);
+          const data = this._loadFrom(candidate).accounts;
           if (data.length > 0) {
             console.log(`WAM: [发现] 在${entry.name}中找到${data.length}个账号`);
             results.push(...data);
@@ -139,9 +145,15 @@ class AccountManager {
   /** Load from ALL known sources and merge into unified account list */
   _loadAndMergeAll() {
     // Source 1: Primary (extension storage)
-    const primary = this._loadFrom(this._filePath);
+    const primaryResult = this._loadFrom(this._filePath);
+    const primary = primaryResult.accounts;
+    // Track primary revision for optimistic locking
+    if (primaryResult.revision > this._revision) {
+      this._revision = primaryResult.revision;
+      this._updatedAt = primaryResult.updatedAt;
+    }
     // Source 2+3: Persistent paths (globalStorage root + user home)
-    const persistentSources = this._persistentPaths.map(p => this._loadFrom(p));
+    const persistentSources = this._persistentPaths.map(p => this._loadFrom(p).accounts);
     // Source 4: Auto-discovered extension dirs (handles publisher name changes)
     const discovered = this._isolated ? [] : this._discoverExtensionAccounts();
 
@@ -229,12 +241,63 @@ class AccountManager {
     }
   }
 
+  /** Revalidate from disk before write — detect if another window changed data.
+   *  Returns true if disk had newer revision (state was reloaded). */
+  _revalidateBeforeWrite() {
+    try {
+      const diskResult = this._loadFrom(this._filePath);
+      if (diskResult.revision > this._revision) {
+        console.log(`WAM: [乐观锁] 磁盘revision=${diskResult.revision} > 内存revision=${this._revision}, 重新加载`);
+        this._revision = diskResult.revision;
+        this._updatedAt = diskResult.updatedAt;
+        // Merge disk state into memory (preserve runtime-only state like rateLimits)
+        this._mergeFromDisk(diskResult.accounts);
+        this._notify();
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  /** Merge disk accounts into in-memory state (preserves runtime fields) */
+  _mergeFromDisk(diskAccounts) {
+    const diskMap = new Map(diskAccounts.map(a => [a.email, a]));
+    const memoryMap = new Map(this._accounts.map(a => [a.email, a]));
+    // Update existing + add new from disk
+    for (const [email, diskA] of diskMap) {
+      const memA = memoryMap.get(email);
+      if (memA) {
+        // Disk wins for persistent fields; memory wins for volatile runtime state
+        for (const k of PERSISTENT_FIELDS) {
+          if (diskA[k] !== undefined) memA[k] = diskA[k];
+        }
+        // Disk wins for usage if fresher
+        if (diskA.usage?.lastChecked > (memA.usage?.lastChecked || 0)) {
+          memA.usage = diskA.usage;
+        }
+        if (diskA.credits !== undefined && diskA.usage?.lastChecked > (memA.usage?.lastChecked || 0)) {
+          memA.credits = diskA.credits;
+        }
+      } else {
+        this._accounts.push(diskA);
+      }
+    }
+    // Remove accounts deleted from disk by other windows
+    this._accounts = this._accounts.filter(a => diskMap.has(a.email) || !a.email);
+  }
+
   _saveNow() {
     const wasDirty = this._persistentDirty;
-    // Write FULL state to primary (extension storage) — high frequency, includes volatile usage/rateLimit
+    // Optimistic lock: revalidate before write to detect concurrent modifications
+    this._revalidateBeforeWrite();
+    // Increment revision
+    this._revision += 1;
+    this._updatedAt = new Date().toISOString();
+    // Write FULL state to primary (extension storage) — envelope format with revision
+    const envelope = { revision: this._revision, updatedAt: this._updatedAt, accounts: this._accounts };
     try {
       this._writing = true;
-      safeWriteJsonSync(this._filePath, this._accounts);
+      safeWriteJsonSync(this._filePath, envelope);
       setTimeout(() => { this._writing = false; }, 200);
     } catch (e) {
       this._writing = false;
@@ -274,13 +337,20 @@ class AccountManager {
     if (this._watcher || !this._filePath) return;
     try {
       if (!fs.existsSync(this._filePath)) {
-        safeWriteJsonSync(this._filePath, []);
+        safeWriteJsonSync(this._filePath, { revision: 0, updatedAt: '', accounts: [] });
       }
+      let watchDebounce = null;
       this._watcher = fs.watch(this._filePath, { persistent: false }, (eventType) => {
         if (eventType === 'change' && !this._writing) {
-          setTimeout(() => {
-            this._loadAndMergeAll();
-            this._notify();
+          // Debounce rapid fs events (OS often fires multiple for one write)
+          if (watchDebounce) clearTimeout(watchDebounce);
+          watchDebounce = setTimeout(() => {
+            watchDebounce = null;
+            // Use revision-aware revalidation instead of full reload
+            const reloaded = this._revalidateBeforeWrite();
+            if (reloaded) {
+              console.log(`WAM: [监听] 其他窗口修改了账号数据, 已合并 (revision=${this._revision})`);
+            }
           }, 150);
         }
       });
