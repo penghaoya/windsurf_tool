@@ -60,9 +60,9 @@ defineEmits(['toggleAdd'])
 .qa-btn:active{transform:scale(.97)}
 .qa-btn svg{flex-shrink:0;opacity:.85}
 .qa-btn.icon{padding:0;width:26px}
-.qa-btn.primary{background:transparent;border-color:var(--ac);color:var(--ac)}
-.qa-btn.primary:hover{background:var(--ac-bg);border-color:var(--ac);color:var(--ac)}
+.qa-btn.primary{background:var(--ac-bg);border-color:transparent;color:var(--ac)}
+.qa-btn.primary:hover{background:color-mix(in srgb,var(--ac) 18%,transparent);border-color:transparent;color:var(--ac)}
 .qa-btn.primary svg{opacity:1}
-.qa-btn.primary.active{background:var(--ac-bg);border-color:var(--ac);color:var(--ac)}
+.qa-btn.primary.active{background:color-mix(in srgb,var(--ac) 22%,transparent);border-color:transparent;color:var(--ac)}
 .qa-btn.primary.active svg{transform:rotate(45deg);transition:transform .2s ease}
 </style>
