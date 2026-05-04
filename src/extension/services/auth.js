@@ -664,12 +664,13 @@ class AuthService {
       msg.includes('econn') ||
       msg.includes('etimedout') ||
       msg.includes('timeout') ||
-      msg.includes('disconnected before secure')
+      msg.includes('disconnected before secure') ||
+      /\bhttp\s*5\d{2}\b/i.test(msg)
     );
   }
 
   _isFatalFirebaseAuthError(message) {
-    return /INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED/i.test(String(message || ''));
+    return /INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED|App\s*Check\s*token/i.test(String(message || ''));
   }
 
   async _withNetworkRetry(label, fn, maxRetries = 3) {

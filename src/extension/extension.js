@@ -73,7 +73,7 @@ const authInjector = createAuthInjector({
 
 const { injectAuth, _checkAccount, _loginToAccount } = authInjector;
 const BATCH_IMPORT_VERIFY_LANE = 'batch_import_verify';
-const BATCH_IMPORT_VERIFY_GAP_MS = 5000;
+const BATCH_IMPORT_VERIFY_GAP_MS = 3000;
 const BATCH_IMPORT_ENQUEUE_DELAY_MS = 1500;
 const AUTH_REFRESH_CIRCUIT_MS = 30 * 60 * 1000;
 
@@ -487,17 +487,13 @@ function _enqueueBatchImportValidation(addedAccounts) {
     '批量验证',
     `新增${indexes.length}个账号进入慢速后台队列: 单并发, 间隔${BATCH_IMPORT_VERIFY_GAP_MS / 1000}s`,
   );
-  S.batchImportValidationRunning = true;
-  S.fullScanDeferredUntil = Math.max(
-    S.fullScanDeferredUntil || 0,
-    Date.now() + indexes.length * BATCH_IMPORT_VERIFY_GAP_MS + 120000,
-  );
+  S.batchImportValidationRunning = (S.batchImportValidationRunning || 0) + 1;
   enqueueRefreshAll(indexes, {
     priority: 'low',
     reason: 'batch_import_verify',
     wait: false,
     lane: BATCH_IMPORT_VERIFY_LANE,
-    laneConcurrency: 1,
+    laneConcurrency: indexes.length > 20 ? 1 : 2,
     minStartGapMs: BATCH_IMPORT_VERIFY_GAP_MS,
     enqueueDelayMs: BATCH_IMPORT_ENQUEUE_DELAY_MS,
     itemOptions: (index) => _refreshJobOptions(index, {
@@ -520,8 +516,10 @@ function _enqueueBatchImportValidation(addedAccounts) {
   }).catch((e) => {
     _logWarn('批量验证', `慢速后台验证异常: ${e.message}`);
   }).finally(() => {
-    S.batchImportValidationRunning = false;
-    S.fullScanDeferredUntil = Math.max(S.fullScanDeferredUntil || 0, Date.now() + 120000);
+    S.batchImportValidationRunning = Math.max(0, (S.batchImportValidationRunning || 1) - 1);
+    if (!S.batchImportValidationRunning) {
+      S.fullScanDeferredUntil = Math.max(S.fullScanDeferredUntil || 0, Date.now() + 120000);
+    }
   });
 
   return { queued: indexes.length };

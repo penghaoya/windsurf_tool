@@ -66,7 +66,7 @@ export const S = {
   allQuotaSnapshot: new Map(),
   lastFullScanTs: 0,
   fullScanDeferredUntil: 0,
-  batchImportValidationRunning: false,
+  batchImportValidationRunning: 0,
   startupPreheatDone: false,
   lastReactiveSwitchTs: 0,
   lastUfefSwitchTs: 0,

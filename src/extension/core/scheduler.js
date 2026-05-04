@@ -183,6 +183,7 @@ function _setLastDecision(partial) {
 export function _filterRuntimeCandidates(candidates, { modelUid = null } = {}) {
   const trialPoolCooldown = _getTrialPoolCooldown(modelUid);
   return candidates.filter((candidate) => {
+    if (S.am.isInvalidAuth?.(candidate.index)) return false;
     if (_isAccountQuarantined(candidate.email || candidate.index)) return false;
     if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
     return true;

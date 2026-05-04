@@ -566,8 +566,10 @@ class AccountManager {
     const pairs = AccountManager.parseAccounts(text);
     let added = 0, skipped = 0;
     const addedAccounts = [];
+    const existingEmails = new Set(this._accounts.map(a => a.email));
     for (const {email, password} of pairs) {
-      if (this.findByEmail(email)) { skipped++; continue; }
+      if (existingEmails.has(email)) { skipped++; continue; }
+      existingEmails.add(email);
       this._accounts.push({ email, password, credits: undefined, loginCount: 0, addedAt: Date.now() });
       addedAccounts.push({email, password});
       added++;
