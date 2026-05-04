@@ -80,9 +80,16 @@ import AccountFilters from './components/AccountFilters.vue'
 import ToastMessage from './components/ToastMessage.vue'
 import { useAccountView } from './composables/useAccountView.js'
 
+// 有效阈值 — 与调度器实际行为对齐:
+// - autoRotate=true → preemptiveThreshold (自动切换预防值)
+// - autoRotate=false + manualThreshold>0 → manualThreshold (手动安全网)
+// - autoRotate=false + manualThreshold=0 → 0 (纯手动, 不按软阈值过滤, 仅看硬不可用)
+const effectiveThreshold = computed(() =>
+  state.autoRotate ? (state.threshold ?? 15) : (state.manualThreshold || 0),
+)
 const { filteredAccounts, hasFilters } = useAccountView(
   toRef(state, 'accounts'),
-  toRef(state, 'threshold'),
+  effectiveThreshold,
 )
 
 const listExpanded = ref(true)
