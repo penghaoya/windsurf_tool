@@ -58,6 +58,9 @@ const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080, 8080, 8118, 3128, 9090]; // 
 let ACTIVE_PROXY_PORT = 7890; // 当前生效端口（自动探测更新）
 let PROXY_CHECKED = false;
 let _probeDetail = { source: 'none', verified: false, lastProbe: 0 }; // 探测详情
+// Cached last-known successful port (injected from globalState on activation).
+// Probed first as fast path — saves ~5s on repeat sessions when proxy is stable.
+let _lastKnownPort = 0;
 
 // 双模式: 'local' = 本地代理, 'relay' = 网站中转(无需VPN)
 let ACTIVE_MODE = 'local';
@@ -163,13 +166,14 @@ class AuthService {
     });
   }
 
-  /** 验证代理真正可达外网(不只是端口开放) — 通过代理发HTTP请求到Google */
+  /** 验证代理真正可达外网 — 用 Windsurf 实际 endpoint 作为验证目标
+   *  优于 google.com: 中文区只走国内的代理仍能生效 (server.codeium.com 是 CN 可达) */
   _verifyProxyReachability(host, port, timeoutMs = 5000) {
     return new Promise(resolve => {
       try {
         const req = http.request({
           hostname: host, port, method: 'CONNECT',
-          path: 'www.google.com:443', timeout: timeoutMs
+          path: 'server.codeium.com:443', timeout: timeoutMs
         });
         req.on('connect', (res, socket) => {
           socket.destroy();
@@ -182,16 +186,36 @@ class AuthService {
     });
   }
 
-  /** 智能探测本地可用代理：系统代理 → 环境变量 → 端口扫描 → 连通性验证 */
+  /** 加载上次成功端口 (extension activation 时调用) */
+  setLastKnownPort(port) {
+    const n = parseInt(port);
+    if (Number.isFinite(n) && n > 0 && n < 65536) _lastKnownPort = n;
+  }
+
+  /** 智能探测本地可用代理：缓存端口 → 系统代理 → 端口扫描(并行) → 连通性验证 */
   async _probeProxy() {
     if (PROXY_CHECKED) return;
     const startTs = Date.now();
-    // Phase 1: System/env proxy candidates
+
+    // Phase 0: Cached port fast-path — most users keep proxy stable across sessions
+    if (_lastKnownPort > 0) {
+      const ok = await this._tcpProbe(PROXY_HOST, _lastKnownPort, 600);
+      if (ok) {
+        ACTIVE_PROXY_PORT = _lastKnownPort;
+        ACTIVE_MODE = 'local';
+        PROXY_CHECKED = true;
+        _probeDetail = { source: `cached:${_lastKnownPort}`, verified: false, lastProbe: Date.now(), host: PROXY_HOST, elapsed: Date.now() - startTs };
+        _info('代理', `proxy detected on cached port ${_lastKnownPort} (${_probeDetail.elapsed}ms)`);
+        return;
+      }
+    }
+
+    // Phase 1: System/env proxy candidates (sequential — usually 0–2 entries)
+    let bestUnverified = null;
     const sysCandidates = this._detectSystemProxy();
     for (const c of sysCandidates) {
       const portOk = await this._tcpProbe(c.host, c.port, 600);
       if (portOk) {
-        // Quick verify: can it actually reach the internet?
         const reachable = await this._verifyProxyReachability(c.host, c.port, 3000);
         if (reachable) {
           ACTIVE_PROXY_PORT = c.port;
@@ -201,27 +225,37 @@ class AuthService {
           _info('代理', `proxy verified via ${c.source} → ${c.host}:${c.port} (${_probeDetail.elapsed}ms)`);
           return;
         }
-        // Port open but not reachable — still usable as fallback
-        ACTIVE_PROXY_PORT = c.port;
-        _probeDetail = { source: c.source, verified: false, lastProbe: Date.now(), host: c.host };
-        _info('代理', `proxy port open via ${c.source} → ${c.host}:${c.port} (unverified)`);
+        // Port open but failed verify — hold as last-resort fallback (don't pollute global state yet)
+        if (!bestUnverified) bestUnverified = { host: c.host, port: c.port, source: c.source };
       }
     }
 
-    // Phase 2: Scan common VPN ports on localhost
-    for (const port of PROXY_PORTS) {
-      const ok = await this._tcpProbe(PROXY_HOST, port, 600);
-      if (ok) {
-        ACTIVE_PROXY_PORT = port;
-        ACTIVE_MODE = 'local';
-        PROXY_CHECKED = true;
-        _probeDetail = { source: `scan:${port}`, verified: false, lastProbe: Date.now(), host: PROXY_HOST, elapsed: Date.now() - startTs };
-        _info('代理', `proxy detected on port ${port} (${_probeDetail.elapsed}ms)`);
-        return;
-      }
+    // Phase 2: Parallel scan of common VPN ports on localhost
+    // Each TCP probe is independent; running them concurrently caps worst-case at 1× timeout (600ms) instead of 9×.
+    const probes = await Promise.all(
+      PROXY_PORTS.map(p => this._tcpProbe(PROXY_HOST, p, 600).then(ok => ok ? p : -1))
+    );
+    // Pick first port in PROXY_PORTS priority order that's open
+    const detectedPort = probes.find(p => p > 0);
+    if (detectedPort > 0) {
+      ACTIVE_PROXY_PORT = detectedPort;
+      ACTIVE_MODE = 'local';
+      PROXY_CHECKED = true;
+      _probeDetail = { source: `scan:${detectedPort}`, verified: false, lastProbe: Date.now(), host: PROXY_HOST, elapsed: Date.now() - startTs };
+      _info('代理', `proxy detected on port ${detectedPort} (${_probeDetail.elapsed}ms)`);
+      return;
     }
 
-    // Phase 3: No local proxy → relay mode
+    // Phase 3: Fall back to Phase 1 unverified candidate, or relay mode
+    if (bestUnverified) {
+      ACTIVE_PROXY_PORT = bestUnverified.port;
+      ACTIVE_MODE = 'local';
+      PROXY_CHECKED = true;
+      _probeDetail = { source: bestUnverified.source, verified: false, lastProbe: Date.now(), host: bestUnverified.host, elapsed: Date.now() - startTs };
+      _warn('代理', `proxy port open via ${bestUnverified.source} → ${bestUnverified.host}:${bestUnverified.port} (unverified, ${_probeDetail.elapsed}ms)`);
+      return;
+    }
+
     ACTIVE_MODE = 'relay';
     PROXY_CHECKED = true;
     _probeDetail = { source: 'none', verified: false, lastProbe: Date.now(), elapsed: Date.now() - startTs };

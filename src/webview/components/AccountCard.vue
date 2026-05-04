@@ -1,11 +1,15 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth, sel: isSelected, 'batch-on': batchMode }"
     :id="`row${index}`"
+    @click.capture="onCardClick"
   >
     <!-- Row 1: Tags left + Actions right -->
     <div class="ac-head">
+      <div v-if="batchMode" class="ac-chk" :class="{on: isSelected}">
+        <svg v-if="isSelected" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
+      </div>
       <span class="dot" :class="statusClass"></span>
       <span class="ac-idx">#{{ index + 1 }}</span>
       <span v-if="account.usage?.plan" class="a-plan" :class="planClass">{{ account.usage.plan }}</span>
@@ -143,7 +147,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, inject, onBeforeUnmount } from 'vue'
 import { actionResults, postMessage, pwdResults, requestAction } from '../composables/useVscode.js'
 import { dotClass, urgencyColor, formatPlanRemaining, fmtAgo } from '../utils/format.js'
 import QuotaMeter from './QuotaMeter.vue'
@@ -155,6 +159,19 @@ const props = defineProps({
   threshold: { type: Number, default: 5 },
   switchStatus: { type: Object, default: null },
 })
+
+// Batch selection (injected from App.vue)
+const batchMode = inject('batchMode', ref(false))
+const batchSelected = inject('batchSelected', {})
+const batchToggle = inject('batchToggle', () => {})
+const isSelected = computed(() => batchMode.value && !!batchSelected[props.account.email])
+
+function onCardClick(e) {
+  if (!batchMode.value) return
+  e.stopPropagation()
+  e.preventDefault()
+  batchToggle(props.account.email)
+}
 
 const now = ref(Date.now())
 let clockTimer = null
@@ -448,4 +465,9 @@ onBeforeUnmount(() => {
 .ac-pc{color:var(--ac)}
 .ac-dep{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--tx3);margin-top:3px}
 .ac-auth{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--rd);margin-top:3px}
+.ac.sel{border-color:var(--ac);background:color-mix(in srgb, var(--ac) 8%, var(--sf))}
+.ac.batch-on{cursor:pointer}
+.ac.batch-on .ac-acts{opacity:.3;pointer-events:none}
+.ac-chk{width:14px;height:14px;border-radius:3px;border:1.5px solid var(--bd2);display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .12s}
+.ac-chk.on{background:var(--ac);border-color:var(--ac);color:#fff}
 </style>

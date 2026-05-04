@@ -87,6 +87,9 @@ export function selectOptimal(
   );
   const preferredMode = options.preferredMode || null;
   const modelUid = options.modelUid || null;
+  // Gate: Free tier accounts are excluded from auto-selection unless caller
+  // explicitly opts in (e.g. panic switch when all paid accounts are down).
+  const allowFree = options.allowFree === true;
 
   const candidates = [];
   for (let i = 0; i < accountManager.count(); i++) {
@@ -100,10 +103,18 @@ export function selectOptimal(
     if (accountManager.isRateLimited(i)) continue;
     if (accountManager.isExpired(i)) continue;
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;
+    // Tier gate — keep Free/Trial out of regular auto-rotation pool
+    const tier = getPlanTier(account.usage || null);
+    if (!allowFree && isTierFree(tier)) continue;
     const rem = accountManager.effectiveRemaining(i);
     if (rem !== null && rem !== undefined && rem > threshold) {
       const dailyRem = accountManager.getDailyRemaining(i);
+      // Absolute floor (5%) — even if weekly is flush, a nearly-drained day is unfit
       if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
+      // Explicit daily-vs-preemptive-threshold check. Redundant when both
+      // daily & weekly are populated (min() already enforces it via rem > threshold),
+      // but protects against edge cases where weekly is null/unknown.
+      if (dailyRem !== null && dailyRem <= threshold) continue;
       const planDays = accountManager.getPlanDaysRemaining(i);
       const urgency = accountManager.getExpiryUrgency(i);
       const resetTs = accountManager.effectiveResetTime(i);
@@ -113,7 +124,6 @@ export function selectOptimal(
       const weeklyResetMs = account.usage?.weeklyReset || 0;
       const weeklyResetProximity =
         weeklyResetMs > Date.now() ? weeklyResetMs - Date.now() : Infinity;
-      const tier = getPlanTier(account.usage || null);
       candidates.push({
         index: i,
         email: account.email,
@@ -184,6 +194,9 @@ export function selectOptimal(
     if (accountManager.isRateLimited(i)) continue;
     if (accountManager.isExpired(i)) continue;
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;
+    // Tier gate also applies to unknown-quota fallback path
+    const tier = getPlanTier(account.usage || null);
+    if (!allowFree && isTierFree(tier)) continue;
     const rem = accountManager.effectiveRemaining(i);
     if (rem === null || rem === undefined) {
       unknownCandidates.push({

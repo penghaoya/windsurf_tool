@@ -14,7 +14,7 @@ import {
   IDLE_STRETCH_AFTER, IDLE_POLL_MAX, IDLE_POLL_STEP,
   FULL_SCAN_CONCURRENCY, FULL_SCAN_STALE_MULTIPLIER,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK,
-  L5_ENABLED,
+  L5_ENABLED, isTierFree,
 } from '../shared/config.js';
 import {
   S, schedulerState, deps, _getAccountRuntime, _getCapacityState,
@@ -205,12 +205,15 @@ export function _getOrderedCandidates({
   targetPolicy = 'same_strategy',
   modelUid = null,
   excludeClaimed = true,
+  panic = false,
 } = {}) {
   const preferredMode = targetPolicy === 'same_strategy' || targetPolicy === 'same_model'
     ? _getActiveSelectionMode()
     : null;
   const excludedEmails = excludeClaimed ? _getOtherWindowAccountEmails() : [];
-  const options = { preferredMode, modelUid };
+  // Free accounts stay out of the regular rotation pool (scheduler invariant).
+  // Only panic switches (all paid accounts down) allow Free as a last-resort fallback.
+  const options = { preferredMode, modelUid, allowFree: panic === true };
   const primary = modelUid
     ? S.am.findBestForModel(modelUid, excludeIndex, threshold, excludedEmails, options)
     : S.am.selectOptimal(excludeIndex, threshold, excludedEmails, options);
@@ -306,16 +309,16 @@ export async function _performSwitch(context, {
   if (refreshPool) await deps.refreshAll(null, { priority: 'normal', reason: 'switch_refresh_pool' });
   let ordered = Array.isArray(candidates) && candidates.length > 0
     ? _filterRuntimeCandidates(candidates, { modelUid })
-    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true });
+    : _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid, excludeClaimed: true, panic });
   if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
-    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false });
+    ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid, excludeClaimed: false, panic });
   }
   if (ordered.length === 0 && !modelUid && _getTrialPoolCooldown(_readCurrentModelUid())) {
     const downgraded = await _downgradeFromTrialPressure('Trial候选池冷却中');
     if (downgraded) {
-      ordered = _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid: SONNET_FALLBACK, excludeClaimed: true });
+      ordered = _getOrderedCandidates({ excludeIndex, threshold, targetPolicy, modelUid: SONNET_FALLBACK, excludeClaimed: true, panic });
       if (ordered.length === 0 && allowThresholdFallback && threshold > 0) {
-        ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid: SONNET_FALLBACK, excludeClaimed: false });
+        ordered = _getOrderedCandidates({ excludeIndex, threshold: 0, targetPolicy, modelUid: SONNET_FALLBACK, excludeClaimed: false, panic });
       }
     }
   }
@@ -900,10 +903,13 @@ async function _poolTick(context) {
       if (!email || otherClaimed.has(email)) continue;
       if (S.am.isInvalidAuth?.(i)) continue;
       if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
+      // Tier gate — consistent with selectOptimal: Free stays out of auto-rotation
+      if (isTierFree(_getPlanTier(i))) continue;
       const rem = S.am.effectiveRemaining(i);
       if (rem === null || rem === undefined || rem <= threshold) continue;
       const dailyRem = S.am.getDailyRemaining(i);
       if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
+      if (dailyRem !== null && dailyRem <= threshold) continue;
       const snap = S.allQuotaSnapshot.get(i);
       if ((snap && snap.remaining === rem) || !snap) {
         stableCandidates.push({ index: i, remaining: rem });

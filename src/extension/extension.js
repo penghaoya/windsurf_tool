@@ -253,9 +253,11 @@ function _activate(context) {
   _updatePoolBar();
   S.statusBar.show();
 
-  // 恢复代理
+  // 恢复代理 — 模式 + 上次成功端口 (作为下次探测的快路径)
   const savedMode = context.globalState.get("wam-proxy-mode", null);
   if (savedMode) S.auth.setMode(savedMode);
+  const savedPort = context.globalState.get("wam-proxy-port", 0);
+  if (savedPort > 0) S.auth.setLastKnownPort(savedPort);
 
   // 后台代理探测
   setTimeout(() => {
@@ -263,7 +265,11 @@ function _activate(context) {
     S.auth
       .reprobeProxy()
       .then((r) => {
-        if (r.port > 0) context.globalState.update("wam-proxy-mode", r.mode);
+        if (r.port > 0) {
+          context.globalState.update("wam-proxy-mode", r.mode);
+          // Only persist port when actually using local proxy (relay mode port is stale/meaningless)
+          if (r.mode === "local") context.globalState.update("wam-proxy-port", r.port);
+        }
         _updatePoolBar();
         _logInfo("代理", `探测完成 → 模式:${r.mode} 端口:${r.port}`);
       })
@@ -311,6 +317,9 @@ function _activate(context) {
     vscode.commands.registerCommand("wam.reprobeProxy", async () => {
       const r = await S.auth.reprobeProxy();
       context.globalState.update("wam-proxy-mode", r.mode);
+      if (r.mode === "local" && r.port > 0) {
+        context.globalState.update("wam-proxy-port", r.port);
+      }
       _updatePoolBar();
     }),
     vscode.commands.registerCommand("wam.resetFingerprint", () =>
