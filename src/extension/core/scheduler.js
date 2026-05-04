@@ -14,7 +14,7 @@ import {
   IDLE_STRETCH_AFTER, IDLE_POLL_MAX, IDLE_POLL_STEP,
   FULL_SCAN_CONCURRENCY, FULL_SCAN_STALE_MULTIPLIER,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK,
-  L5_ENABLED, isTierFree,
+  L5_ENABLED, isTierFree, isTrialPlan,
 } from '../shared/config.js';
 import {
   S, schedulerState, deps, _getAccountRuntime, _getCapacityState,
@@ -903,8 +903,8 @@ async function _poolTick(context) {
       if (!email || otherClaimed.has(email)) continue;
       if (S.am.isInvalidAuth?.(i)) continue;
       if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
-      // Tier gate — consistent with selectOptimal: Free stays out of auto-rotation
-      if (isTierFree(_getPlanTier(i))) continue;
+      // Tier gate — consistent with selectOptimal: real Free out, Trial bypasses
+      if (isTierFree(_getPlanTier(i)) && !isTrialPlan(accounts[i])) continue;
       const rem = S.am.effectiveRemaining(i);
       if (rem === null || rem === undefined || rem <= threshold) continue;
       const dailyRem = S.am.getDailyRemaining(i);

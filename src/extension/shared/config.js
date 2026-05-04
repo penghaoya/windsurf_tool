@@ -60,11 +60,8 @@ export function getPlanTier(planOrUsage) {
   if (p.includes('enterprise')) return PLAN_TIERS.ENTERPRISE;
   if (p.includes('max')) return PLAN_TIERS.MAX;
   if (p.includes('team')) return PLAN_TIERS.TEAMS;
-  // Trial = 限时 Pro (teamsTier=2), 视为 PRO 进入轮转池
-  // 必须在 'pro' 检查前 (Trial Pro 同时含两个关键词)
-  if (p.includes('trial')) return PLAN_TIERS.PRO;
   if (p.includes('pro')) return PLAN_TIERS.PRO;
-  return PLAN_TIERS.FREE; // free / unknown → 最保守
+  return PLAN_TIERS.FREE; // free / trial / unknown → 最保守
 }
 
 /** 层级是否为 Free/Trial 类 (无 extra usage, 最受限) */
@@ -72,6 +69,13 @@ export function isTierFree(tier) { return !tier || tier === PLAN_TIERS.FREE; }
 
 /** 层级是否为付费类 (Pro/Max/Teams/Enterprise) */
 export function isTierPaid(tier) { return tier && tier !== PLAN_TIERS.FREE; }
+
+/** 检测账号是否处于 Trial (限时 Pro) — 需用 plan 字符串 (tierName 不区分 Trial/Free)
+ *  与 isTierFree 区别: Trial 也是 FREE 桶, 但 Trial 应参与轮转, 而真 Free 不应 */
+export function isTrialPlan(account) {
+  const p = String(account?.usage?.plan || '').toLowerCase();
+  return p.includes('trial');
+}
 
 // ═══ 号池轮询 ═══
 export const POLL_NORMAL = 45000;

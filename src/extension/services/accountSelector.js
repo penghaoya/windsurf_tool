@@ -1,4 +1,4 @@
-import { MIN_DAILY_QUOTA_FOR_SWITCH, getPlanTier, PLAN_TIERS, isTierFree } from '../shared/config.js';
+import { MIN_DAILY_QUOTA_FOR_SWITCH, getPlanTier, PLAN_TIERS, isTierFree, isTrialPlan } from '../shared/config.js';
 
 // v16.0: Opus请求时,非Trial账号优先 (Pro有500 credits/月 vs Trial 100/2周)
 function _isOpusModelUid(uid) {
@@ -103,9 +103,11 @@ export function selectOptimal(
     if (accountManager.isRateLimited(i)) continue;
     if (accountManager.isExpired(i)) continue;
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;
-    // Tier gate — keep Free/Trial out of regular auto-rotation pool
+    // Tier gate — keep real Free out of auto-rotation, but Trial (=限时 Pro) participates.
+    // Trial 账号仍在 FREE 桶 (保留 _isTrialLikeAccount/Opus后置/阈值差异化语义)。
     const tier = getPlanTier(account.usage || null);
-    if (!allowFree && isTierFree(tier)) continue;
+    const isTrial = isTrialPlan(account);
+    if (!allowFree && isTierFree(tier) && !isTrial) continue;
     const rem = accountManager.effectiveRemaining(i);
     if (rem !== null && rem !== undefined && rem > threshold) {
       const dailyRem = accountManager.getDailyRemaining(i);
@@ -137,7 +139,7 @@ export function selectOptimal(
         lastUsed: accountManager.getLastUsedTs(i),
         mode: accountManager.getSelectionMode(i),
         tier,
-        isTrial: isTierFree(tier),
+        isTrial,
       });
     }
   }
@@ -194,9 +196,9 @@ export function selectOptimal(
     if (accountManager.isRateLimited(i)) continue;
     if (accountManager.isExpired(i)) continue;
     if (modelUid && accountManager.isModelRateLimited(i, modelUid)) continue;
-    // Tier gate also applies to unknown-quota fallback path
+    // Tier gate also applies to unknown-quota fallback path — Trial bypasses Free gate
     const tier = getPlanTier(account.usage || null);
-    if (!allowFree && isTierFree(tier)) continue;
+    if (!allowFree && isTierFree(tier) && !isTrialPlan(account)) continue;
     const rem = accountManager.effectiveRemaining(i);
     if (rem === null || rem === undefined) {
       unknownCandidates.push({
