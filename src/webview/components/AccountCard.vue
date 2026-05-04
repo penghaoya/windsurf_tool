@@ -12,7 +12,7 @@
       </div>
       <span class="dot" :class="statusClass"></span>
       <span v-if="account.usage?.plan" class="a-plan">{{ account.usage.plan }}</span>
-      <span v-if="daysTag" class="a-days" :style="{ color: daysColor }">{{ daysTag }}</span>
+      <span v-if="daysTag" class="a-days" :style="daysStyle">{{ daysTag }}</span>
       <div class="ac-acts">
         <button
           class="r-btn login"
@@ -276,10 +276,12 @@ const daysTag = computed(() => {
   return ''
 })
 
-const daysColor = computed(() => {
-  if (props.account.isExpired) return 'var(--rd)'
-  const urgency = props.account.urgency ?? -1
-  return urgencyColor(urgency)
+const daysStyle = computed(() => {
+  const color = props.account.isExpired ? 'var(--rd)' : urgencyColor(props.account.urgency ?? -1)
+  return {
+    color,
+    background: `color-mix(in srgb, ${color} 14%, transparent)`,
+  }
 })
 
 function onCopy() {
@@ -382,8 +384,9 @@ onBeforeUnmount(() => {
 .ac-email-row{display:flex;align-items:baseline;gap:4px;margin-bottom:3px}
 .ac-idx{font-size:11px;font-weight:700;color:var(--tx2);flex-shrink:0}
 .ac-name{font-weight:600;color:var(--tx);font-size:12px;word-break:break-all;line-height:1.3}
-.a-plan{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;border:1px solid var(--ac);color:var(--ac);letter-spacing:.2px;flex-shrink:0}
-.a-days{font-size:11px;font-weight:500;flex-shrink:0}
+.a-plan,.a-days{font-size:10.5px;font-weight:500;line-height:1.4;padding:1px 6px;border-radius:4px;letter-spacing:.1px;flex-shrink:0;white-space:nowrap}
+.a-plan{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+/* .a-days bg/color via inline style (computed by daysStyle from urgency) */
 .ac-acts{display:flex;gap:2px;flex-shrink:0;margin-left:auto}
 .r-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--tx3);cursor:pointer;border-radius:var(--R3);transition:background-color .1s ease,color .1s ease}
 .r-btn:hover{background:var(--bg2);color:var(--tx)}
