@@ -6,7 +6,7 @@
       <span class="ac-idx">#{{ currentIndex + 1 }}</span>
       <span class="ac-name" :title="activeAccount.email">{{ activeAccount.email }}</span>
       <span v-if="activeQuota?.plan" class="ac-plan">{{ activeQuota.plan }}</span>
-      <span v-if="expiryHtml" class="ac-expiry" v-html="expiryHtml"></span>
+      <span v-if="expiryText" class="ac-expiry" :style="expiryStyle">{{ expiryText }}</span>
     </div>
 
     <!-- Compact quota row -->
@@ -40,7 +40,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { meterColor, urgencyColor, urgencyLabel, formatPlanRemaining } from '../utils/format.js'
+import { meterColor, urgencyColor, formatPlanRemaining } from '../utils/format.js'
 import ModeSwitcher from './ModeSwitcher.vue'
 
 const props = defineProps({
@@ -78,18 +78,18 @@ const dotTitle = computed(() => {
   return '正常'
 })
 
-// Expiry HTML
-const expiryHtml = computed(() => {
+// Expiry text + tinted-pill style (与 AccountCard 一致: 柔和胶囊, 颜色表达紧急度, 不加“将到期”文字)
+const expiryText = computed(() => {
   const q = props.activeQuota
   if (!q || q.planDays === null || q.planDays === undefined) return ''
-  const urgency = q.urgency ?? -1
-  const color = urgencyColor(urgency)
-  const label = urgencyLabel(urgency)
-  if (q.planDays > 0) {
-    const text = q.planEnd ? formatPlanRemaining(q.planEnd) : `${q.planDays}天`
-    return `<span style="color:${color}">${text}${label}</span>`
-  }
-  return '<span style="color:var(--rd)">已过期</span>'
+  if (q.planDays <= 0) return '已过期'
+  return q.planEnd ? formatPlanRemaining(q.planEnd) : `${q.planDays}天`
+})
+const expiryStyle = computed(() => {
+  const q = props.activeQuota
+  if (!q) return null
+  const color = (q.planDays !== null && q.planDays <= 0) ? 'var(--rd)' : urgencyColor(q.urgency ?? -1)
+  return { color, background: `color-mix(in srgb, ${color} 14%, transparent)` }
 })
 
 // Reset info: pick the most imminent
@@ -129,12 +129,14 @@ const resetInfo = computed(() => {
   font-size:12px;font-weight:600;color:var(--tx);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.ac-plan{
-  font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;
-  border:1px solid var(--ac);color:var(--ac);background:var(--ac-bg);
-  letter-spacing:.3px;
+/* 柔和胶囊 — 与 AccountCard 的 .a-plan/.a-days 风格一致 */
+.ac-plan,.ac-expiry{
+  font-size:10.5px;font-weight:500;line-height:1.4;
+  padding:1px 6px;border-radius:4px;letter-spacing:.1px;
+  flex-shrink:0;white-space:nowrap;
 }
-.ac-expiry{font-size:10px;font-weight:500}
+.ac-plan{color:var(--tx2);background:color-mix(in srgb,var(--tx) 8%,transparent)}
+/* .ac-expiry: color/background via :style="expiryStyle" */
 
 .ac-quota{
   display:flex;align-items:center;gap:5px;flex-wrap:wrap;
