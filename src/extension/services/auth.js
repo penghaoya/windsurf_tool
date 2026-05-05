@@ -70,6 +70,7 @@ let ACTIVE_MODE = 'local';
 // 可注入日志函数 — setLogger() 注入后写入 outputChannel, 否则降级 console.log
 let _info = (tag, msg) => console.log(`WAM: [${tag}] ${msg}`);
 let _warn = (tag, msg) => console.log(`WAM: [WARN][${tag}] ${msg}`);
+let _debug = (tag, msg) => { /* v20.3: 默认丢弃，由 extension.js 注入 _logDebug */ };
 const HTTP_RAW_LOG_MAX = 1600;
 
 function _formatRawForLog(value) {
@@ -113,9 +114,10 @@ class AuthService {
   }
 
   /** 注入结构化日志 (extension.js 初始化时调用) */
-  setLogger(logInfo, logWarn) {
+  setLogger(logInfo, logWarn, logDebug) {
     if (logInfo) _info = logInfo;
     if (logWarn) _warn = logWarn;
+    if (logDebug) _debug = logDebug;
   }
 
   // ========== Proxy Auto-Detection (智能多源探测) ==========
@@ -1131,7 +1133,17 @@ class AuthService {
       result.userEmail = loginResult.email || email;
       result.source = resp ? 'api' : 'api_json';
     }
-    _info('额度', `${_emailPrefix} → ${result?.mode || '?'} daily=${result?.daily?.remaining ?? '?'}% weekly=${result?.weekly?.remaining ?? '?'}% (${Date.now() - _t0}ms, login=${_t1 - _t0}ms, plan=${Date.now() - _t1}ms)`);
+    // v20.3: 条件化时序 — 慢请求(>2s)/重登(login>500ms) 才打时序，日常请求精简
+    // quiet 模式(全池扫描)直接走 DEBUG，不污染 outputChannel
+    const elapsed = Date.now() - _t0;
+    const loginMs = _t1 - _t0;
+    const planMs = Date.now() - _t1;
+    const slow = elapsed > 2000 || loginMs > 500 || planMs > 1500;
+    const timing = slow
+      ? ` (${elapsed}ms, login=${loginMs}ms, plan=${planMs}ms)`
+      : '';
+    const logFn = options.quiet ? _debug : _info;
+    logFn('额度', `${_emailPrefix} → ${result?.mode || '?'} daily=${result?.daily?.remaining ?? '?'}% weekly=${result?.weekly?.remaining ?? '?'}%${timing}`);
     return result;
   }
 

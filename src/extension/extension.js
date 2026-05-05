@@ -42,6 +42,7 @@ import {
   _logInfo,
   _logWarn,
   _logError,
+  _logDebug,
   _refreshPanel,
   _configureFileLogger,
 } from './core/state.js';
@@ -215,6 +216,7 @@ function _activate(context) {
   S.auth.setLogger(
     (tag, msg) => _logInfo(tag, msg),
     (tag, msg) => _logWarn(tag, msg),
+    (tag, msg) => _logDebug(tag, msg),
   );
   S.am.startWatching();
 
@@ -351,13 +353,10 @@ function _activate(context) {
   _detectCascadeTabs();
   const proxyInfo = S.auth.getProxyStatus();
   const winCount = _getActiveWindowCount();
+  // v20.3: 合并原本 2 行启动日志 — 检测层已由 defense.js 打印一次，此处不重复
   _logInfo(
     "启动",
-    `✅ 号池引擎就绪 v${_version} | 账号: ${accounts.length}个 | 代理: ${proxyInfo.mode}:${proxyInfo.port} | 窗口: ${winCount}个 | 对话: ${S.cascadeTabCount}个${S.burstMode ? ' (BURST防护)' : ''}`,
-  );
-  _logInfo(
-    "启动",
-    `检测层: L1=上下文键(2s) L3=缓存配额(10s)${L5_ENABLED ? ' L5=gRPC探测(Thinking:3s/加速:15s/正常:45s)' : ' L5=已禁用'} | Trial防御+模型降级`,
+    `✅ 就绪 v${_version} | 账号:${accounts.length} 代理:${proxyInfo.mode}:${proxyInfo.port} 窗口:${winCount} 对话:${S.cascadeTabCount}${S.burstMode ? ' (BURST)' : ''}`,
   );
 }
 
@@ -384,7 +383,9 @@ async function _refreshOne(index, options = {}) {
     if (options.cacheOnly) {
       return { ok: true, skipped: true, errorType: 'cache_miss', source: 'cache_only_skip' };
     }
-    const usageInfo = await S.auth.getUsageInfo(account.email, account.password, options);
+    // v20.3: full_scan 场景走 quiet 模式 — 每账号详细日志降为 DEBUG，摘要由 scheduler 打印
+    const authOptions = options.reason === 'full_scan' ? { ...options, quiet: true } : options;
+    const usageInfo = await S.auth.getUsageInfo(account.email, account.password, authOptions);
     if (usageInfo?.ok === false) {
       if (usageInfo.cacheOnly) {
         return { ok: true, skipped: true, errorType: 'cache_miss' };

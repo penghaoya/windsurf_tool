@@ -121,6 +121,8 @@ export const deps = {
 };
 
 // ═══ 结构化日志系统 ═══
+// v20.3: DEBUG 级别仅写入文件日志 + eventLog(供面板查询)，不进 outputChannel
+//        用于全池扫描等高频低价值日志，保持用户看到的输出干净
 export function _log(level, tag, msg, data) {
   const ts = new Date().toLocaleTimeString();
   const prefix = `[${ts}] [${level}] [${tag}]`;
@@ -128,9 +130,12 @@ export function _log(level, tag, msg, data) {
     data !== undefined
       ? `${prefix} ${msg} ${JSON.stringify(data)}`
       : `${prefix} ${msg}`;
-  if (S.outputChannel) S.outputChannel.appendLine(full);
-  if (level === "ERROR") console.error(`WAM: ${full}`);
-  else console.log(`WAM: ${full}`);
+  // DEBUG 不打到 outputChannel/console，避免淹没调度信号
+  if (level !== "DEBUG") {
+    if (S.outputChannel) S.outputChannel.appendLine(full);
+    if (level === "ERROR") console.error(`WAM: ${full}`);
+    else console.log(`WAM: ${full}`);
+  }
   S.eventLog.push({
     ts: Date.now(),
     level,
@@ -144,6 +149,7 @@ export function _log(level, tag, msg, data) {
 export function _logInfo(tag, msg, data) { _log("INFO", tag, msg, data); }
 export function _logWarn(tag, msg, data) { _log("WARN", tag, msg, data); }
 export function _logError(tag, msg, data) { _log("ERROR", tag, msg, data); }
+export function _logDebug(tag, msg, data) { _log("DEBUG", tag, msg, data); }
 
 export function _configureFileLogger(logRoot) {
   if (!logRoot) return;

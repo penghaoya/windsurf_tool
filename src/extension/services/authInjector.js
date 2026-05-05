@@ -62,13 +62,15 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
     const config = vscode.workspace.getConfiguration('wam');
     if (config.get('rotateFingerprint', true)) {
       const fpResult = applyAccountFingerprintForSwitch(index);
-      // v20.2 (方案B): 仅在真正写入磁盘时计数 + 抖动
-      // 跳过的情况下 (账号已绑定且磁盘已是目标值)，不算"热重置"
-      if (fpResult && fpResult.skipped) {
-        // No-op: 指纹未变更，无需 jitter，hotVerify 也无意义
-      } else {
+      // v20.3: 日志合并 — 原 3 行 (state.vscdb同步 + 已恢复 + 热重置#N) 压缩为 1 行
+      // v20.2 (方案B): skipped 时不计数热重置、不 jitter、不 hotVerify
+      if (fpResult?.ok && fpResult.skipped) {
+        _logInfo('指纹', `#${index + 1} ${fpResult.shortId} 已一致 → 跳过写入`);
+      } else if (fpResult?.ok) {
         S.hotResetCount++;
-        _logInfo('热重置', `指纹已应用 (第${S.hotResetCount}次)`);
+        const action = fpResult.isNew ? '生成' : '恢复';
+        const sync = fpResult.vscdbSynced ? '+vscdb' : '';
+        _logInfo('指纹', `#${index + 1} ${fpResult.shortId} ${action}${sync} (热重置#${S.hotResetCount})`);
         // v18.0: 随机延迟 200-2200ms, 降低时序规律性
         const jitter = 200 + Math.floor(Math.random() * 2000);
         await new Promise((resolve) => setTimeout(resolve, jitter));
@@ -380,6 +382,7 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
    *  后续切换 → 恢复已保存的指纹 (不生成新的)
    *  解决: 同一账号从大量不同"设备"登录的封控风险 */
   function applyAccountFingerprintForSwitch(targetIndex) {
+    // v20.3: 静默 apply — 日志合并到 injectAuth 的单行输出
     try {
       let fp = S.am.getFingerprint(targetIndex);
       const isNew = !fp;
@@ -391,20 +394,19 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       const result = applyFingerprint(fp);
       if (!result.ok) {
         _logWarn('\u6307\u7eb9', `\u5e94\u7528\u5931\u8d25: ${result.error}`);
-        return;
+        return { ok: false };
       }
 
       const id = fp['storage.serviceMachineId']?.slice(0, 8) || '?';
       // v20.2 (方案B): 磁盘已是目标状态 → 跳过 state.vscdb 同步
-      // 避免无谓的"指纹反复写入"信号 (反作弊异常特征)
       if (result.skipped) {
         S.lastRotatedIds = fp;
         S.lastRotatedIdsSkipped = true;
-        _logInfo('\u6307\u7eb9', `#${targetIndex + 1} \u6307\u7eb9\u5df2\u4e00\u81f4 (${id}) \u2014 \u8df3\u8fc7\u5199\u5165`);
-        return { skipped: true };
+        return { ok: true, skipped: true, isNew, shortId: id };
       }
 
       // Sync to state.vscdb
+      let vscdbSynced = false;
       const dbPath = getStateDbPath();
       if (fs.existsSync(dbPath)) {
         const pairs = [
@@ -419,21 +421,19 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
         if (pairs.length > 0) {
           try {
-            if (dbUpdateKeys(dbPath, pairs)) {
-              _logInfo('\u6307\u7eb9', 'state.vscdb\u5df2\u540c\u6b65');
-            }
+            vscdbSynced = !!dbUpdateKeys(dbPath, pairs);
           } catch (error) {
-            _logWarn('\u6307\u7eb9', 'state.vscdb\u540c\u6b65\u8df3\u8fc7(\u975e\u5173\u952e)', error.message);
+            _logWarn('\u6307\u7eb9', 'state.vscdb\u540c\u6b65\u5931\u8d25(\u975e\u5173\u952e)', error.message);
           }
         }
       }
 
       S.lastRotatedIds = fp;
       S.lastRotatedIdsSkipped = false;
-      _logInfo('\u6307\u7eb9', `${isNew ? '\u5df2\u751f\u6210\u5e76\u4fdd\u5b58' : '\u5df2\u6062\u590d'} #${targetIndex + 1} \u4e13\u5c5e\u6307\u7eb9: ${id}`);
-      return { skipped: false };
+      return { ok: true, skipped: false, isNew, shortId: id, vscdbSynced };
     } catch (error) {
       _logWarn('\u6307\u7eb9', '\u6307\u7eb9\u5e94\u7528\u5f02\u5e38(\u975e\u5173\u952e)', error.message);
+      return { ok: false };
     }
   }
 

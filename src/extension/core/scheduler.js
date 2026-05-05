@@ -988,9 +988,18 @@ async function _poolTick(context) {
           _refreshPanel();
         },
       }).then((result) => {
+        // v20.3: 摘要加"可用账号数"(daily≥50%) — 替代每账号刷新行的信号损失
+        let healthy = 0, low = 0;
+        for (let i = 0; i < accounts.length; i++) {
+          const rem = S.am.effectiveRemaining(i);
+          if (rem === null || rem === undefined) continue;
+          if (rem >= 50) healthy++;
+          else if (rem <= 10) low++;
+        }
+        const elapsed = result?.elapsedMs ?? (Date.now() - scanStartedAt);
         _logInfo(
           "全池扫描",
-          `后台完成 total=${result?.total ?? scanIndexes.length} ok=${result?.ok ?? 0} failed=${result?.failed ?? 0} (${result?.elapsedMs ?? (Date.now() - scanStartedAt)}ms)`,
+          `✅ ${result?.ok ?? 0}/${result?.total ?? scanIndexes.length} ok | ${(elapsed/1000).toFixed(1)}s | 可用:${healthy} 低余额:${low}${result?.failed ? ` fail:${result.failed}` : ''}`,
         );
       }).catch((e) => {
         _logWarn("全池扫描", `后台刷新异常: ${e.message}`);
