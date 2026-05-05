@@ -620,8 +620,8 @@ class AuthService {
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
           const rawText = resp.bodyBuffer.toString('utf8');
           if (!resp.ok) {
-            _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms)`);
-            _warnHttpErrorRaw('JSON', u.hostname, u.pathname, resp.status, rawText);
+            // v20.4: HTTP + HTTP_RAW 合并为单行 (减少日志条数)
+            _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms) raw=${_formatRawForLog(rawText)}`);
           }
           try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText }); }
           catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
@@ -637,8 +637,7 @@ class AuthService {
           res.on('end', () => {
             agent.destroy();
             if (res.statusCode !== 200) {
-              _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms)`);
-              _warnHttpErrorRaw('JSON', u.hostname, u.pathname, res.statusCode, buf);
+              _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms) raw=${_formatRawForLog(buf)}`);
             }
             try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
             catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
@@ -672,8 +671,7 @@ class AuthService {
           };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
           if (!resp.ok) {
-            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms)`);
-            _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), resp.status, resp.bodyBuffer);
+            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms) raw=${_formatRawForLog(resp.bodyBuffer)}`);
           }
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
@@ -694,8 +692,7 @@ class AuthService {
             agent.destroy();
             const buf = Buffer.concat(chunks);
             if (res.statusCode !== 200) {
-              _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms)`);
-              _warnHttpErrorRaw('BIN', u.hostname, u.pathname.split('/').pop(), res.statusCode, buf);
+              _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms) raw=${_formatRawForLog(buf)}`);
             }
             resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
           });
@@ -784,8 +781,15 @@ class AuthService {
     );
   }
 
+  /** v20.4 (P0 fix): App Check token 错误不再视为 fatal
+   *  原因: "Firebase App Check token is invalid" 是 Firebase 基础设施层的客户端
+   *        身份验证失败 (与用户密码无关), 通常是 SDK token 临时失效或客户端被风控
+   *        触发, 是 transient 错误。误判为 fatal 会导致大批正常账号被永久标记
+   *        invalid_credentials。
+   *  保留: INVALID_LOGIN_CREDENTIALS / EMAIL_NOT_FOUND / INVALID_PASSWORD /
+   *        USER_DISABLED 才是真正的凭据级 fatal。 */
   _isFatalFirebaseAuthError(message) {
-    return /INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED|App\s*Check\s*token/i.test(String(message || ''));
+    return /INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED/i.test(String(message || ''));
   }
 
   async _withNetworkRetry(label, fn, maxRetries = 3) {
@@ -882,8 +886,9 @@ class AuthService {
     throw new Error('WindsurfPostAuth failed: all endpoints exhausted');
   }
 
-  async _signInWithDevinAuth(email, password) {
+  async _signInWithDevinAuth(email, password, opts = {}) {
     const _emailPrefix = email.split('@')[0];
+    const _li = opts.quiet ? _debug : _info;
     const connections = await this._withNetworkRetry('Devin Auth connections', async () => {
       const r = await this._httpsJson(
         'https://windsurf.com/_devin-auth/connections',
@@ -914,7 +919,7 @@ class AuthService {
     const postAuth = await this._withNetworkRetry('WindsurfPostAuth', () => this._windsurfPostAuth(login.token));
     if (!postAuth.sessionToken) throw new Error('WindsurfPostAuth 返回空 sessionToken');
 
-    _info('登录', `${_emailPrefix} → devin-auth`);
+    _li('登录', `${_emailPrefix} → devin-auth`);
     return {
       ok: true,
       idToken: postAuth.sessionToken,
@@ -933,9 +938,11 @@ class AuthService {
 
   // ========== Firebase Login (双模式: relay优先 or local代理优先) ==========
 
-  async login(email, password, forceFresh = false, cacheOnly = false) {
+  async login(email, password, forceFresh = false, cacheOnly = false, loginOpts = {}) {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
+    // v20.4: quiet 模式 — full_scan/active_tick 等高频路径，[登录] 日志降为 DEBUG
+    const _li = loginOpts.quiet ? _debug : _info;
     if (!PROXY_CHECKED) await this._probeProxy();
 
     if (!forceFresh) {
@@ -961,13 +968,13 @@ class AuthService {
 
     const devinCooldownLeft = this._devinAuthCooldownUntil - Date.now();
     if (cachedProvider === 'firebase' || cachedProvider === 'unsupported-devin') {
-      _info('登录', `${_emailPrefix} → provider cached(${cachedProvider}), skip devin-auth`);
+      _li('登录', `${_emailPrefix} → provider cached(${cachedProvider}), skip devin-auth`);
       errors.push(`devin-auth: skipped(${cachedProvider})`);
     } else if (devinCooldownLeft > 0) {
       errors.push(`devin-auth: cooldown(${Math.ceil(devinCooldownLeft / 1000)}s)`);
     } else {
       try {
-        const devin = await this._signInWithDevinAuth(email, password);
+        const devin = await this._signInWithDevinAuth(email, password, loginOpts);
         this._setCachedToken(email, devin.idToken);
         this._setCachedAuthProvider(email, 'devin-auth');
         return { ...devin, elapsed: Date.now() - _t0 };
@@ -992,7 +999,7 @@ class AuthService {
             this._setCachedToken(email, r.data.idToken, r.data.refreshToken || null);
             this._setCachedAuthProvider(email, 'firebase');
             const channel = useProxy === true ? 'firebase-proxy' : 'firebase-local';
-            _info('登录', `${_emailPrefix} → ${channel} (${Date.now() - _t0}ms)`);
+            _li('登录', `${_emailPrefix} → ${channel} (${Date.now() - _t0}ms)`);
             return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel };
           }
           const msg = r.data?.error?.message || `HTTP ${r.status}`;
@@ -1013,7 +1020,7 @@ class AuthService {
         if (r && r.ok && r.data.idToken) {
           this._setCachedToken(email, r.data.idToken, r.data.refreshToken || null);
           this._setCachedAuthProvider(email, 'firebase');
-          _info('登录', `${_emailPrefix} → relay (${Date.now() - _t0}ms)`);
+          _li('登录', `${_emailPrefix} → relay (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay' };
         }
         const msg = r?.data?.error?.message;
@@ -1037,7 +1044,7 @@ class AuthService {
         if (r && r.ok && r.data.idToken) {
           this._setCachedToken(email, r.data.idToken, r.data.refreshToken || null);
           this._setCachedAuthProvider(email, 'firebase');
-          _info('登录', `${_emailPrefix} → relay-fallback (${Date.now() - _t0}ms)`);
+          _li('登录', `${_emailPrefix} → relay-fallback (${Date.now() - _t0}ms)`);
           return { ok: true, idToken: r.data.idToken, email: r.data.email || email, channel: 'relay-fallback' };
         }
         if (r?.data?.error?.message) errors.push(`relay: ${r.data.error.message}`);
@@ -1057,7 +1064,9 @@ class AuthService {
   async getUsageInfo(email, password, options = {}) {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
-    const loginResult = await this.login(email, password, false, !!options.cacheOnly);
+    // v20.4: 透传 quiet 给 login (full_scan/active_tick 的 [登录] 也降为 DEBUG)
+    const loginOpts = { quiet: !!options.quiet };
+    const loginResult = await this.login(email, password, false, !!options.cacheOnly, loginOpts);
     if (!loginResult.ok) {
       if (loginResult.cacheOnly) {
         return { ok: false, errorType: 'cache_miss', cacheOnly: true };
@@ -1081,7 +1090,7 @@ class AuthService {
       _warn('额度', `${_emailPrefix} → account migrated, clearing firebase provider cache and retrying devin-auth`);
       this.clearTokenCache(email);
       this._clearAuthProviderCache(email);
-      const devin = await this.login(email, password, true);
+      const devin = await this.login(email, password, true, false, loginOpts);
       if (devin.ok) {
         planErrors = [];
         resp = await this._fetchPlanStatus(encodeProtoString(devin.idToken), { errors: planErrors });
@@ -1094,7 +1103,7 @@ class AuthService {
     if (!resp && !jsonUsage && loginResult.cached) {
       _warn('额度', `${_emailPrefix} → cached token failed, retrying fresh`);
       this.clearTokenCache(email);
-      const fresh = await this.login(email, password, true);
+      const fresh = await this.login(email, password, true, false, loginOpts);
       if (fresh.ok) {
         const freshIsDevin = fresh.provider === 'devin-auth' || fresh.channel === 'devin-auth';
         if (freshIsDevin) {
@@ -1107,7 +1116,7 @@ class AuthService {
             _warn('额度', `${_emailPrefix} → fresh firebase still migrated, retrying devin-auth`);
             this.clearTokenCache(email);
             this._clearAuthProviderCache(email);
-            const devin = await this.login(email, password, true);
+            const devin = await this.login(email, password, true, false, loginOpts);
             if (devin.ok) {
               planErrors = [];
               resp = await this._fetchPlanStatus(encodeProtoString(devin.idToken), { errors: planErrors });

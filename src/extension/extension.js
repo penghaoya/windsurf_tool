@@ -327,6 +327,18 @@ function _activate(context) {
     vscode.commands.registerCommand("wam.resetFingerprint", () =>
       _doResetFingerprint(),
     ),
+    vscode.commands.registerCommand("wam.recoverInvalidAccounts", async () => {
+      // v20.4: 解除 invalid_credentials 误标 (主要应对 App Check 401 误判等 transient 错误)
+      const cleared = S.am.clearAuthErrorByType('invalid_credentials');
+      if (cleared > 0) {
+        _logInfo('账号验证', `已恢复 ${cleared} 个被标记为坏号的账号`);
+        vscode.window.showInformationMessage(`已恢复 ${cleared} 个被标记为坏号的账号。下次刷新时会重新验证。`);
+        _refreshPanel();
+        _updatePoolBar();
+      } else {
+        vscode.window.showInformationMessage('当前没有被标记为坏号的账号');
+      }
+    }),
     vscode.commands.registerCommand("wam.panicSwitch", () =>
       _doPoolRotate(context, true),
     ),
@@ -383,8 +395,14 @@ async function _refreshOne(index, options = {}) {
     if (options.cacheOnly) {
       return { ok: true, skipped: true, errorType: 'cache_miss', source: 'cache_only_skip' };
     }
-    // v20.3: full_scan 场景走 quiet 模式 — 每账号详细日志降为 DEBUG，摘要由 scheduler 打印
-    const authOptions = options.reason === 'full_scan' ? { ...options, quiet: true } : options;
+    // v20.3+v20.4: 静默路径
+    //   - full_scan: 摘要由 scheduler 打印, 每账号详情降 DEBUG
+    //   - active_tick: 周期性激活刷新, 仅在额度变化时由本函数 emit 一行 INFO
+    const isQuietReason = options.reason === 'full_scan' || options.reason === 'active_tick';
+    const authOptions = isQuietReason ? { ...options, quiet: true } : options;
+    const prevDaily = account.usage?.daily?.remaining ?? null;
+    const prevWeekly = account.usage?.weekly?.remaining ?? null;
+    const prevCredits = account.credits ?? null;
     const usageInfo = await S.auth.getUsageInfo(account.email, account.password, authOptions);
     if (usageInfo?.ok === false) {
       if (usageInfo.cacheOnly) {
@@ -439,6 +457,17 @@ async function _refreshOne(index, options = {}) {
         } catch (e) { _logWarn('额度补充', `cachedPlanInfo读取失败: ${e.message}`); }
       }
       S.am.updateUsage(index, usageInfo);
+      // v20.4: active_tick 仅在额度变化时打印一行 INFO (无变化的高频心跳走 DEBUG)
+      if (options.reason === 'active_tick') {
+        const curDaily = usageInfo.daily?.remaining ?? null;
+        const curWeekly = usageInfo.weekly?.remaining ?? null;
+        const curCredits = usageInfo.credits ?? null;
+        const changed = curDaily !== prevDaily || curWeekly !== prevWeekly || curCredits !== prevCredits;
+        const emailPrefix = account.email.split('@')[0];
+        if (changed) {
+          _logInfo('额度', `${emailPrefix} → ${usageInfo.mode || '?'} daily=${curDaily ?? '?'}% weekly=${curWeekly ?? '?'}%`);
+        }
+      }
       // v20.2: lazy fetch precise teamsTier from GetUserStatus (once per 24h per account)
       _maybeEnrichUserStatus(index).catch(() => {});
       return { ok: true, credits: usageInfo.credits, usageInfo };

@@ -616,6 +616,23 @@ class AccountManager {
     this._notify();
   }
 
+  /** v20.4: 批量清除指定类型的 authError (用于 transient 错误的批量恢复)
+   *  返回清除的账号数 */
+  clearAuthErrorByType(errorType) {
+    let cleared = 0;
+    for (const a of this._accounts) {
+      if (a.authError && a.authError.type === errorType) {
+        delete a.authError;
+        cleared++;
+      }
+    }
+    if (cleared > 0) {
+      this._save();
+      this._notify();
+    }
+    return cleared;
+  }
+
   isInvalidAuth(index) {
     const a = this.get(index);
     return a?.authError?.type === 'invalid_credentials';

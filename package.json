@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -65,6 +65,11 @@
       {
         "command": "wam.resetFingerprint",
         "title": "重置设备指纹",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.recoverInvalidAccounts",
+        "title": "恢复被误标记的坏号",
         "category": "Windsurf小助手"
       },
       {
