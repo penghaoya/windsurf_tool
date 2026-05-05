@@ -50,7 +50,9 @@ const REGISTER_JSON_FALLBACK_URLS = [
   'https://server.codeium.com/exa.language_server_pb.LanguageServerService/RegisterUser',
 ];
 
-const TOKEN_TTL = 50 * 60 * 1000; // 50 minutes (Firebase idToken)
+// v20.1: 从50min降到30min — 实测服务端常在50min前就开始返回401 "missing auth token"
+// (日志里大量 cached token failed, retrying fresh)。30min是保守上限，叠加JWT exp取min。
+const TOKEN_TTL = 30 * 60 * 1000; // 30 minutes (Firebase idToken hard cap)
 const AUTH1_TOKEN_TTL = 14 * 24 * 60 * 60 * 1000; // 14 days (Auth1 sessionToken, matches windsurf-switch)
 const AUTH_PROVIDER_TTL = 24 * 60 * 60 * 1000;
 const PROXY_HOST = '127.0.0.1';
@@ -368,20 +370,23 @@ class AuthService {
   }
 
   _setCachedToken(email, idToken, refreshToken = null) {
-    // 优先从JWT exp字段计算精确过期时间(提前2min buffer), 失败时降级到固定TTL
-    let expireTime = Date.now() + TOKEN_TTL;
+    // v20.1: 先从JWT exp取精确值(提前2min buffer), 然后叠加TOKEN_TTL硬上限取min
+    // 避免服务端比exp提前失效 / exp字段缺失时用满50min导致大量401
+    const hardCap = Date.now() + TOKEN_TTL;
+    let jwtExp = null;
     try {
       const parts = idToken.split('.');
       if (parts.length === 3) {
         const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-        if (payload.exp) {
-          expireTime = payload.exp * 1000 - 120000; // exp是秒级,提前2min刷新
-        }
+        if (payload.exp) jwtExp = payload.exp * 1000 - 120000;
       }
     } catch {}
-    // v20.0: Auth1 sessionToken is not standard JWT (may lack exp), use 14-day TTL
+    // Firebase idToken: min(JWT exp, 30min硬上限)
+    let expireTime = jwtExp ? Math.min(jwtExp, hardCap) : hardCap;
+    // v20.0: Auth1 sessionToken is not standard JWT (无exp), use 14-day TTL
+    // 但仅当没拿到 JWT exp 时才用长TTL, 有JWT字段的走标准路径
     const provider = this._getCachedAuthProvider(email);
-    if (expireTime <= Date.now() + TOKEN_TTL && (provider === 'devin-auth' || provider === 'auth1')) {
+    if (!jwtExp && (provider === 'devin-auth' || provider === 'auth1')) {
       expireTime = Date.now() + AUTH1_TOKEN_TTL;
     }
     const entry = { idToken, expireTime };
@@ -1157,7 +1162,7 @@ class AuthService {
     const pi = ps.planInfo || ps.plan_info || {};
     const plan = pi.planName || pi.plan_name || ps.planName || ps.plan_name || null;
     const billingRaw = pi.billingStrategy ?? pi.billing_strategy ?? ps.billingStrategy ?? ps.billing_strategy ?? null;
-    const billingStrategy = typeof billingRaw === 'string'
+    const billingRawParsed = typeof billingRaw === 'string'
       ? billingRaw.toLowerCase()
       : billingRaw === 1
         ? 'credits'
@@ -1177,6 +1182,14 @@ class AuthService {
     ) {
       return null;
     }
+    // v20.1: billingStrategy 自适应 — 服务端未返回明确字段时按数据形状推断
+    // (参考 ai-quote 实践，避免 credit 制账号被误判成 quota 制)
+    const billingStrategy = billingRawParsed
+      ?? (dailyRemaining !== undefined || weeklyRemaining !== undefined
+        ? 'quota'
+        : availablePrompt !== undefined
+          ? 'credits'
+          : null);
     const dailyResetUnix = Number(ps.dailyQuotaResetAtUnix ?? ps.daily_quota_reset_at_unix ?? 0);
     const weeklyResetUnix = Number(ps.weeklyQuotaResetAtUnix ?? ps.weekly_quota_reset_at_unix ?? 0);
     const planStartRaw = ps.planStart || ps.plan_start;
@@ -1384,15 +1397,14 @@ class AuthService {
   }
 
   /** Read the locally effective Windsurf account email without network.
-   *  Switch confirmation needs identity, not quota freshness. */
+   *  Switch confirmation needs identity, not quota freshness.
+   *  v20.1: authStatus.userEmail is cheaper than proto decode — read it first. */
   readCachedAuthEmail() {
     try {
       const dbPath = getStateDbPath();
       if (!fs.existsSync(dbPath)) return null;
 
-      const protoQuota = this.readCachedUserStatusProto(dbPath);
-      if (protoQuota?.email) return protoQuota.email;
-
+      // Fast path: windsurfAuthStatus.userEmail is a plain JSON string, no proto decode.
       const authRaw = dbReadKey(dbPath, 'windsurfAuthStatus');
       if (authRaw) {
         try {
@@ -1401,6 +1413,10 @@ class AuthService {
           if (authStatus.email) return authStatus.email;
         } catch {}
       }
+
+      // Fallback: proto decode if authStatus missing email field.
+      const protoQuota = this.readCachedUserStatusProto(dbPath);
+      if (protoQuota?.email) return protoQuota.email;
 
       const planRaw = dbReadKey(dbPath, 'windsurf.settings.cachedPlanInfo');
       if (planRaw) {
@@ -1716,6 +1732,12 @@ class AuthService {
 
   async getUserStatus(apiKey, { quiet = false } = {}) {
     if (!apiKey) return null;
+    // v20.1: sk-ws-01- 前缀是 Windsurf session token，服务端会返回 200 空响应
+    // (ai-quote 实测)，直接跳过避免无效往返。
+    if (apiKey.startsWith('sk-ws-01-')) {
+      if (!quiet) _warn('UserStatus', 'sk-ws-01 session token 不支持 GetUserStatus，跳过');
+      return null;
+    }
     if (!PROXY_CHECKED) await this._probeProxy();
 
     const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
