@@ -507,8 +507,14 @@ export function _startQuotaWatcher(context) {
   });
 
   // ═══ Layer 3: cachedPlanInfo实时监控 ═══
+  // v20.2: 切号后 30s grace period — Windsurf 重新写入 cachedPlanInfo 有滞后
+  // 期间可能读到上一账号残留数据 → 误判新账号耗尽 → 链式 panic 切换风暴
+  const L3_POST_SWITCH_GRACE_MS = 30 * 1000;
   const checkCachedQuota = async () => {
     if (S.activeIndex < 0 || S.switching || !S.auth) return;
+    if (S.lastSwitchTs && Date.now() - S.lastSwitchTs < L3_POST_SWITCH_GRACE_MS) {
+      return; // 切号后窗口期，避开 cachedPlanInfo 残留数据
+    }
     try {
       const cached = S.auth.readCachedQuota(S.am?.get(S.activeIndex)?.email, {
         silent: true,

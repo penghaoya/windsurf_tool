@@ -211,9 +211,10 @@ export function _getOrderedCandidates({
     ? _getActiveSelectionMode()
     : null;
   const excludedEmails = excludeClaimed ? _getOtherWindowAccountEmails() : [];
-  // Free accounts stay out of the regular rotation pool (scheduler invariant).
-  // Only panic switches (all paid accounts down) allow Free as a last-resort fallback.
-  const options = { preferredMode, modelUid, allowFree: panic === true };
+  // v20.2: Free 账号永远不参与调度 (用户决策) — 即使 panic 也不放行
+  // 理由: Free 额度极小且消耗节奏不可控,纳入只会污染调度信号
+  // Trial 账号仍可参与 (在 selector 内部走 isTrialPlan 旁路)
+  const options = { preferredMode, modelUid, allowFree: false };
   const primary = modelUid
     ? S.am.findBestForModel(modelUid, excludeIndex, threshold, excludedEmails, options)
     : S.am.selectOptimal(excludeIndex, threshold, excludedEmails, options);

@@ -78,6 +78,7 @@ export const S = {
 
   // 热重置
   lastRotatedIds: null,
+  lastRotatedIdsSkipped: false, // v20.2: true 表示磁盘已是目标，本次未实际写入
   hotResetCount: 0,
   hotResetVerified: 0,
 

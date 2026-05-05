@@ -45,39 +45,71 @@ function generateFingerprint() {
 }
 
 /** Apply a pre-generated fingerprint to machineid file + storage.json (atomic write)
- *  v18.0: 不更新 state.vscdb (调用方通过 dbUpdateKeys 单独处理) */
+ *  v18.0: 不更新 state.vscdb (调用方通过 dbUpdateKeys 单独处理)
+ *  v20.2 (方案B): 幂等化 — 写入前对比现状，完全一致时跳过所有写入。
+ *                 防封控关键: 同一指纹反复重写 machineid 是反作弊系统的异常特征，
+ *                 改为"每个账号的指纹只在首次绑定时写一次"。
+ *  返回 skipped=true 表示磁盘上已是目标状态，调用方应同时跳过 state.vscdb 同步。 */
 function applyFingerprint(ids) {
   if (!ids) return { ok: false, error: 'no ids' };
   const paths = getFingerPrintPaths();
   try {
-    // Write machineid file
+    // 1. 检查 machineid 文件是否已是目标值
+    let machineidNeedsWrite = false;
     if (ids.machineid && fs.existsSync(path.dirname(paths.machineid))) {
-      fs.writeFileSync(paths.machineid, ids.machineid, 'utf8');
+      let currentMachineId = '';
+      try {
+        if (fs.existsSync(paths.machineid)) {
+          currentMachineId = fs.readFileSync(paths.machineid, 'utf8').trim();
+        }
+      } catch {}
+      if (currentMachineId !== ids.machineid) machineidNeedsWrite = true;
     }
-    // Read existing storage.json
+
+    // 2. 检查 storage.json 是否已是目标值
     let storageData = {};
     try {
       if (fs.existsSync(paths.storageJson)) {
         storageData = JSON.parse(fs.readFileSync(paths.storageJson, 'utf8'));
       }
     } catch { storageData = {}; }
-    // Apply fingerprint keys
+
+    let storageNeedsWrite = false;
     for (const k of TELEMETRY_KEYS) {
-      if (ids[k]) storageData[k] = ids[k];
+      if (ids[k] && storageData[k] !== ids[k]) {
+        storageNeedsWrite = true;
+        break;
+      }
     }
-    // Atomic write: tmp + rename (防崩溃损坏)
-    const dir = path.dirname(paths.storageJson);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = paths.storageJson + '.tmp.' + process.pid;
-    fs.writeFileSync(tmpPath, JSON.stringify(storageData, null, '\t'), 'utf8');
-    try {
-      fs.renameSync(tmpPath, paths.storageJson);
-    } catch {
-      // rename 失败时降级直写 (跨设备/跨分区时 rename 可能失败)
-      fs.writeFileSync(paths.storageJson, JSON.stringify(storageData, null, '\t'), 'utf8');
-      try { fs.unlinkSync(tmpPath); } catch {}
+
+    // 3. 完全一致 → skip 所有写入 (方案B 核心)
+    if (!machineidNeedsWrite && !storageNeedsWrite) {
+      return { ok: true, skipped: true };
     }
-    return { ok: true };
+
+    // 4. 至少一处不一致 → 执行写入
+    if (machineidNeedsWrite) {
+      fs.writeFileSync(paths.machineid, ids.machineid, 'utf8');
+    }
+
+    if (storageNeedsWrite) {
+      for (const k of TELEMETRY_KEYS) {
+        if (ids[k]) storageData[k] = ids[k];
+      }
+      const dir = path.dirname(paths.storageJson);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const tmpPath = paths.storageJson + '.tmp.' + process.pid;
+      fs.writeFileSync(tmpPath, JSON.stringify(storageData, null, '\t'), 'utf8');
+      try {
+        fs.renameSync(tmpPath, paths.storageJson);
+      } catch {
+        // rename 失败时降级直写 (跨设备/跨分区时 rename 可能失败)
+        fs.writeFileSync(paths.storageJson, JSON.stringify(storageData, null, '\t'), 'utf8');
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+    }
+
+    return { ok: true, skipped: false };
   } catch (e) {
     return { ok: false, error: e.message };
   }

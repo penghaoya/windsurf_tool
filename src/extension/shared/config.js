@@ -194,15 +194,18 @@ export function getModelFamily(uid) {
   return 'other';
 }
 
-/** 响应式切换按层级差异化阈值 — 支持 tier 字符串或旧 boolean */
+/** 响应式切换按层级差异化阈值 — 支持 tier 字符串或旧 boolean
+ *  v20.2: 数值整体上调 — 原阈值过低导致单账号仅消耗 3-7% 就被切走，
+ *         整池额度利用率不足 1/账号数。新阈值让单账号深度消耗后再切。
+ *  Free 不参与调度 (allowFree=false)，但 Trial 走 FREE 桶仍需此阈值保护。 */
 export function getReactiveDropMin(tierOrBool, selectionMode) {
   const tier = typeof tierOrBool === 'boolean'
     ? (tierOrBool ? PLAN_TIERS.FREE : PLAN_TIERS.PRO)
     : (tierOrBool || PLAN_TIERS.FREE);
-  if (isTierFree(tier)) return 3;  // Free: 额度跳跃更大,用更低阈值快速响应
-  if (selectionMode === 'credits') return 8; // Enterprise Credits: 消耗更均匀
-  if (tier === PLAN_TIERS.MAX) return 8; // Max: 额度充裕,提高阈值减少噪音
-  return REACTIVE_DROP_MIN; // Pro/Teams: 默认5%
+  if (isTierFree(tier)) return 5;  // Trial: 数据跳跃稍大,5% 平衡保护与利用率
+  if (selectionMode === 'credits') return 15; // Enterprise Credits: 充裕,可深度消耗
+  if (tier === PLAN_TIERS.MAX) return 15; // Max: 额度最充裕
+  return 10; // Pro/Teams: 默认 10% (从 5% 上调)
 }
 
 /** 层级差异化预防性切换阈值 (% 额度) — Free 更早切, Max 更晚切 */

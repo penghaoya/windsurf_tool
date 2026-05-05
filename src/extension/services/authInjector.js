@@ -61,12 +61,18 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
     const config = vscode.workspace.getConfiguration('wam');
     if (config.get('rotateFingerprint', true)) {
-      applyAccountFingerprintForSwitch(index);
-      S.hotResetCount++;
-      _logInfo('热重置', `指纹已应用 (第${S.hotResetCount}次)`);
-      // v18.0: 随机延迟 200-2200ms, 降低时序规律性
-      const jitter = 200 + Math.floor(Math.random() * 2000);
-      await new Promise((resolve) => setTimeout(resolve, jitter));
+      const fpResult = applyAccountFingerprintForSwitch(index);
+      // v20.2 (方案B): 仅在真正写入磁盘时计数 + 抖动
+      // 跳过的情况下 (账号已绑定且磁盘已是目标值)，不算"热重置"
+      if (fpResult && fpResult.skipped) {
+        // No-op: 指纹未变更，无需 jitter，hotVerify 也无意义
+      } else {
+        S.hotResetCount++;
+        _logInfo('热重置', `指纹已应用 (第${S.hotResetCount}次)`);
+        // v18.0: 随机延迟 200-2200ms, 降低时序规律性
+        const jitter = 200 + Math.floor(Math.random() * 2000);
+        await new Promise((resolve) => setTimeout(resolve, jitter));
+      }
     }
 
     let injected = false;
@@ -293,7 +299,8 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
         `刷新后apiKey: ${newApiKey?.slice(0, 16) || '未知'}`,
       );
 
-      if (S.lastRotatedIds) {
+      // v20.2 (方案B): skipped=true 时本次未实际写入磁盘，hotVerify 无意义
+      if (S.lastRotatedIds && !S.lastRotatedIdsSkipped) {
         setTimeout(() => {
           try {
             const verify = hotVerify(S.lastRotatedIds);
@@ -387,6 +394,16 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
         return;
       }
 
+      const id = fp['storage.serviceMachineId']?.slice(0, 8) || '?';
+      // v20.2 (方案B): 磁盘已是目标状态 → 跳过 state.vscdb 同步
+      // 避免无谓的"指纹反复写入"信号 (反作弊异常特征)
+      if (result.skipped) {
+        S.lastRotatedIds = fp;
+        S.lastRotatedIdsSkipped = true;
+        _logInfo('\u6307\u7eb9', `#${targetIndex + 1} \u6307\u7eb9\u5df2\u4e00\u81f4 (${id}) \u2014 \u8df3\u8fc7\u5199\u5165`);
+        return { skipped: true };
+      }
+
       // Sync to state.vscdb
       const dbPath = getStateDbPath();
       if (fs.existsSync(dbPath)) {
@@ -412,8 +429,9 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       }
 
       S.lastRotatedIds = fp;
-      const id = fp['storage.serviceMachineId']?.slice(0, 8) || '?';
+      S.lastRotatedIdsSkipped = false;
       _logInfo('\u6307\u7eb9', `${isNew ? '\u5df2\u751f\u6210\u5e76\u4fdd\u5b58' : '\u5df2\u6062\u590d'} #${targetIndex + 1} \u4e13\u5c5e\u6307\u7eb9: ${id}`);
+      return { skipped: false };
     } catch (error) {
       _logWarn('\u6307\u7eb9', '\u6307\u7eb9\u5e94\u7528\u5f02\u5e38(\u975e\u5173\u952e)', error.message);
     }
