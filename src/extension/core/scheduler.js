@@ -738,6 +738,18 @@ async function _refreshActiveSnapshot(index) {
     });
     if (cached) {
       if (cachedQuotaChanged(cached, account.usage)) {
+        // Oscillation guard: if cached daily diverges from stored by >30%
+        // and they are near-complements (sum ≈ 100), the proto blob is stale — skip.
+        const storedDaily = account.usage?.daily?.remaining ?? null;
+        const cachedDaily = cached.daily ?? null;
+        if (storedDaily !== null && cachedDaily !== null) {
+          const delta = Math.abs(cachedDaily - storedDaily);
+          const sum = cachedDaily + storedDaily;
+          if (delta > 30 && sum > 90 && sum < 110) {
+            _logWarn('额度监控', `振荡抑制: proto缓存 daily=${cachedDaily}% vs 已存 daily=${storedDaily}% (Δ=${delta}, sum=${sum}) → 跳过`);
+            return { source: 'local_cache_oscillation_suppressed' };
+          }
+        }
         S.am.updateUsage(index, usageFromCachedQuota(cached, account.usage));
         return { source: 'local_cache' };
       }

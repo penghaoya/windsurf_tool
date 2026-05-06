@@ -11,7 +11,10 @@ export const CACHED_USAGE_SOURCES = new Set(['local_cache', 'local']);
 
 // Window in which a fresh real-time write is considered authoritative
 // and must NOT be overwritten by a (potentially stale) local-cache read.
-export const FRESH_USAGE_GUARD_MS = 30 * 1000;
+// Must exceed ACTIVE_NETWORK_REFRESH_TTL (60s) — otherwise stale proto blob
+// in windsurfAuthStatus can overwrite fresh API data between network cycles,
+// causing quota oscillation (e.g. 26%↔74% where the proto contains a stale snapshot).
+export const FRESH_USAGE_GUARD_MS = 90 * 1000;
 
 /** Build a usage record from windsurf's cachedPlanInfo proto/json snapshot. */
 export function usageFromCachedQuota(cached, existingUsage = {}) {

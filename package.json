@@ -3,7 +3,7 @@
   "displayName": "Windsurf小助手",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -32,6 +32,7 @@
           "id": "windsurf-assistant.assistantView",
           "name": "搞薯条",
           "type": "webview",
+          "icon": "media/icon.svg",
           "when": "windsurf-tools.active"
         }
       ]
