@@ -173,7 +173,8 @@ class AccountManager {
     for (let s = 1; s < allSources.length; s++) {
       for (const ext of allSources[s]) {
         if (!ext.email) continue;
-        const existing = this._accounts.findIndex(a => a.email === ext.email);
+        const extLower = ext.email.toLowerCase();
+        const existing = this._accounts.findIndex(a => a.email && a.email.toLowerCase() === extLower);
         if (existing < 0) {
           this._accounts.push(ext);
           merged++;
@@ -405,7 +406,8 @@ class AccountManager {
   }
 
   findByEmail(email) {
-    const idx = this._accounts.findIndex(a => a.email === email);
+    const needle = email ? String(email).trim().toLowerCase() : '';
+    const idx = needle ? this._accounts.findIndex(a => a.email && a.email.trim().toLowerCase() === needle) : -1;
     return idx >= 0 ? { index: idx, account: { ...this._accounts[idx] } } : null;
   }
 
@@ -653,10 +655,10 @@ class AccountManager {
     const pairs = AccountManager.parseAccounts(text);
     let added = 0, skipped = 0;
     const addedAccounts = [];
-    const existingEmails = new Set(this._accounts.map(a => a.email));
+    const existingEmails = new Set(this._accounts.map(a => a.email?.toLowerCase()));
     for (const {email, password} of pairs) {
-      if (existingEmails.has(email)) { skipped++; continue; }
-      existingEmails.add(email);
+      if (existingEmails.has(email.toLowerCase())) { skipped++; continue; }
+      existingEmails.add(email.toLowerCase());
       this._accounts.push({ email, password, credits: undefined, loginCount: 0, addedAt: Date.now() });
       addedAccounts.push({email, password});
       added++;
@@ -716,7 +718,8 @@ class AccountManager {
     let added = 0, updated = 0, unchanged = 0;
     for (const ext of externalAccounts) {
       if (!ext.email || !ext.password) { unchanged++; continue; }
-      const idx = this._accounts.findIndex(a => a.email === ext.email);
+      const extLower = ext.email.toLowerCase();
+      const idx = this._accounts.findIndex(a => a.email && a.email.toLowerCase() === extLower);
       if (idx < 0) {
         const newAccount = {
           email: ext.email, password: ext.password, credits: ext.credits,

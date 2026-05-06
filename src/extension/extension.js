@@ -526,7 +526,7 @@ async function _refreshAll(progressFn, options = {}) {
 
 function _enqueueBatchImportValidation(addedAccounts) {
   const emails = (addedAccounts || [])
-    .map((account) => account?.email?.trim().toLowerCase())
+    .map((account) => account?.email?.trim())
     .filter(Boolean);
   if (emails.length === 0) return { queued: 0 };
 
