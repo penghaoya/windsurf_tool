@@ -92,9 +92,11 @@ export const IDLE_POLL_STEP = 15000;          // 每多一次无变化 +15s
 // ═══ 斜率预测 ═══
 export const SLOPE_WINDOW = 5;
 export const SLOPE_HORIZON = 300000;
+export const SLOPE_MIN_POINTS = 3;           // v21.0: 至少3个数据点才预测 (防单次drop误判)
+export const SLOPE_MIN_SPAN = 120000;         // v21.0: 至少2min时间跨度才预测
 
 // ═══ 并发Tab感知 ═══
-export const CONCURRENT_TAB_SAFE = 2;
+export const CONCURRENT_TAB_SAFE = 5;         // v21.0: 2→5, 避免少量tab误触BURST
 export const MSG_RATE_WINDOW = 60000;
 export const MSG_RATE_LIMIT = 12;
 export const BURST_DETECT_THRESHOLD = 0.7;
@@ -103,6 +105,8 @@ export const TAB_CHECK_INTERVAL = 10000;
 // ═══ 防封控 (v18.0) ═══
 export const MIN_SWITCH_INTERVAL = 30000;     // 两次自动切换最小间隔 30s
 export const MAX_SWITCHES_PER_HOUR = 30;      // 每小时最大自动切换次数
+export const POST_SWITCH_SUPPRESS_MS = 30000; // v21.0: 切号后抑制预防性评估 (防low切号风暴)
+export const TAB_PRESSURE_STARTUP_GRACE = 60000; // v21.0: 启动后60s内不触发tab_pressure
 
 // ═══ 全池监控 ═══
 export const FULL_SCAN_INTERVAL_NORMAL = 300000;
@@ -115,6 +119,9 @@ export const REACTIVE_DROP_MIN = 5;
 export const FULL_SCAN_CONCURRENCY = 3;       // 全池扫描并发数 (v19.1: 从1提升到3)
 export const FULL_SCAN_STALE_MULTIPLIER = 3;  // 连续无变化账号跳过倍率 (FRESH_SKIP×3=30min)
 export const UFEF_COOLDOWN = 600000;
+export const WEEKLY_RESET_DETECT_RATIO = 0.8; // v21.0: ≥80%账号同方向大幅变动 → 周重置事件
+export const WEEKLY_RESET_COOLDOWN = 600000;  // v21.0: 周重置检测后延迟10min再扫描
+export const FULL_SCAN_CONSECUTIVE_FAIL_LIMIT = 5; // v21.0: 连续N个401失败 → 暂停该批
 
 // ═══ 速度检测 ═══
 export const VELOCITY_WINDOW = 120000;

@@ -5,14 +5,17 @@
 import vscode from 'vscode';
 import {
   POLL_NORMAL, POLL_BOOST, POLL_BURST, SLOPE_WINDOW, SLOPE_HORIZON,
+  SLOPE_MIN_POINTS, SLOPE_MIN_SPAN,
   CONCURRENT_TAB_SAFE, MSG_RATE_WINDOW, MSG_RATE_LIMIT, BURST_DETECT_THRESHOLD,
   TAB_CHECK_INTERVAL, FULL_SCAN_INTERVAL_NORMAL, FULL_SCAN_INTERVAL_BOOST,
   FULL_SCAN_INTERVAL_BURST, REACTIVE_SWITCH_CD, UFEF_COOLDOWN,
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR, PREHEAT_FRESHNESS_TTL, PREHEAT_TIMEOUT,
+  POST_SWITCH_SUPPRESS_MS, TAB_PRESSURE_STARTUP_GRACE,
   IDLE_STRETCH_AFTER, IDLE_POLL_MAX, IDLE_POLL_STEP,
   FULL_SCAN_CONCURRENCY, FULL_SCAN_STALE_MULTIPLIER,
+  WEEKLY_RESET_DETECT_RATIO, WEEKLY_RESET_COOLDOWN, FULL_SCAN_CONSECUTIVE_FAIL_LIMIT,
   getReactiveDropMin, getTierPreemptiveThreshold, SWE_FREE_FALLBACK,
   L5_ENABLED, isTierFree, isTrialPlan,
 } from '../shared/config.js';
@@ -45,6 +48,11 @@ const FULL_SCAN_REFRESH_LANE = 'full_scan';
 const FULL_SCAN_REFRESH_GAP_MS = 1200;
 const FULL_SCAN_FRESH_SKIP_MS = 10 * 60 * 1000;
 const _activeNetworkRefreshTs = new Map();
+const _engineStartTs = Date.now();
+// v21.0 Fix #5: weekly reset cooldown tracking
+let _weeklyResetCooldownUntil = 0;
+// v21.0 Fix #6: consecutive auth failure tracking per full scan batch
+let _fullScanConsecutiveAuthFails = 0;
 
 // ═══ 并发Tab感知 ═══
 
@@ -157,10 +165,11 @@ export function _slopePredict() {
   const runtime = _getAccountRuntime(S.activeIndex, false);
   if (!runtime || runtime.quotaHistory.length < 2) return null;
   const recent = runtime.quotaHistory.slice(-SLOPE_WINDOW);
-  if (recent.length < 2) return null;
+  // v21.0: require at least SLOPE_MIN_POINTS and SLOPE_MIN_SPAN to avoid single-drop false alarms
+  if (recent.length < SLOPE_MIN_POINTS) return null;
   const first = recent[0], last = recent[recent.length - 1];
   const dt = last.ts - first.ts;
-  if (dt <= 0) return null;
+  if (dt < SLOPE_MIN_SPAN) return null;
   const rate = (last.remaining - first.remaining) / dt;
   if (rate >= 0) return null;
   return Math.round(last.remaining + rate * SLOPE_HORIZON);
@@ -245,7 +254,15 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
     const lastChecked = account?.usage?.lastChecked || 0;
     const dataFresh = (Date.now() - lastChecked) < PREHEAT_FRESHNESS_TTL;
     if (dataFresh) {
-      // silent — skip is the happy path, only timeouts/errors log
+      // v21.0: even with fresh data, verify stored quota meets threshold
+      const cachedRem = S.am.effectiveRemaining(targetIndex);
+      if (cachedRem !== null && cachedRem <= threshold) {
+        return { ok: false, remaining: cachedRem, reason: `insufficient_quota` };
+      }
+      const cachedDaily = S.am.getDailyRemaining(targetIndex);
+      if (cachedDaily !== null && cachedDaily <= MIN_DAILY_QUOTA_FOR_SWITCH) {
+        return { ok: false, remaining: cachedDaily, reason: `daily_quota_floor(${cachedDaily}%≤${MIN_DAILY_QUOTA_FOR_SWITCH}%)` };
+      }
     } else {
       await Promise.race([
         deps.refreshOne(targetIndex, { priority: 'high', reason: 'switch_preheat' }),
@@ -434,6 +451,10 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
         if (S.am.isRateLimited(i) || S.am.isExpired(i)) continue;
         const iUrg = S.am.getExpiryUrgency(i);
         const iRem = S.am.effectiveRemaining(i);
+        // v21.0: also check weekly floor — avoid UFEF selecting accounts with low weekly
+        const iAccount = S.am.get(i);
+        const iWeekly = iAccount?.usage?.weekly?.remaining;
+        if (iWeekly !== null && iWeekly !== undefined && iWeekly <= threshold) continue;
         if (iUrg === 0 && iRem !== null && iRem > threshold) {
           decision.action = 'switch_account';
           decision.reason = `ufef_urgent(active_urg=${activeUrg},#${i + 1}_urg=${iUrg},#${i + 1}_rem=${iRem},#${i + 1}_days=${S.am.getPlanDaysRemaining(i)})`;
@@ -463,7 +484,8 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
       decision.reason = `fallback_burst(tabs=${S.cascadeTabCount},rate=${_getCurrentMsgRate()}/${MSG_RATE_LIMIT})`;
       return decision;
     }
-    if (S.cascadeTabCount > CONCURRENT_TAB_SAFE && curQuota !== null) {
+    // v21.0: startup grace — don't trigger tab_pressure within first 60s (tabs may be stale from previous session)
+    if (S.cascadeTabCount > CONCURRENT_TAB_SAFE && curQuota !== null && (Date.now() - _engineStartTs > TAB_PRESSURE_STARTUP_GRACE)) {
       const dynamicThreshold = threshold + (S.cascadeTabCount - CONCURRENT_TAB_SAFE) * 5;
       if (curQuota <= dynamicThreshold && curQuota > threshold) {
         decision.action = 'switch_account';
@@ -950,12 +972,15 @@ async function _poolTick(context) {
 
   // ═══ 全池扫描 ═══
   const fullScanInterval = S.burstMode ? FULL_SCAN_INTERVAL_BURST : _isBoost() ? FULL_SCAN_INTERVAL_BOOST : FULL_SCAN_INTERVAL_NORMAL;
-  const fullScanAllowed = Date.now() >= (S.fullScanDeferredUntil || 0);
+  // v21.0 Fix #5: weekly reset cooldown — extend defer if a reset was detected
+  const fullScanAllowed = Date.now() >= (S.fullScanDeferredUntil || 0) && Date.now() >= _weeklyResetCooldownUntil;
   if (S.batchImportValidationRunning) {
     S.fullScanDeferredUntil = Math.max(S.fullScanDeferredUntil || 0, Date.now() + 60000);
   } else if (fullScanAllowed && Date.now() - S.lastFullScanTs > fullScanInterval) {
     S.lastFullScanTs = Date.now();
     const scanStartedAt = Date.now();
+    // v21.0 Fix #6: reset consecutive failure counter at scan start
+    _fullScanConsecutiveAuthFails = 0;
     // v19.1: stale accounts (snapshot unchanged) get extended skip TTL
     const scanIndexes = accounts
       .map((account, index) => ({ account, index }))
@@ -973,6 +998,12 @@ async function _poolTick(context) {
       deps.updatePoolBar?.();
     } else {
       _logInfo("全池扫描", `后台刷新${scanIndexes.length}/${accounts.length}个账号额度 (并发=${FULL_SCAN_CONCURRENCY})...`);
+      // v21.0 Fix #5: capture pre-scan snapshots for weekly reset detection
+      const preScanSnaps = new Map();
+      for (let i = 0; i < accounts.length; i++) {
+        const rem = S.am.effectiveRemaining(i);
+        if (rem !== null && rem !== undefined) preScanSnaps.set(i, rem);
+      }
       const updateSnapshot = (i) => {
         const rem = S.am.effectiveRemaining(i);
         const prev = S.allQuotaSnapshot.get(i);
@@ -994,8 +1025,19 @@ async function _poolTick(context) {
         lane: FULL_SCAN_REFRESH_LANE,
         laneConcurrency: FULL_SCAN_CONCURRENCY,
         minStartGapMs: FULL_SCAN_REFRESH_GAP_MS,
-        onSettledIndex: (index) => {
+        onSettledIndex: (index, result) => {
           updateSnapshot(index);
+          // v21.0 Fix #6: track consecutive auth failures to circuit-break
+          const isAuthFail = result?.status === 'fulfilled' && !result?.value?.ok &&
+            /401|invalid.*auth|app.*check|unauthorized/i.test(result?.value?.error?.message || result?.value?.value?.error || '');
+          if (isAuthFail) {
+            _fullScanConsecutiveAuthFails++;
+            if (_fullScanConsecutiveAuthFails >= FULL_SCAN_CONSECUTIVE_FAIL_LIMIT) {
+              _logWarn('全池扫描', `熔断: 连续${_fullScanConsecutiveAuthFails}个认证失败, 跳过剩余`);
+            }
+          } else if (result?.status === 'fulfilled' && result?.value?.ok) {
+            _fullScanConsecutiveAuthFails = 0;
+          }
           deps.updatePoolBar?.();
           _refreshPanel();
         },
@@ -1013,6 +1055,18 @@ async function _poolTick(context) {
           "全池扫描",
           `✅ ${result?.ok ?? 0}/${result?.total ?? scanIndexes.length} ok | ${(elapsed/1000).toFixed(1)}s | 可用:${healthy} 低余额:${low}${result?.failed ? ` fail:${result.failed}` : ''}`,
         );
+        // v21.0 Fix #5: weekly reset detection — if ≥80% accounts jumped ≥20% same direction, defer next scan
+        let bigJumps = 0, totalWithSnap = 0;
+        for (const [i, prevRem] of preScanSnaps) {
+          const curRem = S.am.effectiveRemaining(i);
+          if (curRem === null || curRem === undefined) continue;
+          totalWithSnap++;
+          if (curRem - prevRem >= 20) bigJumps++;
+        }
+        if (totalWithSnap > 0 && bigJumps / totalWithSnap >= WEEKLY_RESET_DETECT_RATIO) {
+          _weeklyResetCooldownUntil = Date.now() + WEEKLY_RESET_COOLDOWN;
+          _logWarn('全池扫描', `📅 周重置检测: ${bigJumps}/${totalWithSnap}个账号大幅回升 → 延迟${WEEKLY_RESET_COOLDOWN / 60000}min后再扫描`);
+        }
       }).catch((e) => {
         _logWarn("全池扫描", `后台刷新异常: ${e.message}`);
       });
@@ -1042,43 +1096,48 @@ async function _poolTick(context) {
 
   // ═══ 预防性轮转 ═══
   if (autoRotate) {
-    const trialPoolActive = !!_getTrialPoolCooldown(_readCurrentModelUid());
-    const downgradeActive = S.downgradeLockUntil > 0 && Date.now() < S.downgradeLockUntil;
-    if (trialPoolActive && downgradeActive) {
-      // 静默模式
-    } else if (trialPoolActive && Date.now() - S.lastTrialPoolCooldownFailTs < TRIAL_POOL_COOLDOWN_RETRY_CD) {
-      // 防抖
+    // v21.0: post-switch suppress — avoid evaluating immediately after switching (prevents low-account cut-storm)
+    if (S.lastSwitchTs && Date.now() - S.lastSwitchTs < POST_SWITCH_SUPPRESS_MS) {
+      // silent — just switched, wait for MIN_SWITCH_INTERVAL to expire before re-evaluating
     } else {
-      const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
-      if (decision.action === 'none') {
-        _setLastDecision({
-          action: 'none',
-          reason: decision.reason,
-          activeIndex: S.activeIndex,
-          quota: curQuota,
-          threshold,
-        });
-      }
-      if (decision.action === 'switch_account') {
-        _setLastDecision({
-          action: 'switch_account',
-          reason: decision.reason,
-          activeIndex: S.activeIndex,
-          quota: curQuota,
-          threshold,
-          targetPolicy: decision.targetPolicy || 'same_strategy',
-        });
-        if (decision.reason.startsWith('ufef_urgent')) S.lastUfefSwitchTs = Date.now();
-        _logInfo("调度决策", `预防性切号: ${decision.reason}`);
-        const switchResult = await _performSwitch(context, {
-          threshold,
-          targetPolicy: decision.targetPolicy || 'same_strategy',
-          source: `preventive:${decision.reason}`,
-        });
-        if (!switchResult.ok) {
-          if (trialPoolActive) S.lastTrialPoolCooldownFailTs = Date.now();
-          deps.updatePoolBar?.();
-          _logWarn("调度决策", "预防性切号失败: 所有账号额度不足或预热失败");
+      const trialPoolActive = !!_getTrialPoolCooldown(_readCurrentModelUid());
+      const downgradeActive = S.downgradeLockUntil > 0 && Date.now() < S.downgradeLockUntil;
+      if (trialPoolActive && downgradeActive) {
+        // 静默模式
+      } else if (trialPoolActive && Date.now() - S.lastTrialPoolCooldownFailTs < TRIAL_POOL_COOLDOWN_RETRY_CD) {
+        // 防抖
+      } else {
+        const decision = evaluateActiveAccount({ accounts, threshold, curQuota });
+        if (decision.action === 'none') {
+          _setLastDecision({
+            action: 'none',
+            reason: decision.reason,
+            activeIndex: S.activeIndex,
+            quota: curQuota,
+            threshold,
+          });
+        }
+        if (decision.action === 'switch_account') {
+          _setLastDecision({
+            action: 'switch_account',
+            reason: decision.reason,
+            activeIndex: S.activeIndex,
+            quota: curQuota,
+            threshold,
+            targetPolicy: decision.targetPolicy || 'same_strategy',
+          });
+          if (decision.reason.startsWith('ufef_urgent')) S.lastUfefSwitchTs = Date.now();
+          _logInfo("调度决策", `预防性切号: ${decision.reason}`);
+          const switchResult = await _performSwitch(context, {
+            threshold,
+            targetPolicy: decision.targetPolicy || 'same_strategy',
+            source: `preventive:${decision.reason}`,
+          });
+          if (!switchResult.ok) {
+            if (trialPoolActive) S.lastTrialPoolCooldownFailTs = Date.now();
+            deps.updatePoolBar?.();
+            _logWarn("调度决策", "预防性切号失败: 所有账号额度不足或预热失败");
+          }
         }
       }
     }

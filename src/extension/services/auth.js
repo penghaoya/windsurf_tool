@@ -97,7 +97,8 @@ function _warnHttpErrorRaw(kind, hostname, pathLabel, status, body) {
 }
 
 // Global cooldowns for upstream rate limits (process-wide, per-AuthService)
-const DEVIN_AUTH_COOLDOWN_MS = 60_000; // after 429 on /_devin-auth/*
+const DEVIN_AUTH_COOLDOWN_BASE_MS = 60_000; // after 429 on /_devin-auth/*
+const DEVIN_AUTH_COOLDOWN_MAX_MS = 300_000; // v21.0: escalating max 5min
 
 class AuthService {
   constructor(storagePath) {
@@ -107,6 +108,7 @@ class AuthService {
     this._cachePath = null; // set lazily in _getCachePath()
     this._providerCachePath = null;
     this._devinAuthCooldownUntil = 0; // ts — skip devin-auth before this
+    this._devinAuth429Count = 0;       // v21.0: consecutive 429 counter for escalating backoff
     this._loadCache();
     this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
@@ -977,14 +979,18 @@ class AuthService {
         const devin = await this._signInWithDevinAuth(email, password, loginOpts);
         this._setCachedToken(email, devin.idToken);
         this._setCachedAuthProvider(email, 'devin-auth');
+        this._devinAuth429Count = 0; // v21.0: reset escalation on success
         return { ...devin, elapsed: Date.now() - _t0 };
       } catch (e) {
         errors.push(`devin-auth: ${e.message}`);
         if (this._isUnsupportedDevinAuthError(e.message)) {
           this._setCachedAuthProvider(email, 'unsupported-devin');
         } else if (/\b429\b|rate[\s_-]*limit/i.test(e.message || '')) {
-          this._devinAuthCooldownUntil = Date.now() + DEVIN_AUTH_COOLDOWN_MS;
-          _warn('登录', `devin-auth 全局冷却 ${DEVIN_AUTH_COOLDOWN_MS / 1000}s (upstream 429)`);
+          // v21.0: escalating backoff — consecutive 429s double the cooldown
+          this._devinAuth429Count++;
+          const backoffMs = Math.min(DEVIN_AUTH_COOLDOWN_BASE_MS * Math.pow(2, this._devinAuth429Count - 1), DEVIN_AUTH_COOLDOWN_MAX_MS);
+          this._devinAuthCooldownUntil = Date.now() + backoffMs;
+          _warn('登录', `devin-auth 全局冷却 ${Math.round(backoffMs / 1000)}s (upstream 429, 连续${this._devinAuth429Count}次)`);
         }
         _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
       }
