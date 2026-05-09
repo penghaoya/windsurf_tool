@@ -67,6 +67,30 @@ let _lastKnownPort = 0;
 // 双模式: 'local' = 本地代理, 'relay' = 网站中转(无需VPN)
 let ACTIVE_MODE = 'local';
 
+// v21.0: login fingerprint randomization (mimics WindsurfAPI)
+const _FP_OS = [
+  'Windows NT 10.0; Win64; x64', 'Macintosh; Intel Mac OS X 10_15_7',
+  'Macintosh; Intel Mac OS X 13_4_1', 'Macintosh; Intel Mac OS X 14_2_1',
+  'X11; Linux x86_64',
+];
+const _FP_CHROME = ['125.0.0.0', '126.0.0.0', '128.0.0.0', '130.0.0.0', '132.0.0.0', '134.0.0.0'];
+const _FP_LANG = ['en-US,en;q=0.9', 'zh-CN,zh;q=0.9,en;q=0.8', 'ja,en-US;q=0.9,en;q=0.8'];
+function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function _generateLoginFingerprint() {
+  const os = _pick(_FP_OS);
+  const cv = _pick(_FP_CHROME);
+  const major = cv.split('.')[0];
+  return {
+    'User-Agent': `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${cv} Safari/537.36`,
+    'Accept-Language': _pick(_FP_LANG),
+    'sec-ch-ua': `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not-A.Brand";v="99"`,
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': os.includes('Windows') ? '"Windows"' : os.includes('Mac') ? '"macOS"' : '"Linux"',
+    'Origin': 'https://windsurf.com',
+    'Referer': 'https://windsurf.com/',
+  };
+}
+
 // 可注入日志函数 — setLogger() 注入后写入 outputChannel, 否则降级 console.log
 let _info = (tag, msg) => console.log(`WAM: [${tag}] ${msg}`);
 let _warn = (tag, msg) => console.log(`WAM: [WARN][${tag}] ${msg}`);
@@ -832,19 +856,19 @@ class AuthService {
   }
 
   static WINDSURF_POST_AUTH_URLS = [
-    'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
     'https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
+    'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
   ];
 
-  async _windsurfPostAuth(auth1Token) {
+  async _windsurfPostAuth(auth1Token, fp = null) {
     const protoBody = Buffer.concat([
       encodeProtoString(auth1Token, 1),
       encodeProtoString('', 2),
     ]);
     const protoHeaders = {
       Accept: 'application/proto',
-      'User-Agent': 'Mozilla/5.0',
       'X-Devin-Auth1-Token': auth1Token,
+      ...(fp || { 'User-Agent': 'Mozilla/5.0' }),
     };
 
     // Try binary proto on all endpoints first (faster, existing behavior)
@@ -860,7 +884,8 @@ class AuthService {
     // Fallback: JSON path (can detect multi-org accounts, referencing windsurf-switch)
     const jsonHeaders = {
       'X-Devin-Auth1-Token': auth1Token,
-      Referer: 'https://windsurf.com/editor/signin',
+      'Connect-Protocol-Version': '1',
+      ...(fp || { Referer: 'https://windsurf.com/editor/signin' }),
     };
     for (const url of AuthService.WINDSURF_POST_AUTH_URLS) {
       try {
@@ -888,22 +913,64 @@ class AuthService {
     throw new Error('WindsurfPostAuth failed: all endpoints exhausted');
   }
 
+  // v21.0: interpret connections response — supports BOTH old {auth_method:{method,has_password}}
+  // and new {connections:[{id,type,enabled,client_id}...]} format (Windsurf 2026-04-26)
+  static _interpretConnections(data) {
+    if (data && Array.isArray(data.connections)) {
+      const emailConn = data.connections.find(c => c && c.type === 'email');
+      return { method: 'auth1', hasPassword: !!(emailConn && emailConn.enabled) };
+    }
+    if (data && data.auth_method) {
+      return { method: data.auth_method.method || null, hasPassword: data.auth_method.has_password !== false };
+    }
+    return { method: null, hasPassword: false };
+  }
+
+  // v21.0: primary probe — CheckUserLoginMethod (Connect-RPC, fast+clean)
+  async _checkUserLoginMethod(email, fp = null) {
+    try {
+      const r = await this._httpsJson(
+        'https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/CheckUserLoginMethod',
+        'POST',
+        { email },
+        undefined,
+        { 'Connect-Protocol-Version': '1', ...(fp || {}) },
+      );
+      if (!r.ok || !r.data || typeof r.data !== 'object') return null;
+      // Empty body (cold start) — defer to legacy probe
+      const hasUserField = Object.prototype.hasOwnProperty.call(r.data, 'userExists');
+      const hasPwField = Object.prototype.hasOwnProperty.call(r.data, 'hasPassword');
+      if (!hasUserField && !hasPwField) return null;
+      if (r.data.userExists === false) return { method: null, hasPassword: false };
+      return { method: 'auth1', hasPassword: !!r.data.hasPassword };
+    } catch {
+      return null;
+    }
+  }
+
   async _signInWithDevinAuth(email, password, opts = {}) {
     const _emailPrefix = email.split('@')[0];
     const _li = opts.quiet ? _debug : _info;
-    const connections = await this._withNetworkRetry('Devin Auth connections', async () => {
-      const r = await this._httpsJson(
-        'https://windsurf.com/_devin-auth/connections',
-        'POST',
-        { email },
-      );
-      if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
-      return r.data;
-    });
-    if (
-      connections?.auth_method?.method !== 'auth1' ||
-      connections?.auth_method?.has_password !== true
-    ) {
+    // v21.0: per-login fingerprint randomization
+    const fp = _generateLoginFingerprint();
+
+    // v21.0: probe sequence — CheckUserLoginMethod (fast) → _devin-auth/connections (legacy fallback)
+    let conn = await this._checkUserLoginMethod(email, fp);
+    if (!conn || conn.method === null) {
+      const legacyData = await this._withNetworkRetry('Devin Auth connections', async () => {
+        const r = await this._httpsJson(
+          'https://windsurf.com/_devin-auth/connections',
+          'POST',
+          { product: 'windsurf', email },
+          undefined,
+          fp,
+        );
+        if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
+        return r.data;
+      });
+      conn = AuthService._interpretConnections(legacyData);
+    }
+    if (conn.method !== 'auth1' || !conn.hasPassword) {
       throw new Error('Devin Auth 不支持密码登录');
     }
 
@@ -912,13 +979,15 @@ class AuthService {
         'https://windsurf.com/_devin-auth/password/login',
         'POST',
         { email, password },
+        undefined,
+        fp,
       );
       if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
       return r.data;
     });
     if (!login?.token) throw new Error('Devin Auth 返回空 token');
 
-    const postAuth = await this._withNetworkRetry('WindsurfPostAuth', () => this._windsurfPostAuth(login.token));
+    const postAuth = await this._withNetworkRetry('WindsurfPostAuth', () => this._windsurfPostAuth(login.token, fp));
     if (!postAuth.sessionToken) throw new Error('WindsurfPostAuth 返回空 sessionToken');
 
     _li('登录', `${_emailPrefix} → devin-auth`);
@@ -1330,23 +1399,12 @@ class AuthService {
     return null;
   }
 
-  // ========== GetOneTimeAuthToken (legacy v5.0.20 flow, mode-aware) ==========
-
-  // v5.8.0: In Windsurf 1.108.2, PROVIDE_AUTH_TOKEN_TO_AUTH_PROVIDER accepts
-  // firebase idToken directly and internally calls registerUser. So the preferred
-  // injection path is: login → idToken → inject idToken via command.
-  // getOneTimeAuthToken is kept as FALLBACK only (relay path).
-  async getOneTimeAuthToken(email, password) {
-    const loginResult = await this.login(email, password, true);
-    if (!loginResult.ok) return null;
-
-    const reqData = encodeProtoString(loginResult.idToken);
-    // v5.8.0: self-serve.windsurf.com removed from Windsurf 1.108.2
-    // Try relay only (the only known working OneTimeAuthToken endpoint)
-    const resp = await this._tryRelaysBinary('/windsurf/auth-token', reqData);
-    if (!resp) return null;
-
-    return parseProtoString(resp.buffer);
+  // ========== GetOneTimeAuthToken (DEPRECATED — endpoint dead since 2026-05-04) ==========
+  // v21.0: upstream GetOneTimeAuthToken returns 401 for ALL sessionTokens across all hosts.
+  // Windsurf migrated to Auth1→PostAuth→sessionToken as apiKey. Kept as no-op stub
+  // so authInjector.js S1 fallback doesn't crash; always returns null.
+  async getOneTimeAuthToken(_email, _password) {
+    return null;
   }
 
   /** v5.8.0: Get fresh firebase idToken for direct injection into Windsurf command.
