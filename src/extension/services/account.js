@@ -1015,14 +1015,18 @@ class AccountManager {
       else if (rem <= threshold) { depleted++; }
       else { available++; }
 
-      // Aggregate D/W regardless of status (pool-wide view)
-      if (a.usage && a.usage.mode === 'quota') {
-        const d = a.usage.daily?.remaining;
-        const w = a.usage.weekly?.remaining;
-        if (d !== null && d !== undefined) { sumDaily += d; dailyCount++; }
-        if (w !== null && w !== undefined) { sumWeekly += w; weeklyCount++; }
-      } else if (a.credits !== undefined && a.credits !== null) {
-        sumCredits += a.credits; creditsCount++;
+      // v21.0: only aggregate D/W/credits for AVAILABLE accounts — depleted accounts
+      // (weekly≤threshold, weekly=null) should not inflate pool daily/weekly averages.
+      const isAvailable = !isInvalid && !isRL && rem !== null && rem !== undefined && rem > threshold;
+      if (isAvailable) {
+        if (a.usage && a.usage.mode === 'quota') {
+          const d = a.usage.daily?.remaining;
+          const w = a.usage.weekly?.remaining;
+          if (d !== null && d !== undefined) { sumDaily += d; dailyCount++; }
+          if (w !== null && w !== undefined) { sumWeekly += w; weeklyCount++; }
+        } else if (a.credits !== undefined && a.credits !== null) {
+          sumCredits += a.credits; creditsCount++;
+        }
       }
 
       if (rem !== null && rem !== undefined && !isRL) {
@@ -1036,12 +1040,12 @@ class AccountManager {
       if (u?.weeklyReset && u.weeklyReset > Date.now() && u.weeklyReset < nextWeeklyReset) nextWeeklyReset = u.weeklyReset;
 
       // Effective capacity (min(D,W) per account — the TRUE usable quota)
-      if (rem !== null && rem !== undefined && !isRL) {
+      if (isAvailable) {
         sumEffective += rem;
         effectiveCount++;
       }
       // Weekly bottleneck detection (W < D means weekly is the binding constraint)
-      if (a.usage && a.usage.mode === 'quota') {
+      if (isAvailable && a.usage && a.usage.mode === 'quota') {
         const dd = a.usage.daily?.remaining;
         const ww = a.usage.weekly?.remaining;
         if (dd !== null && dd !== undefined && ww !== null && ww !== undefined && ww < dd) {
@@ -1049,7 +1053,7 @@ class AccountManager {
         }
       }
       // Pre-reset waste detection (high remaining + weekly reset within 24h = quota will be wasted)
-      if (!isRL && rem !== null && rem > 30) {
+      if (isAvailable && rem > 30) {
         const wr = a.usage?.weeklyReset;
         if (wr && wr > Date.now() && (wr - Date.now()) < 86400000) {
           preResetWasteCount++;

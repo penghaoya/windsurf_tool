@@ -57,8 +57,23 @@ const activeAccount = computed(() =>
   props.currentIndex >= 0 ? props.accounts[props.currentIndex] : null
 )
 
-const dailyPct = computed(() => activeAccount.value?.usage?.daily?.remaining ?? null)
-const weeklyPct = computed(() => activeAccount.value?.usage?.weekly?.remaining ?? null)
+// v21.0: quota mode — one dimension missing → show 0% (matches effectiveRemaining logic)
+const dailyPct = computed(() => {
+  const d = activeAccount.value?.usage?.daily?.remaining ?? null
+  if (d !== null) return d
+  const u = activeAccount.value?.usage
+  const isQuota = u?.mode === 'quota' || u?.daily || u?.weekly
+  if (isQuota && u?.weekly?.remaining != null) return 0
+  return null
+})
+const weeklyPct = computed(() => {
+  const w = activeAccount.value?.usage?.weekly?.remaining ?? null
+  if (w !== null) return w
+  const u = activeAccount.value?.usage
+  const isQuota = u?.mode === 'quota' || u?.daily || u?.weekly
+  if (isQuota && u?.daily?.remaining != null) return 0
+  return null
+})
 const dailyColor = computed(() => dailyPct.value !== null ? meterColor(dailyPct.value) : 'var(--tx3)')
 const weeklyColor = computed(() => weeklyPct.value !== null ? meterColor(weeklyPct.value) : 'var(--tx3)')
 

@@ -101,13 +101,22 @@ const weekResetStr = computed(() =>
 )
 
 // Active account quota display
+// v21.0: quota mode — one dimension missing → show 0%
 const activeDailyPct = computed(() => {
   const u = activeAccount.value?.usage
-  return u?.daily?.remaining ?? null
+  const d = u?.daily?.remaining ?? null
+  if (d !== null) return d
+  const isQuota = u?.mode === 'quota' || u?.daily || u?.weekly
+  if (isQuota && u?.weekly?.remaining != null) return 0
+  return null
 })
 const activeWeeklyPct = computed(() => {
   const u = activeAccount.value?.usage
-  return u?.weekly?.remaining ?? null
+  const w = u?.weekly?.remaining ?? null
+  if (w !== null) return w
+  const isQuota = u?.mode === 'quota' || u?.daily || u?.weekly
+  if (isQuota && u?.daily?.remaining != null) return 0
+  return null
 })
 const activeQuotaTag = computed(() => {
   if (activeDailyPct.value === null) return ''

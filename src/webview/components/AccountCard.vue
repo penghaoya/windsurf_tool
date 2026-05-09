@@ -266,8 +266,21 @@ const statusClass = computed(() =>
   dotClass(effectiveRemaining.value, props.threshold, props.account.isExpired)
 )
 
-const dailyPct = computed(() => props.account.usage?.daily?.remaining ?? null)
-const weeklyPct = computed(() => props.account.usage?.weekly?.remaining ?? null)
+// v21.0: quota mode — one dimension missing → show 0% (matches effectiveRemaining logic)
+const dailyPct = computed(() => {
+  const d = props.account.usage?.daily?.remaining ?? null
+  if (d !== null) return d
+  const isQuota = props.account.usage?.mode === 'quota' || props.account.usage?.daily || props.account.usage?.weekly
+  if (isQuota && props.account.usage?.weekly?.remaining != null) return 0
+  return null
+})
+const weeklyPct = computed(() => {
+  const w = props.account.usage?.weekly?.remaining ?? null
+  if (w !== null) return w
+  const isQuota = props.account.usage?.mode === 'quota' || props.account.usage?.daily || props.account.usage?.weekly
+  if (isQuota && props.account.usage?.daily?.remaining != null) return 0
+  return null
+})
 
 // Tier-based plan-tag color class (Trial takes priority — free-trial with pro should still show as trial)
 const planClass = computed(() => {

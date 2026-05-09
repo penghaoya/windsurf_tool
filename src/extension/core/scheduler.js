@@ -712,15 +712,16 @@ export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
 export function _roundRobinFallback() {
   const accounts = S.am.getAll();
   if (accounts.length <= 1) return -1;
+  const threshold = _getPreemptiveThreshold();
   for (let r = 1; r < accounts.length; r++) {
     const ci = (S.activeIndex + r) % accounts.length;
     if (S.am.isInvalidAuth?.(ci)) continue;
     if (S.am.isRateLimited(ci) || S.am.isExpired(ci) || _isAccountQuarantined(ci)) continue;
     const dailyRem = S.am.getDailyRemaining(ci);
     if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
-    // v21.0: skip accounts where effectiveRemaining=0 (weekly-missing → depleted)
+    // v21.0: skip accounts below preemptive threshold (covers weekly-missing=0 and low weekly)
     const effRem = S.am.effectiveRemaining(ci);
-    if (effRem !== null && effRem <= 0) continue;
+    if (effRem !== null && effRem <= threshold) continue;
     const trialCd = _getTrialPoolCooldown(_readCurrentModelUid());
     if (trialCd && _isTrialLikeAccount(ci)) continue;
     return ci;
