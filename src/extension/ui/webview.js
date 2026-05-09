@@ -367,6 +367,20 @@ class AccountViewProvider {
           });
         }
         break;
+      case ACTION.BATCH_COPY:
+        if (Array.isArray(msg.emails) && msg.emails.length > 0) {
+          const targets = new Set(msg.emails);
+          const lines = this._am.getAll()
+            .filter(a => targets.has(a.email) && a.email && a.password)
+            .map(a => `${a.email}----${a.password}`);
+          if (lines.length > 0) {
+            await vscode.env.clipboard.writeText(lines.join('\n'));
+            this._toast(`已复制 ${lines.length} 个账号到剪贴板`);
+          } else {
+            this._toast('无可复制的账号');
+          }
+        }
+        break;
     }
   }
 

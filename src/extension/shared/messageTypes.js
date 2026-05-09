@@ -33,4 +33,5 @@ export const ACTION = {
   SHOW_LOGS: 'showLogs',
   BATCH_REMOVE: 'batchRemove',
   BATCH_REFRESH: 'batchRefresh',
+  BATCH_COPY: 'batchCopy',
 };

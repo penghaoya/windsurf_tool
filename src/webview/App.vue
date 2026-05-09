@@ -61,6 +61,7 @@
       <span class="b-cnt">{{ selectedCount }}已选</span>
       <span style="flex:1"></span>
       <button class="b-btn" @click="batchSelectAll">{{ isAllSelected ? '取消' : '全选' }}</button>
+      <button class="b-btn" @click="batchCopySel" :disabled="!selectedCount">复制</button>
       <button class="b-btn" @click="batchRefreshSel" :disabled="!selectedCount">刷新</button>
       <button class="b-btn danger" @click="batchRemoveSel" :disabled="!selectedCount">删除</button>
     </div>
@@ -124,6 +125,12 @@ function batchRefreshSel() {
   if (!indices.length) return
   toggleBatch()
   postMessage('batchRefresh', { indices })
+}
+function batchCopySel() {
+  const emails = Object.keys(selected)
+  if (!emails.length) return
+  toggleBatch()
+  postMessage('batchCopy', { emails })
 }
 function batchRemoveSel() {
   const emails = Object.keys(selected)
