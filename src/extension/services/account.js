@@ -511,8 +511,9 @@ class AccountManager {
       const hasD = d !== null && d !== undefined;
       const hasW = w !== null && w !== undefined;
       if (hasD && hasW) return Math.min(d, w);
-      if (hasD) return d;
-      // Proto3 fix: daily missing but weekly present → daily is 0% (depleted), return 0
+      // v21.0: quota mode — one dimension missing means the other is abnormal/degraded.
+      // Treat as depleted to exclude from auto-scheduling (conservative safety).
+      if (hasD) return 0;
       if (hasW) return 0;
     }
     return a.credits !== undefined ? a.credits : null;

@@ -718,6 +718,9 @@ export function _roundRobinFallback() {
     if (S.am.isRateLimited(ci) || S.am.isExpired(ci) || _isAccountQuarantined(ci)) continue;
     const dailyRem = S.am.getDailyRemaining(ci);
     if (dailyRem !== null && dailyRem <= MIN_DAILY_QUOTA_FOR_SWITCH) continue;
+    // v21.0: skip accounts where effectiveRemaining=0 (weekly-missing → depleted)
+    const effRem = S.am.effectiveRemaining(ci);
+    if (effRem !== null && effRem <= 0) continue;
     const trialCd = _getTrialPoolCooldown(_readCurrentModelUid());
     if (trialCd && _isTrialLikeAccount(ci)) continue;
     return ci;
