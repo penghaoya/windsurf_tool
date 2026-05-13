@@ -1,9 +1,9 @@
 {
   "name": "windsurf-tools",
-  "displayName": "Windsurf小助手",
+  "displayName": "Windsurf Tools",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.1.7",
+  "version": "2.2.1",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {

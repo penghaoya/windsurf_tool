@@ -12,7 +12,7 @@ import {
   VELOCITY_WINDOW, VELOCITY_THRESHOLD, SONNET_FALLBACK,
   TIER_MSG_CAP_ESTIMATE, TRIAL_POOL_COOLDOWN_RETRY_CD, MIN_DAILY_QUOTA_FOR_SWITCH,
   MIN_SWITCH_INTERVAL, MAX_SWITCHES_PER_HOUR, PREHEAT_FRESHNESS_TTL, PREHEAT_TIMEOUT,
-  POST_SWITCH_SUPPRESS_MS, TAB_PRESSURE_STARTUP_GRACE,
+  POST_SWITCH_SUPPRESS_MS, TAB_PRESSURE_STARTUP_GRACE, ANTI_BOUNCE_MS,
   IDLE_STRETCH_AFTER, IDLE_POLL_MAX, IDLE_POLL_STEP,
   FULL_SCAN_CONCURRENCY, FULL_SCAN_STALE_MULTIPLIER,
   WEEKLY_RESET_DETECT_RATIO, WEEKLY_RESET_COOLDOWN, FULL_SCAN_CONSECUTIVE_FAIL_LIMIT,
@@ -109,6 +109,20 @@ export function _detectCascadeTabs() {
   return count;
 }
 
+// ═══ 小时上限状态 ═══
+
+/** v22.0: 判断小时切换上限是否仍然生效 (hourlySwitchLog 中近1h的记录 >= cap) */
+function _isHourlyCapActive() {
+  if (!S.hourlyCapHitTs) return false;
+  const now = Date.now();
+  const recentCount = S.hourlySwitchLog.filter(ts => now - ts < 3600000).length;
+  if (recentCount < MAX_SWITCHES_PER_HOUR) {
+    S.hourlyCapHitTs = 0;
+    return false;
+  }
+  return true;
+}
+
 // ═══ 消息速率追踪 ═══
 
 export function _trackMessageRate() {
@@ -176,6 +190,8 @@ export function _slopePredict() {
 }
 
 function _getAdaptivePollMs() {
+  // v22.0: hourly cap hit → fall back to POLL_NORMAL even in burstMode (prevent 3s spam when switches are blocked)
+  if (_isHourlyCapActive()) return POLL_NORMAL;
   if (S.burstMode) return POLL_BURST;
   if (_isBoost()) return POLL_BOOST;
   // v19.1: idle de-rate — quota stable for N ticks → stretch interval
@@ -202,6 +218,11 @@ export function _filterRuntimeCandidates(candidates, { modelUid = null } = {}) {
     if (S.am.isInvalidAuth?.(candidate.index)) return false;
     if (_isAccountQuarantined(candidate.email || candidate.index)) return false;
     if (trialPoolCooldown && _isTrialLikeAccount(candidate.index)) return false;
+    // v22.1: anti-bounce — don't switch back to the account we just left within ANTI_BOUNCE_MS
+    if (S.lastSwitchedFromEmail && Date.now() - S.lastSwitchedFromTs < ANTI_BOUNCE_MS) {
+      const candidateEmail = _normalizeEmail(candidate.email || _getAccountEmail(candidate.index));
+      if (candidateEmail === S.lastSwitchedFromEmail) return false;
+    }
     return true;
   });
 }
@@ -319,8 +340,9 @@ export async function _performSwitch(context, {
     }
     S.hourlySwitchLog = S.hourlySwitchLog.filter(ts => now - ts < 3600000);
     if (S.hourlySwitchLog.length >= MAX_SWITCHES_PER_HOUR) {
+      if (!S.hourlyCapHitTs) _logWarn('切换', `小时上限: 已切${S.hourlySwitchLog.length}次/h (cap=${MAX_SWITCHES_PER_HOUR})`);
+      S.hourlyCapHitTs = now;
       _setLastDecision({ action: 'skip_switch', reason: 'hourly_cap', switchCount: S.hourlySwitchLog.length });
-      _logWarn('切换', `小时上限: 已切${S.hourlySwitchLog.length}次/h (cap=${MAX_SWITCHES_PER_HOUR})`);
       return { ok: false, index: -1, reason: 'hourly_cap' };
     }
   }
@@ -485,7 +507,8 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
       return decision;
     }
     // v21.0: startup grace — don't trigger tab_pressure within first 60s (tabs may be stale from previous session)
-    if (S.cascadeTabCount > CONCURRENT_TAB_SAFE && curQuota !== null && (Date.now() - _engineStartTs > TAB_PRESSURE_STARTUP_GRACE)) {
+    // v22.0: require recent quota change — tabs idle after sleep should not trigger pressure
+    if (S.cascadeTabCount > CONCURRENT_TAB_SAFE && curQuota !== null && (Date.now() - _engineStartTs > TAB_PRESSURE_STARTUP_GRACE) && S.idleTickCount <= IDLE_STRETCH_AFTER) {
       const dynamicThreshold = threshold + (S.cascadeTabCount - CONCURRENT_TAB_SAFE) * 5;
       if (curQuota <= dynamicThreshold && curQuota > threshold) {
         decision.action = 'switch_account';
@@ -547,6 +570,9 @@ function _commitConfirmedSwitch(context, {
   S.lastQuota = null;
   S.lastSwitchTs = Date.now();
   S.hourlySwitchLog.push(S.lastSwitchTs);
+  // v22.1: anti-bounce — record the account we just left
+  S.lastSwitchedFromEmail = prevEmail;
+  S.lastSwitchedFromTs = S.lastSwitchTs;
   _dropAccountRuntimeByEmail(prevEmail);
   _resetAccountRuntimeByEmail(_getAccountEmail(targetIndex));
   _heartbeatWindow();
@@ -1101,8 +1127,11 @@ async function _poolTick(context) {
   // ═══ 预防性轮转 ═══
   if (autoRotate) {
     // v21.0: post-switch suppress — avoid evaluating immediately after switching (prevents low-account cut-storm)
+    // v22.0: also suppress when hourly cap active — prevents 3s evaluate→fail spam during sleep/idle
     if (S.lastSwitchTs && Date.now() - S.lastSwitchTs < POST_SWITCH_SUPPRESS_MS) {
       // silent — just switched, wait for MIN_SWITCH_INTERVAL to expire before re-evaluating
+    } else if (_isHourlyCapActive()) {
+      // silent — hourly switch cap in effect, skip evaluation entirely until slots free up
     } else {
       const trialPoolActive = !!_getTrialPoolCooldown(_readCurrentModelUid());
       const downgradeActive = S.downgradeLockUntil > 0 && Date.now() < S.downgradeLockUntil;

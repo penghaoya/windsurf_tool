@@ -478,6 +478,29 @@ class AccountManager {
         nextUsage.planEnd = nextUsage.planStart + (14 * 24 * 3600 * 1000); // 14-day trial
       }
     }
+    // skipUntil: when depleted, skip network refresh until reset time (borrowed from windsurf-pool)
+    const effRem = (() => {
+      if (nextUsage.mode === 'quota') {
+        const dd = nextUsage.daily?.remaining;
+        const ww = nextUsage.weekly?.remaining;
+        const hasD = dd !== null && dd !== undefined;
+        const hasW = ww !== null && ww !== undefined;
+        if (hasD && hasW) return Math.min(dd, ww);
+        if (hasD) return dd;
+        if (hasW) return ww;
+      }
+      return usageInfo.credits ?? null;
+    })();
+    if (effRem !== null && effRem <= 0) {
+      const dr = nextUsage.resetTime;
+      const wr = nextUsage.weeklyReset;
+      const resetMs = (dr && wr) ? Math.min(dr, wr) : (dr || wr || null);
+      if (resetMs && resetMs > Date.now()) {
+        nextUsage.skipUntil = resetMs;
+      }
+    } else {
+      delete nextUsage.skipUntil;
+    }
     a.usage = nextUsage;
     // Keep legacy credits field in sync
     if (usageInfo.credits !== null && usageInfo.credits !== undefined) {
@@ -492,7 +515,14 @@ class AccountManager {
   }
 
   _getUsageFingerprint(usage) {
-    return JSON.stringify(usage ? { ...usage, lastChecked: undefined, fetchedAt: undefined } : null);
+    return JSON.stringify(usage ? { ...usage, lastChecked: undefined, fetchedAt: undefined, skipUntil: undefined } : null);
+  }
+
+  /** Check if an account should skip network refresh (depleted, waiting for reset) */
+  shouldSkipRefresh(index) {
+    const a = this.get(index);
+    if (!a?.usage?.skipUntil) return false;
+    return Date.now() < a.usage.skipUntil;
   }
 
   /**

@@ -18,6 +18,16 @@ import tls from 'tls';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+
+// v22.1: Shared direct HTTPS agent — bypasses VS Code's global proxy interceptor
+// VS Code patches https.globalAgent to route through its proxy settings.
+// By using our own persistent agent, we ensure direct outbound connections.
+const _directAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 6,
+  maxFreeSockets: 2,
+  timeout: 30000,
+});
 import {
   parseProtoString, encodeProtoString, parseUsageInfo, parseProtoMsg,
 } from './protobuf.js';
@@ -653,25 +663,23 @@ class AuthService {
           catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
         } catch (e) { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
-        const agent = new https.Agent({ keepAlive: false });
         const req = https.request({
           hostname: u.hostname, port: 443, path: u.pathname + u.search,
-          method: method || 'GET', headers: hdrs, agent
+          method: method || 'GET', headers: hdrs, agent: _directAgent
         }, (res) => {
           let buf = '';
           res.on('data', c => buf += c);
           res.on('end', () => {
-            agent.destroy();
             if (res.statusCode !== 200) {
               _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms) raw=${_formatRawForLog(buf)}`);
             }
             try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
             catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
           });
-          res.on('error', () => { agent.destroy(); reject(new Error('response error')); });
+          res.on('error', () => { reject(new Error('response error')); });
         });
-        req.on('error', e => { agent.destroy(); _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });
-        req.setTimeout(12000, () => { agent.destroy(); req.destroy(); _warn('HTTP', `JSON ${u.hostname}${u.pathname} → TIMEOUT (direct, ${Date.now() - _t0}ms)`); reject(new Error('timeout')); });
+        req.on('error', e => { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });
+        req.setTimeout(12000, () => { req.destroy(); _warn('HTTP', `JSON ${u.hostname}${u.pathname} → TIMEOUT (direct, ${Date.now() - _t0}ms)`); reject(new Error('timeout')); });
         if (data) req.write(data);
         req.end();
       }
@@ -702,7 +710,6 @@ class AuthService {
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
       } else {
-        const agent = new https.Agent({ keepAlive: false });
         const headers = {
           'Content-Type': 'application/proto',
           'connect-protocol-version': '1',
@@ -710,22 +717,21 @@ class AuthService {
         };
         const req = https.request({
           hostname: u.hostname, port: 443, path: u.pathname + u.search,
-          method: method || 'POST', headers, agent
+          method: method || 'POST', headers, agent: _directAgent
         }, (res) => {
           const chunks = [];
           res.on('data', c => chunks.push(c));
           res.on('end', () => {
-            agent.destroy();
             const buf = Buffer.concat(chunks);
             if (res.statusCode !== 200) {
               _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms) raw=${_formatRawForLog(buf)}`);
             }
             resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
           });
-          res.on('error', () => { agent.destroy(); reject(new Error('response error')); });
+          res.on('error', () => { reject(new Error('response error')); });
         });
-        req.on('error', e => { agent.destroy(); _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });
-        req.setTimeout(12000, () => { agent.destroy(); req.destroy(); _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → TIMEOUT (direct, ${Date.now() - _t0}ms)`); reject(new Error('timeout')); });
+        req.on('error', e => { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });
+        req.setTimeout(12000, () => { req.destroy(); _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → TIMEOUT (direct, ${Date.now() - _t0}ms)`); reject(new Error('timeout')); });
         if (bodyBuffer) req.write(Buffer.from(bodyBuffer));
         req.end();
       }

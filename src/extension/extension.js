@@ -66,6 +66,12 @@ import {
   enqueueRefreshAll,
   getRefreshQueueStatus,
 } from './core/refreshQueue.js';
+import {
+  initUsageDiskCache,
+  readDiskCacheEntry,
+  writeDiskCacheEntry,
+  pickNewer,
+} from './infra/usageDiskCache.js';
 
 const authInjector = createAuthInjector({
   refreshOne: _refreshOne,
@@ -211,6 +217,7 @@ function _activate(context) {
   }
 
   const storagePath = context.globalStorageUri.fsPath;
+  initUsageDiskCache(storagePath);
   S.am = new AccountManager(storagePath);
   S.auth = new AuthService(storagePath);
   S.auth.setLogger(
@@ -379,6 +386,10 @@ function _activate(context) {
 async function _refreshOne(index, options = {}) {
   const account = S.am.get(index);
   if (!account) return { ok: false, credits: undefined, errorType: 'account_missing' };
+  // skipUntil: depleted accounts skip network refresh until reset time
+  if (!options.force && S.am.shouldSkipRefresh(index)) {
+    return { ok: true, skipped: true, source: 'skip_until_reset' };
+  }
   try {
     if (options.preferLocal && S.auth?.readCachedQuota) {
       const cached = S.auth.readCachedQuota(account.email, {
@@ -394,6 +405,19 @@ async function _refreshOne(index, options = {}) {
     // cacheOnly mode (circuit-tripped): only cache reads allowed, skip all network paths.
     if (options.cacheOnly) {
       return { ok: true, skipped: true, errorType: 'cache_miss', source: 'cache_only_skip' };
+    }
+    // v22.1: cross-window disk cache — another window may have already refreshed this account
+    if (!options.force && account.email) {
+      const diskEntry = readDiskCacheEntry(account.email);
+      const memTs = account.usage?.lastChecked || 0;
+      const memEntry = memTs ? { ts: memTs } : null;
+      const newer = pickNewer(memEntry, diskEntry);
+      if (newer === diskEntry && diskEntry?.remaining !== undefined) {
+        const age = Date.now() - diskEntry.ts;
+        if (age < 300000) { // 5min freshness
+          return { ok: true, skipped: true, source: 'disk_cache' };
+        }
+      }
     }
     // v20.3+v20.4: 静默路径
     //   - full_scan: 摘要由 scheduler 打印, 每账号详情降 DEBUG
@@ -457,6 +481,15 @@ async function _refreshOne(index, options = {}) {
         } catch (e) { _logWarn('额度补充', `cachedPlanInfo读取失败: ${e.message}`); }
       }
       S.am.updateUsage(index, usageInfo);
+      // v22.1: write to cross-window disk cache for other windows to reuse
+      if (account.email) {
+        const effRem = S.am.effectiveRemaining(index);
+        writeDiskCacheEntry(account.email, {
+          remaining: effRem,
+          daily: usageInfo.daily?.remaining ?? null,
+          weekly: usageInfo.weekly?.remaining ?? null,
+        });
+      }
       // v20.4: active_tick 仅在额度变化时打印一行 INFO (无变化的高频心跳走 DEBUG)
       if (options.reason === 'active_tick') {
         const curDaily = usageInfo.daily?.remaining ?? null;

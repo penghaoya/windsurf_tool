@@ -63,8 +63,22 @@ function _sortUnknownCandidates(a, b) {
   return a.lastUsed - b.lastUsed;
 }
 
-function _sortCandidatesByMode(candidates, mode) {
+// v22.1: lowestNonZero — drain partially-used accounts before touching fresh ones
+function _sortLowestNonZeroCandidates(a, b) {
+  const aUrg = a.urgency < 0 ? 2 : a.urgency;
+  const bUrg = b.urgency < 0 ? 2 : b.urgency;
+  if (aUrg !== bUrg) return aUrg - bUrg;
+  // lowest remaining first (but > 0)
+  if (a.remaining !== b.remaining) return a.remaining - b.remaining;
+  const aDays = a.planDays ?? 999;
+  const bDays = b.planDays ?? 999;
+  if (aDays !== bDays) return aDays - bDays;
+  return a.lastUsed - b.lastUsed;
+}
+
+function _sortCandidatesByMode(candidates, mode, strategy = null) {
   const arr = [...candidates];
+  if (strategy === 'lowestNonZero') return arr.sort(_sortLowestNonZeroCandidates);
   if (mode === 'quota') return arr.sort(_sortQuotaCandidates);
   if (mode === 'credits') return arr.sort(_sortCreditsCandidates);
   return arr.sort(_sortUnknownCandidates);
@@ -144,18 +158,22 @@ export function selectOptimal(
     }
   }
 
+  const strategy = options.strategy || null;
   const byMode = {
     quota: _sortCandidatesByMode(
       candidates.filter((candidate) => candidate.mode === 'quota'),
       'quota',
+      strategy,
     ),
     credits: _sortCandidatesByMode(
       candidates.filter((candidate) => candidate.mode === 'credits'),
       'credits',
+      strategy,
     ),
     unknown: _sortCandidatesByMode(
       candidates.filter((candidate) => candidate.mode === 'unknown'),
       'unknown',
+      strategy,
     ),
   };
 

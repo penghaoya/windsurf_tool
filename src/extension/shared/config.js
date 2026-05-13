@@ -107,6 +107,7 @@ export const MIN_SWITCH_INTERVAL = 30000;     // 两次自动切换最小间隔 
 export const MAX_SWITCHES_PER_HOUR = 30;      // 每小时最大自动切换次数
 export const POST_SWITCH_SUPPRESS_MS = 30000; // v21.0: 切号后抑制预防性评估 (防low切号风暴)
 export const TAB_PRESSURE_STARTUP_GRACE = 60000; // v21.0: 启动后60s内不触发tab_pressure
+export const ANTI_BOUNCE_MS = 300000;            // v22.1: 防回切 — 5min内不回切刚离开的号
 
 // ═══ 全池监控 ═══
 export const FULL_SCAN_INTERVAL_NORMAL = 300000;

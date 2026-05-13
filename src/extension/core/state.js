@@ -75,6 +75,9 @@ export const S = {
   // 防封控 (v18.0)
   lastSwitchTs: 0,
   hourlySwitchLog: [],
+  hourlyCapHitTs: 0,
+  lastSwitchedFromEmail: null,  // v22.1: anti-bounce — email of the account we just left
+  lastSwitchedFromTs: 0,        // v22.1: anti-bounce — when we left it
 
   // 热重置
   lastRotatedIds: null,
