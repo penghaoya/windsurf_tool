@@ -1,10 +1,4 @@
-import { MIN_DAILY_QUOTA_FOR_SWITCH, getPlanTier, PLAN_TIERS, isTierFree, isTrialPlan } from '../shared/config.js';
-
-// v16.0: Opus请求时,非Trial账号优先 (Pro有500 credits/月 vs Trial 100/2周)
-function _isOpusModelUid(uid) {
-  return uid && ['opus-4-6-thinking-1m', 'opus-4-6-thinking', 'opus-4-6-1m', 'opus-4-6', 'opus-4-6-thinking-fast', 'opus-4-6-fast']
-    .some(v => uid.includes(v));
-}
+import { MIN_DAILY_QUOTA_FOR_SWITCH, getPlanTier, PLAN_TIERS, isTierFree, isTrialPlan, isOpusModel } from '../shared/config.js';
 
 function _sortQuotaCandidates(a, b) {
   const aUrg = a.urgency < 0 ? 2 : a.urgency;
@@ -189,7 +183,7 @@ export function selectOptimal(
   }
 
   // v17.0: Opus模型路由 — Opus请求时 Max前置 > Pro/Teams > Free后置 (额度感知路由)
-  if (modelUid && _isOpusModelUid(modelUid) && ordered.length > 1) {
+  if (modelUid && isOpusModel(modelUid) && ordered.length > 1) {
     const tierRank = (c) => {
       if (c.tier === PLAN_TIERS.MAX) return 0;
       if (c.tier === PLAN_TIERS.PRO || c.tier === PLAN_TIERS.TEAMS || c.tier === PLAN_TIERS.ENTERPRISE) return 1;
