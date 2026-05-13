@@ -819,9 +819,15 @@ class AuthService {
    *        触发, 是 transient 错误。误判为 fatal 会导致大批正常账号被永久标记
    *        invalid_credentials。
    *  保留: INVALID_LOGIN_CREDENTIALS / EMAIL_NOT_FOUND / INVALID_PASSWORD /
-   *        USER_DISABLED 才是真正的凭据级 fatal。 */
+   *        USER_DISABLED 才是真正的凭据级 fatal。
+   *  v22.2: 增加 devin-auth 凭据错误识别 ("Invalid email or password") */
   _isFatalFirebaseAuthError(message) {
-    return /INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED/i.test(String(message || ''));
+    const s = String(message || '');
+    // Firebase credential errors
+    if (/INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD|USER_DISABLED/i.test(s)) return true;
+    // devin-auth credential errors: "Invalid email or password" from /_devin-auth/password/login
+    if (/invalid email or password/i.test(s)) return true;
+    return false;
   }
 
   async _withNetworkRetry(label, fn, maxRetries = 3) {
@@ -1060,6 +1066,10 @@ class AuthService {
         errors.push(`devin-auth: ${e.message}`);
         if (this._isUnsupportedDevinAuthError(e.message)) {
           this._setCachedAuthProvider(email, 'unsupported-devin');
+        } else if (/invalid email or password/i.test(e.message || '')) {
+          // v22.2: devin-auth says credentials are wrong — skip Firebase fallback
+          _warn('登录', `${_emailPrefix} → FAILED (${Date.now() - _t0}ms) ${errors.join(' | ')}`);
+          return { ok: false, error: errors.join(' | ') };
         } else if (/\b429\b|rate[\s_-]*limit/i.test(e.message || '')) {
           // v21.0: escalating backoff — consecutive 429s double the cooldown
           this._devinAuth429Count++;

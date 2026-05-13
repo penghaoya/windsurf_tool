@@ -229,8 +229,6 @@ export function parseUsageInfo(buf) {
       const bs = pi[35]?.[0]?.value;
       result.billingStrategy = bs === 1 ? 'credits' : bs === 2 ? 'quota' : bs === 3 ? 'acu' : null;
 
-      // Log plan info for debugging quota detection
-      console.log(`WAM: [PLAN] name=${result.plan} billing=${result.billingStrategy} maxPremium=${result.maxPremiumMessages} monthly=${result.monthlyPromptCredits} credits=${result.credits} canBuy=${result.canBuyMore} isDevin=${result.isDevin}`);
     }
 
     // Level 2: TopUpStatus (PlanStatus field 10)
@@ -254,11 +252,6 @@ export function parseUsageInfo(buf) {
         const ts = parseProtoMsg(tsEntry.bytes);
         if (ts[1]?.[0]?.value) result[key] = ts[1][0].value * 1000; // seconds → ms
       }
-    }
-
-    // v7.4: Log plan dates for UFEF debugging
-    if (result.planStart || result.planEnd) {
-      console.log(`WAM: [PLAN_DATES] start=${result.planStart ? new Date(result.planStart).toLocaleDateString() : 'n/a'} end=${result.planEnd ? new Date(result.planEnd).toLocaleDateString() : 'n/a'} grace=${result.gracePeriodEnd ? new Date(result.gracePeriodEnd).toLocaleDateString() : 'n/a'} daysRemaining=${result.planEnd ? Math.ceil((result.planEnd - Date.now()) / 86400000) : '?'}`);
     }
 
     // ═══ QUOTA fields (PlanStatus f14-f18, added 2026-03-18 pricing reform) ═══
@@ -311,10 +304,7 @@ export function parseUsageInfo(buf) {
       result.mode = result.credits !== null ? 'credits' : 'quota';
     }
 
-    console.log(`WAM: [QUOTA] mode=${result.mode} daily=${dailyPct}% weekly=${weeklyPct}% overage=$${result.extraBalance?.toFixed(2) || '0'} reset=${dailyResetUnix ? new Date(dailyResetUnix*1000).toLocaleTimeString() : 'n/a'}`);
-
   } catch (e) {
-    console.log('WAM: [PARSE] structure parse error, falling back:', e.message);
     result.credits = parseCredits(buf);
     if (result.credits !== null) result.mode = 'credits';
   }
@@ -400,7 +390,6 @@ export function parseCheckRateLimitResponse(buf) {
       }
     }
   } catch (e) {
-    console.log('WAM: _parseCheckRateLimitResponse error:', e.message);
   }
   return result;
 }
