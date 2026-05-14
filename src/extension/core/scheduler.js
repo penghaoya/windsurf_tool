@@ -536,6 +536,7 @@ export function evaluateActiveAccount({ accounts, threshold, curQuota }) {
 
 const SWITCH_CONFIRM_TIMEOUT = 7000;
 const SWITCH_CONFIRM_POLL = 500;
+const PENDING_SWITCH_MAX_AGE = 30000;  // pending 状态最大存活时间, 超过后自动放弃
 
 function _setSwitchStatus(partial) {
   S.switchStatus = {
@@ -599,6 +600,18 @@ function _commitConfirmedSwitch(context, {
 export async function _reconcilePendingSwitch(context) {
   let pendingIndex = S.pendingSwitchIndex;
   if (pendingIndex < 0) return { settled: true, reason: 'no_pending' };
+
+  // Pending 状态超时自动放弃 — 防止僵死 pending 无限阻塞切号
+  const pendingAge = Date.now() - (S.switchStatus?.startedAt || 0);
+  if (pendingAge > PENDING_SWITCH_MAX_AGE) {
+    _logWarn('切换', `待确认切换 #${pendingIndex + 1} 超时放弃 (${Math.round(pendingAge / 1000)}s > ${PENDING_SWITCH_MAX_AGE / 1000}s)`);
+    S.pendingSwitchIndex = -1;
+    S.pendingSwitchEmail = null;
+    _persistSwitchState(context, S.activeIndex, -1, null);
+    _setSwitchStatus({ phase: 'idle', pendingIndex: -1, message: '' });
+    return { settled: true, reason: 'expired' };
+  }
+
   const pendingEmail = S.pendingSwitchEmail || _getAccountEmail(pendingIndex);
   const currentByEmail = pendingEmail && S.am?.findByEmail?.(pendingEmail);
   if (S.pendingSwitchEmail && !currentByEmail) {
@@ -655,8 +668,17 @@ async function _waitForSwitchConfirmation(targetEmail, timeoutMs = SWITCH_CONFIR
 export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
   if (S.switching || targetIndex === S.activeIndex) return false;
   if (S.pendingSwitchIndex >= 0 && S.pendingSwitchIndex !== targetIndex) {
-    _logWarn('切换', `已有待确认切换 #${S.pendingSwitchIndex + 1}，拒绝并发切换 #${targetIndex + 1}`);
-    return false;
+    // 过期的 pending 不应阻塞新切换
+    const pendingAge = Date.now() - (S.switchStatus?.startedAt || 0);
+    if (pendingAge > PENDING_SWITCH_MAX_AGE) {
+      _logWarn('切换', `清除过期 pending #${S.pendingSwitchIndex + 1} (${Math.round(pendingAge / 1000)}s), 允许新切换 #${targetIndex + 1}`);
+      S.pendingSwitchIndex = -1;
+      S.pendingSwitchEmail = null;
+      _setSwitchStatus({ phase: 'idle', pendingIndex: -1, message: '' });
+    } else {
+      _logWarn('切换', `已有待确认切换 #${S.pendingSwitchIndex + 1}，拒绝并发切换 #${targetIndex + 1}`);
+      return false;
+    }
   }
   S.switching = true;
   const prevBar = S.statusBar.text;
