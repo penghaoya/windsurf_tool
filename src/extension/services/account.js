@@ -776,6 +776,10 @@ class AccountManager {
         // Update password if remote has one and it differs
         if (ext.password && ext.password !== local.password) {
           local.password = ext.password;
+          // v22.3: password changed — clear authError so account is re-verified on next scan
+          if (local.authError) {
+            delete local.authError;
+          }
           changed = true;
         }
         // Sync rate limit state (remote RL always wins if still active)

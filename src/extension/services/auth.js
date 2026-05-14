@@ -977,7 +977,7 @@ class AuthService {
           undefined,
           fp,
         );
-        if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
+        if (!r.ok) throw new Error(r.data?.error?.message || r.data?.detail || `HTTP ${r.status}`);
         return r.data;
       });
       conn = AuthService._interpretConnections(legacyData);
@@ -994,7 +994,7 @@ class AuthService {
         undefined,
         fp,
       );
-      if (!r.ok) throw new Error(r.data?.error?.message || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(r.data?.error?.message || r.data?.detail || `HTTP ${r.status}`);
       return r.data;
     });
     if (!login?.token) throw new Error('Devin Auth 返回空 token');
