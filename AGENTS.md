@@ -45,8 +45,8 @@ windsurf-tools/
 │   │   ├── services/           # 业务服务
 │   │   │   ├── account.js      # 账号 CRUD + 三路持久化 + 防抖写 + 限流标记 + 指纹字段
 │   │   │   ├── accountSelector.js # 候选排序 (selectOptimal/findBestForModel)
-│   │   │   ├── auth.js         # Firebase 认证 + Token 缓存 + 代理探测 + 双模式网络
-│   │   │   ├── authInjector.js # 四策略注入 + Per-Account 指纹恢复 + Timing Jitter
+│   │   │   ├── auth.js         # Devin-auth 认证 + Token 缓存 + 代理探测 + 双模式网络
+│   │   │   ├── authInjector.js # S0(命令)+S1(DB直写) 注入 + Per-Account 指纹恢复 + Timing Jitter
 │   │   │   ├── fingerprint.js  # 设备指纹 6ID 读写 + 原子写 storage.json
 │   │   │   └── protobuf.js     # Protobuf 编解码 (纯函数)
 │   │   ├── infra/
@@ -128,12 +128,46 @@ npm run install-ext     # 打包并安装到 IDE
 
 > **调度模式**: `autoRotate=true` 启用全部自动调度; `autoRotate=false` 仅当激活账号 ≤`manualThreshold` 时触发一次安全网切换。
 
-## 认证链 (四步)
+## 认证链 (v23.4 Devin-only, post-2026-05-04)
 
-1. Firebase 登录 (email+password) → idToken
-2. RegisterUser (idToken) → apiKey
-3. provideAuthTokenToAuthProvider (idToken) → 注入 Windsurf session
-4. GetPlanStatus (idToken) → Protobuf 解析 → credits/quota
+> **背景**: 2026-05-04 起 Google 对 Firebase `signInWithPassword` 强制启用 App Check, 服务端/IDE 无法生成有效 token → 永久 401。`RegisterUser` 仅接受 `firebase_id_token`, 同步死亡。windsurf-assistant v17.42.20 (上游 reference) 与 WindsurfAPI v2.0.90+ 均已收敛到 Devin-only 路径。
+
+### 主路径 (三步)
+
+1. **CheckUserLoginMethod** (`windsurf.com/_backend/.../CheckUserLoginMethod`)
+   - 主 probe; 失败回退 `windsurf.com/_devin-auth/connections` (兼容新旧 body shape)
+   - 返回: `{ method: 'auth1', hasPassword: bool }`
+2. **`_devin-auth/password/login`** (email + password) → `auth1Token`
+3. **WindsurfPostAuth** (`X-Devin-Auth1-Token` header, 空 proto body)
+   - host 优先 `_backend`, fallback `web-backend.windsurf.com`
+   - binary proto 主, JSON fallback (多组织检测)
+   - 返回: `sessionToken` (格式 `devin-session-token$xxx`)
+
+### sessionToken 双重用途
+
+- **作为 IDE apiKey 注入**:
+  - **S0**: `vscode.commands.executeCommand('windsurf.provideAuthTokenToAuthProvider', sessionToken)`
+  - **S1 fallback**: 直接写 `state.vscdb` 的 `windsurfAuthStatus.apiKey` (`dbInjectApiKey`)
+- **作为 quota 查询 apiKey**: `GetUserStatus(metadata.apiKey=sessionToken)` → daily/weekly% (cascade gRPC 后端接受)
+
+### 兼容/降级
+
+| 路径 | 状态 | 说明 |
+|------|------|------|
+| Firebase signInWithPassword | **关闭** (`FIREBASE_LOGIN_ENABLED=false`) | App Check 永久 401, 关闭以消除冷启动 stampede |
+| securetoken refreshToken renew | **保留** | 不受 App Check 影响, 老账号 cached refreshToken silent renew 仍可用 |
+| RegisterUser (`register.windsurf.com`) | **deprecated shim** | 无 active call site, 兼容未来 firebase 复活 |
+| GetOneTimeAuthToken | **删除** | 上游 401 invalid_token, 2026-05-04 起对所有 sessionToken 失效 |
+
+### 并发保护 (v23.3+)
+
+- **devin-auth slot**: `DEVIN_AUTH_MAX_CONCURRENCY=2` 全局并发上限 + `DEVIN_AUTH_MIN_START_GAP_MS=500` 启动间隔 + 8s acquire 超时 (`devin_slot_busy` 软失败, 不计入 429 counter)
+- **429 指数退避**: 60s base × 2^n, 上限 300s 全局冷却 (`_devinAuthCooldownUntil`)
+- **HTTPS host 三阶段熔断**: 失败 3 次走直连, 6 次整体 fail-fast
+
+### wall-clock timeout (v23.3 修复)
+
+`getUsageInfo` 使用 `Promise.race + setTimeout(10s)` 包裹 inner promise。修复前 timer 未在 inner 成功时 `clearTimeout` → 大量"任务先成功、10s 后假 timeout"日志噪音。现已用 `finally clearTimeout` 取消。
 
 ## 防封控架构 (v18.0)
 

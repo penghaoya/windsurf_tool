@@ -1,6 +1,5 @@
 import vscode from 'vscode';
 import fs from 'fs';
-import path from 'path';
 import {
   dbDeleteKey,
   dbReadKey,
@@ -9,8 +8,7 @@ import {
   getStateDbPath,
 } from '../infra/sqlite.js';
 import { hotVerify, generateFingerprint, applyFingerprint } from './fingerprint.js';
-import { S, _logError, _logInfo, _logWarn } from '../core/state.js';
-import { _getWindsurfGlobalStoragePath } from '../core/window.js';
+import { S, _logInfo, _logWarn } from '../core/state.js';
 
 export function createAuthInjector({ refreshOne, updatePoolBar }) {
   async function discoverAuthCommand() {
@@ -80,17 +78,33 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
     let injected = false;
     let method = 'none';
+    let providerHint = null;
     const discoveredCommands = await discoverAuthCommand();
 
+    // v23.4: Devin-only injection chain.
+    // Post-2026-05-04 the only viable login path is:
+    //   Auth1 password/login → WindsurfPostAuth → sessionToken (devin-session-token$xxx)
+    // The sessionToken doubles as the IDE apiKey (the cascade gRPC backend
+    // accepts it verbatim — see WindsurfAPI v2.0.90+ for the reverse-engineering
+    // proof). RegisterUser only takes firebase id_token (which we can no
+    // longer obtain since App Check enforcement) so the old S2 register_user
+    // fallback is dead and removed. GetOneTimeAuthToken (S1) is also dead.
+    //
+    // Single chain now:
+    //   1. login() → idToken (= sessionToken when provider=devin-auth)
+    //   2. S0: provideAuthTokenToAuthProvider(idToken) via discovered commands
+    //   3. S1 (fallback): direct state.vscdb write with the same token
     try {
       const loginResult = await S.auth.login(
         account.email,
         account.password,
         false,
       );
-      const idToken = loginResult?.ok
-        ? loginResult.idToken
-        : await S.auth.getFreshIdToken(account.email, account.password);
+      providerHint = loginResult?.provider || loginResult?.channel || null;
+      // Drop the legacy getFreshIdToken second attempt — when login() fails
+      // here it has already exhausted devin-auth + firebase, retrying with
+      // forceFresh=true just doubles the noise without changing the outcome.
+      const idToken = loginResult?.ok ? loginResult.idToken : null;
       if (idToken) {
         try {
           const result = await vscode.commands.executeCommand(
@@ -131,92 +145,41 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
             } catch {}
           }
         }
+        // S1 DB-direct fallback — write the same sessionToken into
+        // windsurfAuthStatus.apiKey. The cascade backend accepts it directly
+        // (WindsurfAPI v2.0.89 probe matrix: 4/4 200 OK on GetUserStatus).
+        if (!injected) {
+          const dbResult = dbInjectApiKey(idToken);
+          if (dbResult.ok) {
+            injected = true;
+            method = 'S1-db-inject';
+            _logInfo(
+              '注入',
+              `[S1] DB直写sessionToken: ${dbResult.oldPrefix}→${dbResult.newPrefix}`,
+            );
+            // v23.0+: persist for next refresh's fast-path (same key as
+            // windsurf-injected apiKey, just bypassed the IDE command).
+            const source = providerHint === 'devin-auth' ? 'devin_auth' : 'login_chain';
+            S.am.setApiKey?.(index, idToken, source);
+            setTimeout(async () => {
+              const reload = await vscode.window.showInformationMessage(
+                'WAM: 账号已切换(DB注入)。需要重新加载窗口使新账号生效。',
+                '立即重载',
+                '稍后',
+              );
+              if (reload === '立即重载') {
+                vscode.commands.executeCommand('workbench.action.reloadWindow');
+              }
+            }, 500);
+          } else {
+            _logWarn('注入', `[S1] DB注入失败: ${dbResult.error}`);
+          }
+        }
+      } else {
+        _logWarn('注入', `[S0] 无可用 idToken (login failed for #${index + 1})`);
       }
     } catch (error) {
-      _logWarn('注入', '[S0] idToken注入失败', error.message);
-    }
-
-    if (!injected) {
-      try {
-        const authToken = await S.auth.getOneTimeAuthToken(
-          account.email,
-          account.password,
-        );
-        if (authToken && authToken.length >= 30 && authToken.length <= 200) {
-          try {
-            await vscode.commands.executeCommand(
-              'windsurf.provideAuthTokenToAuthProvider',
-              authToken,
-            );
-            injected = true;
-            method = 'S1-provideAuth-otat';
-            _logInfo('注入', '[S1] 已注入OneTimeAuthToken');
-          } catch {}
-          if (!injected) {
-            for (const command of discoveredCommands || []) {
-              if (injected) break;
-              try {
-                await vscode.commands.executeCommand(command, authToken);
-                injected = true;
-                method = `S1-${command}-otat`;
-                _logInfo('注入', `[S1-发现] 已通过${command}注入OneTimeAuthToken`);
-              } catch {}
-            }
-          }
-          if (injected) writeAuthFilesCompat(authToken);
-        }
-      } catch (error) {
-        _logWarn('注入', '[S1] OneTimeAuthToken降级失败', error.message);
-      }
-    }
-
-    if (!injected) {
-      try {
-        const regResult = await S.auth.registerUser(
-          account.email,
-          account.password,
-        );
-        if (regResult && regResult.apiKey) {
-          // v23.0: persist for GetUserStatus fast-path on next refresh
-          S.am.setApiKey?.(index, regResult.apiKey, 'register_user');
-          for (const command of discoveredCommands || []) {
-            if (injected) break;
-            try {
-              await vscode.commands.executeCommand(command, regResult.apiKey);
-              injected = true;
-              method = `S2-${command}-apiKey`;
-              _logInfo('注入', `[S2] 已通过${command}注入apiKey`);
-            } catch (error) {
-              _logError('注入', `[S2] ${command}失败`, error.message);
-            }
-          }
-          if (!injected) {
-            const dbResult = dbInjectApiKey(regResult.apiKey);
-            if (dbResult.ok) {
-              injected = true;
-              method = 'S3-db-inject';
-              _logInfo(
-                '注入',
-                `[S3] DB直写: ${dbResult.oldPrefix}→${dbResult.newPrefix}`,
-              );
-              setTimeout(async () => {
-                const reload = await vscode.window.showInformationMessage(
-                  'WAM: 账号已切换(DB注入)。需要重新加载窗口使新账号生效。',
-                  '立即重载',
-                  '稍后',
-                );
-                if (reload === '立即重载') {
-                  vscode.commands.executeCommand('workbench.action.reloadWindow');
-                }
-              }, 500);
-            } else {
-              _logWarn('注入', `[S3] DB注入失败: ${dbResult.error}`);
-            }
-          }
-        }
-      } catch (error) {
-        _logWarn('注入', '[S2/S3] registerUser+DB降级失败', error.message);
-      }
+      _logWarn('注入', '注入链异常', error.message);
     }
 
     if (injected) {
@@ -260,37 +223,6 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       if (readAuthApiKeyPrefix() !== oldPrefix) return true;
     }
     return false;
-  }
-
-  function writeAuthFilesCompat(authToken) {
-    if (!authToken || authToken.length < 30 || authToken.length > 60) return;
-    try {
-      const globalStoragePath = _getWindsurfGlobalStoragePath();
-      if (!fs.existsSync(globalStoragePath)) return;
-      const authData = JSON.stringify(
-        {
-          authToken,
-          token: authToken,
-          api_key: authToken,
-          timestamp: Date.now(),
-        },
-        null,
-        2,
-      );
-      fs.writeFileSync(
-        path.join(globalStoragePath, 'windsurf-auth.json'),
-        authData,
-        'utf8',
-      );
-      fs.writeFileSync(
-        path.join(globalStoragePath, 'cascade-auth.json'),
-        authData,
-        'utf8',
-      );
-      _logInfo('认证', '认证文件已写入(跨扩展兼容)');
-    } catch (error) {
-      _logWarn('认证', '认证文件写入跳过', error.message);
-    }
   }
 
   async function postInjectionRefresh() {

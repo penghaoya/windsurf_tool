@@ -1,16 +1,45 @@
 /**
- * Auth Service — Firebase登录 + Protobuf积分查询 + Token缓存
- * 零外部依赖，纯Node.js https/http模块
+ * Auth Service — Devin-auth login + Protobuf/JSON 额度查询 + Token 缓存
+ * 零外部依赖,纯 Node.js https/http/tls
  *
- * 认证链 (逆向自 Windsurf 1.108.2, 2026-03-20):
- *   1. Firebase登录(email+password) → idToken
- *   2. RegisterUser(idToken) → apiKey  (register.windsurf.com)
- *   3. 注入idToken到Windsurf PROVIDE_AUTH_TOKEN_TO_AUTH_PROVIDER
- *      → Windsurf内部调registerUser → session{accessToken: apiKey}
- *   4. GetPlanStatus(idToken) → 余额(credits/quota)
+ * 认证链 (v23.4, Devin-only post-2026-05-04):
+ *   1. CheckUserLoginMethod(email)
+ *      → 主 probe: windsurf.com/_backend/.../CheckUserLoginMethod
+ *      → fallback: windsurf.com/_devin-auth/connections (新旧两种 body shape 都支持)
+ *      返回: { method: 'auth1', hasPassword: bool }
  *
- * v5.8.0: self-serve.windsurf.com已从Windsurf 1.108.2移除
- *         Auth注入改为idToken直传(Windsurf内部自行registerUser)
+ *   2. _devin-auth/password/login(email, password)
+ *      → auth1Token
+ *
+ *   3. WindsurfPostAuth(auth1Token)
+ *      → host 优先: windsurf.com/_backend/.../WindsurfPostAuth
+ *      → fallback: web-backend.windsurf.com/.../WindsurfPostAuth
+ *      → binary proto 优先, JSON fallback (多组织检测)
+ *      返回: sessionToken (devin-session-token$xxx)
+ *
+ *   4. sessionToken 直接作为 IDE apiKey:
+ *      a) 注入: vscode commands.executeCommand(
+ *           'windsurf.provideAuthTokenToAuthProvider', sessionToken)
+ *         或 fallback: 直接写 state.vscdb 的 windsurfAuthStatus.apiKey
+ *      b) 额度查询: GetUserStatus(metadata.apiKey=sessionToken) → daily/weekly%
+ *         (cascade gRPC 后端接受 sessionToken 与 sk-ws-01- 同等待遇)
+ *
+ * 兼容/降级路径:
+ *   - cached idToken (Firebase 路径产物):
+ *     securetoken.googleapis.com refreshToken endpoint silent renew —
+ *     **不受 App Check 影响**, 老账号缓存仍可续命。
+ *   - Firebase signInWithPassword: 自 2026-05-04 起 App Check 强制启用 →
+ *     永久 401, 由 FIREBASE_LOGIN_ENABLED 常量统一关闭, 不再走主路径。
+ *   - RegisterUser: 仅接受 firebase_id_token, 同样依赖 firebase 路径,
+ *     当前为 deprecated 兼容 shim (无 active call site)。
+ *
+ * 安全保护:
+ *   - devin-auth 并发上限 (DEVIN_AUTH_MAX_CONCURRENCY=2) + 启动间隔 500ms,
+ *     防止冷启动 stampede 触发 backend 429。
+ *   - devin-auth 429 指数退避 (60s→300s 上限) 全局冷却。
+ *   - HTTPS host 三阶段熔断 (失败 3 次 fail-over to 直连, 6 次整体 fail-fast)。
+ *
+ * 参考: WindsurfAPI v2.0.90+ (windsurf-assistant v17.42.20 逆向)。
  */
 import https from 'https';
 import http from 'http';
@@ -136,6 +165,13 @@ function _warnHttpErrorRaw(kind, hostname, pathLabel, status, body) {
 // Global cooldowns for upstream rate limits (process-wide, per-AuthService)
 const DEVIN_AUTH_COOLDOWN_BASE_MS = 60_000; // after 429 on /_devin-auth/*
 const DEVIN_AUTH_COOLDOWN_MAX_MS = 300_000; // v21.0: escalating max 5min
+// v23.3: devin-auth concurrency cap — prevent stampede when Firebase App Check
+// blocks the whole pool and every refresh suddenly falls back to devin-auth.
+// Without this guard the windsurf backend trivially returns 429 and triggers the
+// 60s global cooldown, killing the remaining accounts in the batch.
+const DEVIN_AUTH_MAX_CONCURRENCY = 2;
+const DEVIN_AUTH_MIN_START_GAP_MS = 500;
+const DEVIN_AUTH_ACQUIRE_TIMEOUT_MS = 8_000;
 
 // v22.3-22.4: 主机级 TLS 健康熔断 — 同一 host 连接失败 (代理或直连) 时短期 fail-fast
 // 阶段1: 失败 1-2 次 → 仍尝试 (可能是抖动)
@@ -146,6 +182,22 @@ const HOST_DEAD_THRESHOLD = 6;               // 连续 6 次失败标记为整�
 const PROXY_TLS_BREAKER_MS = 90_000;         // 代理熔断期 90s
 const HOST_DEAD_BREAKER_MS = 180_000;        // 整体不可达熔断期 3min
 const FIREBASE_APP_CHECK_BLOCK_MS = 30 * 60_000;  // App Check 命中后 30min 内全局跳过 Firebase
+// v23.4: Firebase signInWithPassword (identitytoolkit) is dead since 2026-05-04.
+// Google now demands App Check tokens that server-side / IDE callers cannot
+// produce → every signInWithPassword returns 401 "Firebase App Check token is
+// invalid". The Devin path (Auth1 → WindsurfPostAuth → sessionToken-as-apiKey)
+// is the only viable one, mirroring WindsurfAPI v2.0.90+ and the upstream
+// windsurf-assistant v17.42.20 reverse-engineering.
+//
+// Disabling the Firebase primary login path eliminates the predictable 401
+// stampede on cold start (3 preheat candidates concurrently 401, triggering
+// the global cooldown that then kills the remaining batch). The silent renew
+// via securetoken.googleapis.com (refreshToken endpoint) is NOT App Check
+// gated and stays enabled — accounts with a previously-stored refreshToken
+// keep their cache alive cheaply.
+//
+// Flip back to true if upstream ever rescinds App Check enforcement.
+const FIREBASE_LOGIN_ENABLED = false;
 
 class AuthService {
   constructor(storagePath) {
@@ -156,6 +208,9 @@ class AuthService {
     this._providerCachePath = null;
     this._devinAuthCooldownUntil = 0; // ts — skip devin-auth before this
     this._devinAuth429Count = 0;       // v21.0: consecutive 429 counter for escalating backoff
+    // v23.3: devin-auth concurrency limiter state
+    this._devinAuthInflight = 0;
+    this._devinAuthLastStart = 0;
     // v22.3
     this._proxyTlsFailures = new Map();    // hostname -> { count, until }
     this._firebaseBlockedUntil = 0;        // App Check 命中后短期跳过 firebase
@@ -1147,9 +1202,45 @@ class AuthService {
     }
   }
 
+  // v23.3: cooperative slot — at most DEVIN_AUTH_MAX_CONCURRENCY in-flight
+  // devin-auth flows, with a min start gap so we don't stampede the backend.
+  // Returns true on acquire, throws 'devin_slot_busy' on timeout.
+  async _acquireDevinAuthSlot() {
+    const deadline = Date.now() + DEVIN_AUTH_ACQUIRE_TIMEOUT_MS;
+    while (this._devinAuthInflight >= DEVIN_AUTH_MAX_CONCURRENCY) {
+      if (Date.now() >= deadline) throw new Error('devin_slot_busy');
+      // jittered poll to avoid lockstep thundering when many waiters wake together
+      await new Promise(r => setTimeout(r, 80 + Math.floor(Math.random() * 80)));
+    }
+    // Reserve the slot synchronously (no awaits between check & ++) to keep
+    // the cap honest under JS single-thread scheduling.
+    this._devinAuthInflight++;
+    const since = Date.now() - this._devinAuthLastStart;
+    if (since < DEVIN_AUTH_MIN_START_GAP_MS) {
+      await new Promise(r => setTimeout(r, DEVIN_AUTH_MIN_START_GAP_MS - since));
+    }
+    this._devinAuthLastStart = Date.now();
+    return true;
+  }
+
+  _releaseDevinAuthSlot() {
+    if (this._devinAuthInflight > 0) this._devinAuthInflight--;
+  }
+
   async _signInWithDevinAuth(email, password, opts = {}) {
     const _emailPrefix = email.split('@')[0];
     const _li = opts.quiet ? _debug : _info;
+    // v23.3: cap concurrent devin-auth flows; Firebase App Check blocking the
+    // whole pool used to funnel every account here in parallel and trigger 429.
+    await this._acquireDevinAuthSlot();
+    try {
+      return await this._doSignInWithDevinAuth(email, password, opts, _emailPrefix, _li);
+    } finally {
+      this._releaseDevinAuthSlot();
+    }
+  }
+
+  async _doSignInWithDevinAuth(email, password, opts = {}, _emailPrefix, _li) {
     // v21.0: per-login fingerprint randomization
     const fp = _generateLoginFingerprint();
 
@@ -1278,25 +1369,40 @@ class AuthService {
         this._devinAuth429Count = 0; // v21.0: reset escalation on success
         return { ...devin, elapsed: Date.now() - _t0 };
       } catch (e) {
-        errors.push(`devin-auth: ${e.message}`);
-        if (this._isUnsupportedDevinAuthError(e.message)) {
-          this._setCachedAuthProvider(email, 'unsupported-devin');
-        } else if (/invalid email or password/i.test(e.message || '')) {
-          // v22.2: devin-auth says credentials are wrong — skip Firebase fallback
-          _warn('登录', `${_emailPrefix} → FAILED (${Date.now() - _t0}ms) ${errors.join(' | ')}`);
-          return { ok: false, error: errors.join(' | ') };
-        } else if (/\b429\b|rate[\s_-]*limit/i.test(e.message || '')) {
-          // v21.0: escalating backoff — consecutive 429s double the cooldown
-          this._devinAuth429Count++;
-          const backoffMs = Math.min(DEVIN_AUTH_COOLDOWN_BASE_MS * Math.pow(2, this._devinAuth429Count - 1), DEVIN_AUTH_COOLDOWN_MAX_MS);
-          this._devinAuthCooldownUntil = Date.now() + backoffMs;
-          _warn('登录', `devin-auth 全局冷却 ${Math.round(backoffMs / 1000)}s (upstream 429, 连续${this._devinAuth429Count}次)`);
+        // v23.3: local slot-acquire timeout — backend was never touched. Don't
+        // bump the 429 counter, don't pollute the cached provider, don't even
+        // log at WARN — this is internal back-pressure, not an upstream error.
+        if (e.message === 'devin_slot_busy') {
+          errors.push('devin-auth: slot_busy');
+          _li('登录', `${_emailPrefix} → devin-auth slot busy, deferring`);
+        } else {
+          errors.push(`devin-auth: ${e.message}`);
+          if (this._isUnsupportedDevinAuthError(e.message)) {
+            this._setCachedAuthProvider(email, 'unsupported-devin');
+          } else if (/invalid email or password/i.test(e.message || '')) {
+            // v22.2: devin-auth says credentials are wrong — skip Firebase fallback
+            _warn('登录', `${_emailPrefix} → FAILED (${Date.now() - _t0}ms) ${errors.join(' | ')}`);
+            return { ok: false, error: errors.join(' | ') };
+          } else if (/\b429\b|rate[\s_-]*limit/i.test(e.message || '')) {
+            // v21.0: escalating backoff — consecutive 429s double the cooldown
+            this._devinAuth429Count++;
+            const backoffMs = Math.min(DEVIN_AUTH_COOLDOWN_BASE_MS * Math.pow(2, this._devinAuth429Count - 1), DEVIN_AUTH_COOLDOWN_MAX_MS);
+            this._devinAuthCooldownUntil = Date.now() + backoffMs;
+            _warn('登录', `devin-auth 全局冷却 ${Math.round(backoffMs / 1000)}s (upstream 429, 连续${this._devinAuth429Count}次)`);
+          }
+          _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
         }
-        _warn('登录', `${_emailPrefix} → devin-auth fallback: ${e.message}`);
       }
     }
 
     const tryFirebase = async (useProxy) => {
+      // v23.4: feature-flagged — Firebase signInWithPassword is App Check dead.
+      // See FIREBASE_LOGIN_ENABLED comment for the rationale. We don't even
+      // push a log line for the skip: it's the expected, permanent state.
+      if (!FIREBASE_LOGIN_ENABLED) {
+        errors.push('firebase: disabled(app_check_dead)');
+        return { ok: false, fatal: false };
+      }
       // v22.3: Firebase 当前 App Check enforcement 全面启用 — 短期内全局跳过避免徒劳重试
       if (this._isFirebaseAppCheckBlocked()) {
         const left = Math.ceil((this._firebaseBlockedUntil - Date.now()) / 1000);
@@ -1385,15 +1491,22 @@ class AuthService {
   getUsageInfo(email, password, options = {}) {
     const wallClockMs = Number.isFinite(options.wallClockMs) ? options.wallClockMs : 10_000;
     const _emailPrefix = email.split('@')[0];
-    return Promise.race([
-      this._getUsageInfoInner(email, password, options),
-      new Promise((resolve) => setTimeout(() => {
+    // v23.3: cancel wall-clock timer once inner promise settles to stop spurious
+    // post-success "wall-clock timeout" warnings (timer was previously leaked).
+    let timer = null;
+    const timeoutP = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        timer = null;
         if (!options.quiet) {
           _warn('额度', `${_emailPrefix} → wall-clock timeout (${wallClockMs}ms)`);
         }
         resolve({ ok: false, errorType: 'plan_status_failed', error: 'wall_clock_timeout' });
-      }, wallClockMs)),
-    ]);
+      }, wallClockMs);
+    });
+    const innerP = this._getUsageInfoInner(email, password, options).finally(() => {
+      if (timer) { clearTimeout(timer); timer = null; }
+    });
+    return Promise.race([innerP, timeoutP]);
   }
 
   async _getUsageInfoInner(email, password, options = {}) {
@@ -1690,7 +1803,16 @@ class AuthService {
   }
 
   // ========== RegisterUser → apiKey (for hot injection, mode-aware) ==========
-
+  //
+  // v23.4 DEPRECATED for the active code path. RegisterUser only accepts
+  // firebase_id_token; with FIREBASE_LOGIN_ENABLED=false we never obtain one,
+  // so this method effectively returns null. Kept for two reasons:
+  //   1. Forward compatibility — if upstream rescinds App Check enforcement,
+  //      flipping FIREBASE_LOGIN_ENABLED back on revives this entire path.
+  //   2. External code (third-party scripts, tests) may still import it.
+  //
+  // No active call site in src/extension/** as of v23.4 — verified via grep
+  // for `S.auth.registerUser(` and `auth.registerUser(`.
   async registerUser(email, password) {
     const loginResult = await this.login(email, password, true);
     if (!loginResult.ok) return null;
@@ -1738,24 +1860,11 @@ class AuthService {
     return null;
   }
 
-  // ========== GetOneTimeAuthToken (DEPRECATED — endpoint dead since 2026-05-04) ==========
-  // v21.0: upstream GetOneTimeAuthToken returns 401 for ALL sessionTokens across all hosts.
-  // Windsurf migrated to Auth1→PostAuth→sessionToken as apiKey. Kept as no-op stub
-  // so authInjector.js S1 fallback doesn't crash; always returns null.
-  async getOneTimeAuthToken(_email, _password) {
-    return null;
-  }
-
-  /** v5.8.0: Get fresh firebase idToken for direct injection into Windsurf command.
-   *  This is the PRIMARY auth injection path in Windsurf 1.108.2+.
-   *  The command internally calls registerUser(firebaseIdToken) → {apiKey, name} → session */
-  async getFreshIdToken(email, password) {
-    const loginResult = await this.login(email, password, true);
-    if (!loginResult.ok) return null;
-    return loginResult.idToken;
-  }
-
   // ========== Cached Quota Reader (reads Windsurf's internal state.vscdb) ==========
+  // (v23.4 removed: getOneTimeAuthToken stub — endpoint dead since 2026-05-04;
+  //  getFreshIdToken — redundant force-fresh login that doubled noise. Both
+  //  had no remaining call sites in src/extension/** after authInjector.js
+  //  was collapsed to the Devin-only chain.)
   // v5.11.0: With varint tag fix, GetPlanStatus CAN return quota fields (f14-f18).
   // But some accounts may not have quota data yet (first use after 3/18 reform).
   // cachedPlanInfo in state.vscdb is the most reliable source for CURRENT account.
