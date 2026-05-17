@@ -17,6 +17,7 @@
         :autoRotate="state.autoRotate"
         :threshold="state.threshold"
         :manualThreshold="state.manualThreshold"
+        :alwaysFreshFingerprint="state.alwaysFreshFingerprint"
       />
       <QuickActions :addOpen="addOpen" @toggleAdd="addOpen = !addOpen" />
       <transition name="slide">

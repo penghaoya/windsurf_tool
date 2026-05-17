@@ -134,6 +134,16 @@ function _warnHttpErrorRaw(kind, hostname, pathLabel, status, body) {
 const DEVIN_AUTH_COOLDOWN_BASE_MS = 60_000; // after 429 on /_devin-auth/*
 const DEVIN_AUTH_COOLDOWN_MAX_MS = 300_000; // v21.0: escalating max 5min
 
+// v22.3-22.4: 主机级 TLS 健康熔断 — 同一 host 连接失败 (代理或直连) 时短期 fail-fast
+// 阶段1: 失败 1-2 次 → 仍尝试 (可能是抖动)
+// 阶段2: 失败 3 次 → 强制走直连模式 (跳过代理)
+// 阶段3: 失败 6 次 → 整体 fail-fast (代理直连都不试, 立即抛错)
+const PROXY_TLS_FAIL_THRESHOLD = 3;          // 连续 3 次失败触发代理熔断
+const HOST_DEAD_THRESHOLD = 6;               // 连续 6 次失败标记为整体不可达
+const PROXY_TLS_BREAKER_MS = 90_000;         // 代理熔断期 90s
+const HOST_DEAD_BREAKER_MS = 180_000;        // 整体不可达熔断期 3min
+const FIREBASE_APP_CHECK_BLOCK_MS = 30 * 60_000;  // App Check 命中后 30min 内全局跳过 Firebase
+
 class AuthService {
   constructor(storagePath) {
     this._tokenCache = new Map(); // email -> { idToken, expireTime }
@@ -143,10 +153,62 @@ class AuthService {
     this._providerCachePath = null;
     this._devinAuthCooldownUntil = 0; // ts — skip devin-auth before this
     this._devinAuth429Count = 0;       // v21.0: consecutive 429 counter for escalating backoff
+    // v22.3
+    this._proxyTlsFailures = new Map();    // hostname -> { count, until }
+    this._firebaseBlockedUntil = 0;        // App Check 命中后短期跳过 firebase
     this._loadCache();
     this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
     // This prevents TCP socket operations during Extension Host activation
+  }
+
+  // ========== v22.3-22.4: Host Connection Circuit Breaker ==========
+
+  /** 阶段2: 代理熔断中 (走直连) */
+  _isProxyTlsBroken(hostname) {
+    const entry = this._proxyTlsFailures.get(hostname);
+    if (!entry) return false;
+    if (Date.now() > entry.until) {
+      this._proxyTlsFailures.delete(hostname);
+      return false;
+    }
+    return entry.count >= PROXY_TLS_FAIL_THRESHOLD;
+  }
+
+  /** 阶段3: host 整体不可达 (代理直连都不试, fail-fast) */
+  _isHostDead(hostname) {
+    const entry = this._proxyTlsFailures.get(hostname);
+    if (!entry) return false;
+    if (Date.now() > entry.until) {
+      this._proxyTlsFailures.delete(hostname);
+      return false;
+    }
+    return entry.count >= HOST_DEAD_THRESHOLD;
+  }
+
+  _recordProxyTlsResult(hostname, ok) {
+    if (ok) {
+      this._proxyTlsFailures.delete(hostname);
+      return;
+    }
+    const entry = this._proxyTlsFailures.get(hostname) || { count: 0, until: 0 };
+    entry.count++;
+    // 整体不可达使用更长的熔断窗口
+    entry.until = Date.now() + (entry.count >= HOST_DEAD_THRESHOLD ? HOST_DEAD_BREAKER_MS : PROXY_TLS_BREAKER_MS);
+    this._proxyTlsFailures.set(hostname, entry);
+    if (entry.count === PROXY_TLS_FAIL_THRESHOLD) {
+      _warn('HTTP', `${hostname} 连接连续失败${entry.count}次, ${PROXY_TLS_BREAKER_MS / 1000}s 内走直连`);
+    } else if (entry.count === HOST_DEAD_THRESHOLD) {
+      _warn('HTTP', `${hostname} 整体不可达 (代理+直连均失败 ${entry.count} 次), ${HOST_DEAD_BREAKER_MS / 1000}s 内 fail-fast`);
+    }
+  }
+
+  _isFirebaseAppCheckBlocked() {
+    return Date.now() < this._firebaseBlockedUntil;
+  }
+
+  _markFirebaseAppCheckBlocked() {
+    this._firebaseBlockedUntil = Date.now() + FIREBASE_APP_CHECK_BLOCK_MS;
   }
 
   /** 注入结构化日志 (extension.js 初始化时调用) */
@@ -563,23 +625,35 @@ class AuthService {
     return /googleapis\.com|google\.com|codeium\.com|windsurf\.com/.test(hostname);
   }
 
-  /** Create CONNECT tunnel through HTTP proxy, return TLS socket */
+  /** Create CONNECT tunnel through HTTP proxy, return TLS socket
+   *  v22.3: 显式 TLS 握手超时 — 原代码 tls.connect 无超时, CONNECT 成功后
+   *         若上游 TLS 协商挂死会等到 OS socket timeout (~30s), 导致整体卡死 */
   _proxyTunnel(hostname) {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
+
       const proxyReq = http.request({
         hostname: PROXY_HOST, port: ACTIVE_PROXY_PORT,
         method: 'CONNECT', path: `${hostname}:443`, timeout: 8000
       });
       proxyReq.on('connect', (res, socket) => {
-        if (res.statusCode !== 200) { socket.destroy(); return reject(new Error(`proxy CONNECT ${res.statusCode}`)); }
+        if (res.statusCode !== 200) { socket.destroy(); return settle(reject, new Error(`proxy CONNECT ${res.statusCode}`)); }
+
+        // TLS handshake watchdog — 6s upper bound for handshake completion
+        const tlsTimer = setTimeout(() => {
+          try { socket.destroy(); } catch {}
+          settle(reject, new Error('TLS handshake timeout'));
+        }, 6000);
+
         const tlsSocket = tls.connect({ socket, servername: hostname, rejectUnauthorized: true }, () => {
-          if (tlsSocket.authorized || tlsSocket.alpnProtocol) resolve(tlsSocket);
-          else resolve(tlsSocket); // still usable even if not fully authorized
+          clearTimeout(tlsTimer);
+          settle(resolve, tlsSocket);  // resolve regardless of authorized/alpn (still usable)
         });
-        tlsSocket.on('error', e => reject(e));
+        tlsSocket.on('error', e => { clearTimeout(tlsTimer); settle(reject, e); });
       });
-      proxyReq.on('error', e => reject(e));
-      proxyReq.on('timeout', () => { proxyReq.destroy(); reject(new Error('proxy timeout')); });
+      proxyReq.on('error', e => settle(reject, e));
+      proxyReq.on('timeout', () => { proxyReq.destroy(); settle(reject, new Error('proxy timeout')); });
       proxyReq.end();
     });
   }
@@ -642,11 +716,22 @@ class AuthService {
       const _t0 = Date.now();
       const u = new URL(url);
       const data = body ? JSON.stringify(body) : null;
+
+      // v22.4: host 整体不可达 → fail-fast (避免徒劳重试)
+      if (this._isHostDead(u.hostname)) {
+        return reject(new Error(`host_dead:${u.hostname}`));
+      }
+
       // 双模式：relay模式下跳过代理，local模式下按需代理
       let wantProxy;
       if (useProxy !== undefined) wantProxy = useProxy;
       else if (ACTIVE_MODE === 'relay') wantProxy = false;
       else wantProxy = this._needsProxy(u.hostname);
+
+      // v22.3: 该 host 代理熔断中 → 强制走直连
+      if (wantProxy && this._isProxyTlsBroken(u.hostname)) {
+        wantProxy = false;
+      }
 
       const hdrs = { 'Content-Type': 'application/json', ...extraHeaders };
 
@@ -654,6 +739,7 @@ class AuthService {
         try {
           const sock = await this._proxyTunnel(u.hostname);
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
+          this._recordProxyTlsResult(u.hostname, true);
           const rawText = resp.bodyBuffer.toString('utf8');
           if (!resp.ok) {
             // v20.4: HTTP + HTTP_RAW 合并为单行 (减少日志条数)
@@ -661,8 +747,17 @@ class AuthService {
           }
           try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText }); }
           catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
-        } catch (e) { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
+        } catch (e) {
+          // 仅 TLS/连接级故障计入熔断 (4xx/5xx 不算)
+          if (/tls|socket|disconnected|timeout|econn/i.test(e.message || '')) {
+            this._recordProxyTlsResult(u.hostname, false);
+          }
+          _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`);
+          reject(e);
+        }
       } else {
+        let settled = false;
+        const settle = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
         const req = https.request({
           hostname: u.hostname, port: 443, path: u.pathname + u.search,
           method: method || 'GET', headers: hdrs, agent: _directAgent
@@ -670,16 +765,32 @@ class AuthService {
           let buf = '';
           res.on('data', c => buf += c);
           res.on('end', () => {
+            clearTimeout(wallClock);
             if (res.statusCode !== 200) {
               _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${res.statusCode} (direct, ${Date.now() - _t0}ms) raw=${_formatRawForLog(buf)}`);
             }
-            try { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
-            catch { resolve({ ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
+            try { settle(resolve, { ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(buf), raw: buf }); }
+            catch { settle(resolve, { ok: res.statusCode === 200, status: res.statusCode, data: {}, raw: buf }); }
           });
-          res.on('error', () => { reject(new Error('response error')); });
+          res.on('error', () => { clearTimeout(wallClock); settle(reject, new Error('response error')); });
         });
-        req.on('error', e => { _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });
-        req.setTimeout(12000, () => { req.destroy(); _warn('HTTP', `JSON ${u.hostname}${u.pathname} → TIMEOUT (direct, ${Date.now() - _t0}ms)`); reject(new Error('timeout')); });
+        // v22.4: wall-clock timeout — req.setTimeout 在 TCP SYN 阶段不生效, 必须用外部 timer 强制 abort
+        const wallClock = setTimeout(() => {
+          try { req.destroy(); } catch {}
+          if (!settled) {
+            this._recordProxyTlsResult(u.hostname, false);  // direct timeout 也计入熔断
+            _warn('HTTP', `JSON ${u.hostname}${u.pathname} → TIMEOUT (direct, ${Date.now() - _t0}ms)`);
+            settle(reject, new Error('connect timeout'));
+          }
+        }, 8000);
+        req.on('error', e => {
+          clearTimeout(wallClock);
+          if (/econn|socket|hang up|timeout/i.test(e.message || '')) {
+            this._recordProxyTlsResult(u.hostname, false);
+          }
+          _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`);
+          settle(reject, e);
+        });
         if (data) req.write(data);
         req.end();
       }
@@ -690,10 +801,21 @@ class AuthService {
     return new Promise(async (resolve, reject) => {
       const _t0 = Date.now();
       const u = new URL(url);
+
+      // v22.4: host 整体不可达 → fail-fast
+      if (this._isHostDead(u.hostname)) {
+        return reject(new Error(`host_dead:${u.hostname}`));
+      }
+
       let wantProxy;
       if (useProxy !== undefined) wantProxy = useProxy;
       else if (ACTIVE_MODE === 'relay') wantProxy = false;
       else wantProxy = this._needsProxy(u.hostname);
+
+      // v22.3: 代理熔断 → 直连
+      if (wantProxy && this._isProxyTlsBroken(u.hostname)) {
+        wantProxy = false;
+      }
 
       if (wantProxy) {
         try {
@@ -704,12 +826,21 @@ class AuthService {
             ...extraHeaders,
           };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
+          this._recordProxyTlsResult(u.hostname, true);
           if (!resp.ok) {
             _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms) raw=${_formatRawForLog(resp.bodyBuffer)}`);
           }
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
-        } catch (e) { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`); reject(e); }
+        } catch (e) {
+          if (/tls|socket|disconnected|timeout|econn/i.test(e.message || '')) {
+            this._recordProxyTlsResult(u.hostname, false);
+          }
+          _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`);
+          reject(e);
+        }
       } else {
+        let settled = false;
+        const settle = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
         const headers = {
           'Content-Type': 'application/proto',
           'connect-protocol-version': '1',
@@ -722,16 +853,32 @@ class AuthService {
           const chunks = [];
           res.on('data', c => chunks.push(c));
           res.on('end', () => {
+            clearTimeout(wallClock);
             const buf = Buffer.concat(chunks);
             if (res.statusCode !== 200) {
               _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${res.statusCode} ${buf.length}B (direct, ${Date.now() - _t0}ms) raw=${_formatRawForLog(buf)}`);
             }
-            resolve({ ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
+            settle(resolve, { ok: res.statusCode === 200, status: res.statusCode, buffer: buf });
           });
-          res.on('error', () => { reject(new Error('response error')); });
+          res.on('error', () => { clearTimeout(wallClock); settle(reject, new Error('response error')); });
         });
-        req.on('error', e => { _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`); reject(e); });
-        req.setTimeout(12000, () => { req.destroy(); _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → TIMEOUT (direct, ${Date.now() - _t0}ms)`); reject(new Error('timeout')); });
+        // v22.4: wall-clock timeout
+        const wallClock = setTimeout(() => {
+          try { req.destroy(); } catch {}
+          if (!settled) {
+            this._recordProxyTlsResult(u.hostname, false);
+            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → TIMEOUT (direct, ${Date.now() - _t0}ms)`);
+            settle(reject, new Error('connect timeout'));
+          }
+        }, 8000);
+        req.on('error', e => {
+          clearTimeout(wallClock);
+          if (/econn|socket|hang up|timeout/i.test(e.message || '')) {
+            this._recordProxyTlsResult(u.hostname, false);
+          }
+          _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (direct, ${Date.now() - _t0}ms)`);
+          settle(reject, e);
+        });
         if (bodyBuffer) req.write(Buffer.from(bodyBuffer));
         req.end();
       }
@@ -837,6 +984,11 @@ class AuthService {
         return await fn();
       } catch (e) {
         lastError = e;
+        // v22.4: 熔断命中 → fail fast, 不重试 (host_dead 表明已经多次失败)
+        if (/^host_dead:/.test(e.message || '')) {
+          _warn('登录', `${label} 熔断中, 跳过重试: ${e.message}`);
+          throw e;
+        }
         if (attempt < maxRetries && this._isTransientNetworkError(e)) {
           _warn('登录', `${label} 网络异常, 重试${attempt}/${maxRetries}: ${e.message}`);
           await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
@@ -1044,6 +1196,12 @@ class AuthService {
       return { ok: false, cacheOnly: true };
     }
 
+    // v22.4: windsurf.com 整体不可达 + Firebase App Check 锁死 → 全部登录路径都没法走, 直接 fail-fast
+    if (this._isHostDead('windsurf.com') && this._isFirebaseAppCheckBlocked()) {
+      _warn('登录', `${_emailPrefix} → 跳过 (windsurf.com 不可达 + firebase app_check 冷却中)`);
+      return { ok: false, error: 'all_login_paths_blocked', skipped: true };
+    }
+
     const payload = { returnSecureToken: true, email, password, clientType: 'CLIENT_TYPE_WEB' };
     const fbHeaders = { Referer: 'https://windsurf.com/', Origin: 'https://windsurf.com' };
     const errors = [];
@@ -1082,6 +1240,12 @@ class AuthService {
     }
 
     const tryFirebase = async (useProxy) => {
+      // v22.3: Firebase 当前 App Check enforcement 全面启用 — 短期内全局跳过避免徒劳重试
+      if (this._isFirebaseAppCheckBlocked()) {
+        const left = Math.ceil((this._firebaseBlockedUntil - Date.now()) / 1000);
+        errors.push(`firebase: app_check_cooldown(${left}s)`);
+        return { ok: false, fatal: false };
+      }
       for (const key of FIREBASE_KEYS) {
         const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${key}`;
         try {
@@ -1095,6 +1259,12 @@ class AuthService {
           }
           const msg = r.data?.error?.message || `HTTP ${r.status}`;
           errors.push(`firebase: ${msg}`);
+          // v22.3: App Check 错误 → 启动全局冷却避免后续账号重蹈覆辙
+          if (/app\s*check/i.test(msg)) {
+            this._markFirebaseAppCheckBlocked();
+            _warn('登录', `Firebase App Check 强制启用 → 全局跳过 ${FIREBASE_APP_CHECK_BLOCK_MS / 60_000}min`);
+            return { ok: false, fatal: false };
+          }
           if (this._isFatalFirebaseAuthError(msg)) {
             return { ok: false, fatal: true, error: msg };
           }

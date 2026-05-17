@@ -26,6 +26,7 @@ export const ACTION = {
   SET_AUTO_ROTATE: 'setAutoRotate',
   SET_PREEMPTIVE_THRESHOLD: 'setPreemptiveThreshold',
   SET_MANUAL_THRESHOLD: 'setManualThreshold',
+  SET_ALWAYS_FRESH_FP: 'setAlwaysFreshFingerprint',
   EXPORT_ACCOUNTS: 'exportAccounts',
   IMPORT_ACCOUNTS: 'importAccounts',
   CLEAR_RATE_LIMIT: 'clearRateLimit',

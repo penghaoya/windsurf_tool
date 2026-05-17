@@ -3,7 +3,7 @@
   "displayName": "Windsurf Tools",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.2.9",
+  "version": "2.3.2",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -130,6 +130,11 @@
           "type": "boolean",
           "default": true,
           "description": "切号时自动轮转设备指纹 (防止服务端关联多账号到同一设备)"
+        },
+        "wam.alwaysFreshFingerprint": {
+          "type": "boolean",
+          "default": true,
+          "description": "切号时强制重新生成指纹 (默认开启)。关闭后将使用账号已绑定的指纹 (Per-Account 绑定模式)"
         }
       }
     }

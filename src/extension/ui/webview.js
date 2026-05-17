@@ -125,6 +125,7 @@ class AccountViewProvider {
     const threshold = cfg.get('preemptiveThreshold', 15);
     const autoRotate = cfg.get('autoRotate', true);
     const manualThreshold = cfg.get('manualThreshold', 0);
+    const alwaysFreshFingerprint = cfg.get('alwaysFreshFingerprint', true);
     const pool = this._am.getPoolStats ? this._am.getPoolStats(threshold) : { total: accounts.length, available: 0, depleted: 0, rateLimited: 0, health: 0, avgDaily: null, avgWeekly: null };
     const activeQuota = this._am.getActiveQuota ? this._am.getActiveQuota(currentIndex) : null;
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
@@ -169,6 +170,7 @@ class AccountViewProvider {
       threshold,
       autoRotate,
       manualThreshold,
+      alwaysFreshFingerprint,
       switchCount,
       switchStatus,
       lastDecision,
@@ -299,6 +301,10 @@ class AccountViewProvider {
         break;
       case ACTION.SET_MANUAL_THRESHOLD:
         if (act) act('setManualThreshold', msg.value);
+        this._pushState();
+        break;
+      case ACTION.SET_ALWAYS_FRESH_FP:
+        if (act) act('setAlwaysFreshFingerprint', msg.value);
         this._pushState();
         break;
       case ACTION.EXPORT_ACCOUNTS:

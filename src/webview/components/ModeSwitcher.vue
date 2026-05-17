@@ -33,6 +33,20 @@
 
     <span class="mode-spacer"></span>
 
+    <button
+      type="button"
+      class="fp-toggle"
+      :class="{ active: alwaysFreshFingerprint }"
+      role="switch"
+      :aria-checked="alwaysFreshFingerprint"
+      :title="alwaysFreshFingerprint ? '每次切号强制重新生成指纹 (推荐)' : '使用账号绑定的指纹 (Per-Account 缓存)'"
+      @click="toggleFreshFp"
+    >
+      <svg v-if="alwaysFreshFingerprint" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+      <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+      新指纹
+    </button>
+
     <div class="mode-field" :title="autoRotate ? '自动模式: 达到该剩余额度时提前切换' : '手动模式: 激活账号≤此值时自动切换一次 (0=纯手动)'">
       <span class="f-label">{{ autoRotate ? '预防' : '安全网' }}</span>
       <div class="f-input-wrap">
@@ -65,6 +79,7 @@ const props = defineProps({
   autoRotate: { type: Boolean, default: true },
   threshold: { type: Number, default: 15 },
   manualThreshold: { type: Number, default: 0 },
+  alwaysFreshFingerprint: { type: Boolean, default: true },
   embedded: { type: Boolean, default: false },
 })
 
@@ -95,6 +110,10 @@ function onThresholdChange(e) {
   e.target.value = v
   const action = props.autoRotate ? ACTION.SET_PREEMPTIVE_THRESHOLD : ACTION.SET_MANUAL_THRESHOLD
   postMessage(action, { value: v })
+}
+
+function toggleFreshFp() {
+  postMessage(ACTION.SET_ALWAYS_FRESH_FP, { value: !props.alwaysFreshFingerprint })
 }
 </script>
 
@@ -127,6 +146,20 @@ function onThresholdChange(e) {
 .seg-btn.active{background:var(--ac-bg);color:var(--ac);font-weight:600}
 .seg-btn svg{flex-shrink:0;opacity:.7}
 .seg-btn.active svg{opacity:1}
+
+.fp-toggle{
+  display:inline-flex;align-items:center;gap:4px;
+  height:24px;padding:0 8px;
+  border:1px solid var(--bd);border-radius:var(--R3);
+  background:var(--btn-bg);color:var(--tx2);
+  font-size:10px;font-weight:500;line-height:1;letter-spacing:.2px;
+  cursor:pointer;white-space:nowrap;
+  transition:background .15s ease,color .15s ease,border-color .15s ease;
+}
+.fp-toggle:hover{background:var(--btn-hover);color:var(--tx)}
+.fp-toggle.active{background:var(--ac-bg);color:var(--ac);border-color:var(--ac);font-weight:600}
+.fp-toggle svg{flex-shrink:0;opacity:.7}
+.fp-toggle.active svg{opacity:1}
 
 .mode-field{
   display:inline-flex;align-items:center;gap:5px;

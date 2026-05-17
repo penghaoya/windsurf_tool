@@ -170,6 +170,14 @@ export function createActionHandler(helpers) {
             });
         }
         return undefined;
+      case 'setAlwaysFreshFingerprint':
+        if (arg !== undefined) {
+          return vscode.workspace
+            .getConfiguration('wam')
+            .update('alwaysFreshFingerprint', !!arg, true)
+            .then(() => refreshPanel());
+        }
+        return undefined;
       default:
         return undefined;
     }

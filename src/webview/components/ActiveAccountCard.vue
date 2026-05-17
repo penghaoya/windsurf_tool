@@ -30,6 +30,7 @@
       :autoRotate="autoRotate"
       :threshold="threshold"
       :manualThreshold="manualThreshold"
+      :alwaysFreshFingerprint="alwaysFreshFingerprint"
       embedded
     />
   </div>
@@ -51,6 +52,7 @@ const props = defineProps({
   autoRotate: { type: Boolean, default: true },
   threshold: { type: Number, default: 15 },
   manualThreshold: { type: Number, default: 0 },
+  alwaysFreshFingerprint: { type: Boolean, default: true },
 })
 
 const activeAccount = computed(() =>

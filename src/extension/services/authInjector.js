@@ -61,14 +61,15 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
     const config = vscode.workspace.getConfiguration('wam');
     if (config.get('rotateFingerprint', true)) {
-      const fpResult = applyAccountFingerprintForSwitch(index);
+      const alwaysFresh = config.get('alwaysFreshFingerprint', true);
+      const fpResult = applyAccountFingerprintForSwitch(index, { forceFresh: alwaysFresh });
       // v20.3: 日志合并 — 原 3 行 (state.vscdb同步 + 已恢复 + 热重置#N) 压缩为 1 行
       // v20.2 (方案B): skipped 时不计数热重置、不 jitter、不 hotVerify
       if (fpResult?.ok && fpResult.skipped) {
         _logInfo('指纹', `#${index + 1} ${fpResult.shortId} 已一致 → 跳过写入`);
       } else if (fpResult?.ok) {
         S.hotResetCount++;
-        const action = fpResult.isNew ? '生成' : '恢复';
+        const action = fpResult.isNew ? '生成' : (fpResult.forced ? '强制刷新' : '恢复');
         const sync = fpResult.vscdbSynced ? '+vscdb' : '';
         _logInfo('指纹', `#${index + 1} ${fpResult.shortId} ${action}${sync} (热重置#${S.hotResetCount})`);
         // v18.0: 随机延迟 200-2200ms, 降低时序规律性
@@ -380,13 +381,18 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
   /** v18.0: Per-Account 指纹绑定 — 每个账号始终看到同一台"设备"
    *  首次使用 → 生成并保存专属指纹
    *  后续切换 → 恢复已保存的指纹 (不生成新的)
-   *  解决: 同一账号从大量不同"设备"登录的封控风险 */
-  function applyAccountFingerprintForSwitch(targetIndex) {
+   *  解决: 同一账号从大量不同"设备"登录的封控风险
+   *
+   *  v22.x: forceFresh=true 时每次切号强制生成新指纹并覆盖缓存
+   *  (适用场景: 当前账号被关联或风控时通过新指纹"破链") */
+  function applyAccountFingerprintForSwitch(targetIndex, opts = {}) {
+    const { forceFresh = false } = opts;
     // v20.3: 静默 apply — 日志合并到 injectAuth 的单行输出
     try {
       let fp = S.am.getFingerprint(targetIndex);
       const isNew = !fp;
-      if (!fp) {
+      const forced = forceFresh && !isNew;  // forced 仅当原本有缓存被覆盖时为真
+      if (!fp || forceFresh) {
         fp = generateFingerprint();
         S.am.setFingerprint(targetIndex, fp);
       }
@@ -402,7 +408,7 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       if (result.skipped) {
         S.lastRotatedIds = fp;
         S.lastRotatedIdsSkipped = true;
-        return { ok: true, skipped: true, isNew, shortId: id };
+        return { ok: true, skipped: true, isNew, forced, shortId: id };
       }
 
       // Sync to state.vscdb
@@ -430,7 +436,7 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
 
       S.lastRotatedIds = fp;
       S.lastRotatedIdsSkipped = false;
-      return { ok: true, skipped: false, isNew, shortId: id, vscdbSynced };
+      return { ok: true, skipped: false, isNew, forced, shortId: id, vscdbSynced };
     } catch (error) {
       _logWarn('\u6307\u7eb9', '\u6307\u7eb9\u5e94\u7528\u5f02\u5e38(\u975e\u5173\u952e)', error.message);
       return { ok: false };
