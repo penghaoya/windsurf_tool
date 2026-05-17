@@ -739,17 +739,25 @@ class AuthService {
         try {
           const sock = await this._proxyTunnel(u.hostname);
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
-          this._recordProxyTlsResult(u.hostname, true);
           const rawText = resp.bodyBuffer.toString('utf8');
+          // v22.7: 代理篡改/截断检测 — 200 但 body 几乎为空, 通常是代理 RST 或 strip
+          // 不要让这种响应当作"成功"或"token expired", 直接当作代理坏抛错
+          if (resp.ok && rawText.length < 8) {
+            this._recordProxyTlsResult(u.hostname, false);
+            _warn('HTTP', `JSON ${u.hostname}${u.pathname} → 200+empty body (proxy, ${Date.now() - _t0}ms) 视为代理坏`);
+            reject(new Error('proxy_empty_body'));
+            return;
+          }
+          this._recordProxyTlsResult(u.hostname, true);
           if (!resp.ok) {
             // v20.4: HTTP + HTTP_RAW 合并为单行 (减少日志条数)
             _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ${resp.status} (proxy, ${Date.now() - _t0}ms) raw=${_formatRawForLog(rawText)}`);
           }
-          try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText }); }
-          catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText }); }
+          try { resolve({ ok: resp.ok, status: resp.status, data: JSON.parse(rawText), raw: rawText, viaProxy: true }); }
+          catch { resolve({ ok: resp.ok, status: resp.status, data: {}, raw: rawText, viaProxy: true }); }
         } catch (e) {
-          // 仅 TLS/连接级故障计入熔断 (4xx/5xx 不算)
-          if (/tls|socket|disconnected|timeout|econn/i.test(e.message || '')) {
+          // v22.7: 扩大匹配 — boundary/empty/reset/hang up 都是代理质量问题, 计入熔断
+          if (/tls|socket|disconnected|timeout|econn|boundary|empty|reset|hang/i.test(e.message || '')) {
             this._recordProxyTlsResult(u.hostname, false);
           }
           _warn('HTTP', `JSON ${u.hostname}${u.pathname} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`);
@@ -826,13 +834,21 @@ class AuthService {
             ...extraHeaders,
           };
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'POST', headers, bodyBuffer ? Buffer.from(bodyBuffer) : null);
+          const bodyLen = resp.bodyBuffer?.length || 0;
+          // v22.7: 200+empty 视为代理坏 (binary 路径同 JSON 路径)
+          if (resp.ok && bodyLen < 4) {
+            this._recordProxyTlsResult(u.hostname, false);
+            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → 200+empty (proxy, ${Date.now() - _t0}ms) 视为代理坏`);
+            reject(new Error('proxy_empty_body'));
+            return;
+          }
           this._recordProxyTlsResult(u.hostname, true);
           if (!resp.ok) {
-            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${resp.bodyBuffer?.length || 0}B (proxy, ${Date.now() - _t0}ms) raw=${_formatRawForLog(resp.bodyBuffer)}`);
+            _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ${resp.status} ${bodyLen}B (proxy, ${Date.now() - _t0}ms) raw=${_formatRawForLog(resp.bodyBuffer)}`);
           }
           resolve({ ok: resp.ok, status: resp.status, buffer: resp.bodyBuffer });
         } catch (e) {
-          if (/tls|socket|disconnected|timeout|econn/i.test(e.message || '')) {
+          if (/tls|socket|disconnected|timeout|econn|boundary|empty|reset|hang/i.test(e.message || '')) {
             this._recordProxyTlsResult(u.hostname, false);
           }
           _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → ERR ${e.message} (proxy, ${Date.now() - _t0}ms)`);
@@ -1201,14 +1217,16 @@ class AuthService {
     const _fbBlocked = this._isFirebaseAppCheckBlocked();
     const _wsDead = this._isHostDead('windsurf.com');
 
+    // v22.7: quiet 模式下这些 skip 是确定性 fail-fast, 降为 debug 避免每次扫描刷屏
+    const _logSkip = loginOpts.quiet ? _debug : _warn;
     if (_fbBlocked && _wsDead) {
-      _warn('登录', `${_emailPrefix} → 跳过 (windsurf.com 不可达 + firebase app_check 冷却中)`);
+      _logSkip('登录', `${_emailPrefix} → 跳过 (windsurf.com 不可达 + firebase app_check 冷却中)`);
       return { ok: false, error: 'all_login_paths_blocked', skipped: true };
     }
     // v22.5: 账号已确认不支持 devin-auth + firebase 冷却中 → 永远不可能登录
     if (_fbBlocked && _cachedProvider === 'unsupported-devin') {
       const left = Math.ceil((this._firebaseBlockedUntil - Date.now()) / 1000);
-      _warn('登录', `${_emailPrefix} → 跳过 (unsupported-devin + firebase 冷却 ${left}s)`);
+      _logSkip('登录', `${_emailPrefix} → 跳过 (unsupported-devin + firebase 冷却 ${left}s)`);
       return { ok: false, error: 'no_viable_auth_path', skipped: true };
     }
 
@@ -1331,8 +1349,25 @@ class AuthService {
   /**
    * Get comprehensive usage info — tries new quota format, falls back to credits
    * Returns: { mode, credits, daily, weekly, plan, resetTime, ... }
+   *
+   * v22.7: end-to-end wall-clock so a single bad-proxy account cannot hold
+   * up the pool scan for 15-20+s.
    */
-  async getUsageInfo(email, password, options = {}) {
+  getUsageInfo(email, password, options = {}) {
+    const wallClockMs = Number.isFinite(options.wallClockMs) ? options.wallClockMs : 10_000;
+    const _emailPrefix = email.split('@')[0];
+    return Promise.race([
+      this._getUsageInfoInner(email, password, options),
+      new Promise((resolve) => setTimeout(() => {
+        if (!options.quiet) {
+          _warn('额度', `${_emailPrefix} → wall-clock timeout (${wallClockMs}ms)`);
+        }
+        resolve({ ok: false, errorType: 'plan_status_failed', error: 'wall_clock_timeout' });
+      }, wallClockMs)),
+    ]);
+  }
+
+  async _getUsageInfoInner(email, password, options = {}) {
     const _t0 = Date.now();
     const _emailPrefix = email.split('@')[0];
     // v20.4: 透传 quiet 给 login (full_scan/active_tick 的 [登录] 也降为 DEBUG)
@@ -1344,7 +1379,10 @@ class AuthService {
       }
       const error = loginResult.error || 'login_failed';
       const errorType = this._isFatalFirebaseAuthError(error) ? 'invalid_credentials' : 'login_failed';
-      _warn('额度', `${_emailPrefix} → login failed (${Date.now() - _t0}ms)`);
+      // v22.7: quiet + skipped 时 [登录] 已说明原因, 这里别重复刷屏
+      if (!(options.quiet && loginResult.skipped)) {
+        _warn('额度', `${_emailPrefix} → login failed (${Date.now() - _t0}ms)`);
+      }
       return { ok: false, errorType, error };
     }
     const _t1 = Date.now();

@@ -1,7 +1,7 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth, sel: isSelected, 'batch-on': batchMode }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth, abn: isAbnormal, sel: isSelected, 'batch-on': batchMode }"
     :id="`row${index}`"
     @click.capture="onCardClick"
   >
@@ -17,12 +17,22 @@
       <div class="ac-acts">
         <button
           class="r-btn login"
-          :class="{ active: isCurrent }"
-          @click="postMessage('login', { index })"
-          :title="isCurrent ? '当前' : '切换'"
+          :class="{ active: isCurrent, warn: isAbnormal && !isCurrent, 'confirm-switch': confirmSwitch }"
+          @click="onLoginClick"
+          :title="loginButtonTitle"
         >
-          <svg v-if="isCurrent" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <template v-if="confirmSwitch">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+          </template>
+          <template v-else-if="isCurrent">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          </template>
+          <template v-else-if="isAbnormal">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+          </template>
+          <template v-else>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          </template>
         </button>
         <button
           class="r-btn rfsh"
@@ -242,6 +252,9 @@ watch(needsClock, (v) => v ? startClock() : stopClock(), { immediate: true })
 const isDailyDepleted = computed(() => props.account.dailyDepleted === true)
 const isInvalidAuth = computed(() => props.account.invalidAuth === true)
 
+// why: any persisted authError marks the account as needing manual attention
+const isAbnormal = computed(() => !!props.account.authError)
+
 // why: surface accumulated switch failures so user can decide retry vs abandon
 const switchFailureBadge = computed(() => {
   const err = props.account.authError
@@ -255,6 +268,41 @@ const switchFailureBadge = computed(() => {
     tooltip: `${count} 次失败 · ${msg || 'unknown'}\n首次: ${new Date(err.firstAt || err.at).toLocaleString()}`,
   }
 })
+
+// why: prevent accidental switch to known-bad accounts via two-step confirm
+const confirmSwitch = ref(false)
+let confirmSwitchTimer = null
+
+const loginButtonTitle = computed(() => {
+  if (props.isCurrent) return '当前账号'
+  if (confirmSwitch.value) return '再次点击确认切换 (异常账号可能再次失败)'
+  if (isAbnormal.value) {
+    const err = props.account.authError
+    if (err?.type === 'invalid_credentials') return '账号凭据无效，点击仍要切换'
+    if (err?.type === 'switch_failed') {
+      const c = err.count || 1
+      return `账号已切换失败 ×${c}，点击仍要尝试切换`
+    }
+    return '账号异常，点击仍要切换'
+  }
+  return '切换'
+})
+
+function onLoginClick() {
+  if (props.isCurrent) {
+    postMessage('login', { index: props.index })
+    return
+  }
+  if (isAbnormal.value && !confirmSwitch.value) {
+    confirmSwitch.value = true
+    clearTimeout(confirmSwitchTimer)
+    confirmSwitchTimer = setTimeout(() => { confirmSwitch.value = false }, 1500)
+    return
+  }
+  clearTimeout(confirmSwitchTimer)
+  confirmSwitch.value = false
+  postMessage('login', { index: props.index })
+}
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
 
@@ -445,6 +493,9 @@ onBeforeUnmount(() => {
 .ac.blk:not(.rl){opacity:.55}
 .ac.badauth{opacity:.38}
 .ac.exp{opacity:.3}
+/* Abnormal state — kept readable (so user can act), but visually marked. cur takes precedence. */
+.ac.abn:not(.cur){opacity:.92;border-color:color-mix(in srgb, var(--yw) 55%, var(--bd));background:color-mix(in srgb, var(--yw) 4%, var(--sf))}
+.ac.abn:not(.cur):hover{opacity:1;border-color:var(--yw);background:color-mix(in srgb, var(--yw) 7%, var(--sf2))}
 .ac-head{display:flex;align-items:center;gap:4px;margin-bottom:1px;min-height:22px}
 .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .dot.ok{background:var(--gn)}.dot.warn{background:var(--yw)}.dot.bad{background:var(--rd)}.dot.dm{background:var(--tx3)}
@@ -469,6 +520,11 @@ onBeforeUnmount(() => {
 .r-btn.login:hover{background:var(--ac-bg);color:var(--ac)}
 .r-btn.login.active{color:var(--gn)}
 .r-btn.login.active:hover{background:var(--gn-bg)}
+.r-btn.login.warn{color:var(--yw)}
+.r-btn.login.warn:hover{background:color-mix(in srgb, var(--yw) 14%, transparent);color:var(--yw)}
+.r-btn.login.confirm-switch{color:#fff;background:var(--yw);width:auto;padding:0 6px;font-size:10px;font-weight:600;letter-spacing:.3px;animation:wam-pulse-warn .9s ease-in-out infinite}
+.r-btn.login.confirm-switch:hover{background:color-mix(in srgb, var(--yw) 90%, #000)}
+@keyframes wam-pulse-warn{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--yw) 70%, transparent)}50%{box-shadow:0 0 0 4px color-mix(in srgb, var(--yw) 0%, transparent)}}
 .r-btn.rfsh{color:var(--tx3)}
 .r-btn.rfsh:hover{background:var(--ac-bg);color:var(--ac)}
 .r-btn.rfsh.spinning svg{animation:spin .8s linear infinite}
