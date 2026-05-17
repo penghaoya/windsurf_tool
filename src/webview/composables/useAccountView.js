@@ -19,13 +19,15 @@ export const SORT_OPTIONS = [
   { value: 'email_asc',     label: '邮箱 A-Z' },
 ]
 
+// v23.5: 4-chip 简化视图 — Free / 到期 / 凭据异常 在用户视角都属于"异常需关注",
+// 合并到一个 abnormal chip 下,UI 上用 (Free/到期) 副标题表达细分。
+// 内部 categorize 仍保留 4 个互斥桶 (abnormal/expired/free/depleted/available),
+// matchesStatus 在 abnormal 这一 chip 上做大类合并匹配。
 export const STATUS_OPTIONS = [
   { value: 'all',       label: '全部' },
   { value: 'available', label: '可用' },
-  { value: 'abnormal',  label: '异常' },
   { value: 'depleted',  label: '额度耗尽' },
-  { value: 'free',      label: 'Free' },
-  { value: 'expired',   label: '到期' },
+  { value: 'abnormal',  label: '异常', sub: 'Free / 到期', tooltip: '异常 · Free · 到期 合并视图' },
 ]
 
 const DEFAULT_VIEW = {
@@ -39,6 +41,12 @@ function loadPersisted() {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULT_VIEW }
     const data = JSON.parse(raw)
+    // v23.5 migration: 'free' / 'expired' were standalone chips before the
+    // 4-chip consolidation. Map them onto 'abnormal' so the new chip stays
+    // highlighted and the user keeps their intended filter view.
+    if (data.statusFilter === 'free' || data.statusFilter === 'expired') {
+      data.statusFilter = 'abnormal'
+    }
     // searchText stays ephemeral (don't persist across sessions)
     return { ...DEFAULT_VIEW, ...data, searchText: '' }
   } catch { return { ...DEFAULT_VIEW } }
@@ -94,7 +102,11 @@ function categorize(account, threshold) {
 }
 function matchesStatus(account, status, threshold) {
   if (status === 'all') return true
-  return categorize(account, threshold) === status
+  const cat = categorize(account, threshold)
+  // v23.5: "异常" chip 是大类,合并显示 abnormal + free + expired
+  // 三类账号在用户视角都需要关注/处理。
+  if (status === 'abnormal') return cat === 'abnormal' || cat === 'free' || cat === 'expired'
+  return cat === status
 }
 
 function matchesSearch(account, search) {

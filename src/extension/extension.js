@@ -714,7 +714,7 @@ async function _doRefreshPool(context) {
         const emailShort = email ? email.split('@')[0] : '';
         progress.report({
           increment: incrementPercent,
-          message: `${done}/${n} · ✅${okStr} ❌${failStr}${emailShort ? ' · ' + emailShort : ''}`,
+          message: `${done}/${n} · 成功 ${okStr} · 失败 ${failStr}${emailShort ? ' · ' + emailShort : ''}`,
         });
         S.statusBar.text = `$(sync~spin) ${done}/${n}`;
         _refreshPanel();
@@ -760,7 +760,7 @@ async function _doResetFingerprint() {
   if (result.ok) {
     S.lastRotatedIds = result.new;
     vscode.window.showInformationMessage(
-      "WAM: ✅ 指纹已重置，下次切号时热生效(无需重启)。",
+      "WAM: 指纹已重置，下次切号时热生效(无需重启)。",
     );
   } else {
     vscode.window.showErrorMessage(`WAM: 重置失败: ${result.error}`);
@@ -797,7 +797,7 @@ async function _doExport(context) {
     }
     await vscode.env.clipboard.writeText(lines.join('\n'));
     _logInfo('导出', `已复制${lines.length}个账号到剪贴板`);
-    vscode.window.showInformationMessage(`WAM: ✅ 已复制 ${lines.length} 个账号到剪贴板`);
+    vscode.window.showInformationMessage(`WAM: 已复制 ${lines.length} 个账号到剪贴板`);
   } catch (e) {
     vscode.window.showErrorMessage(`WAM: 导出失败: ${e.message}`);
   }

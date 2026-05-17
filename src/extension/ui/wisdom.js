@@ -275,7 +275,7 @@ export async function _doInitWorkspace(context) {
         .showInformationMessage(
           `WAM: 扫描 — ${installed}已安装 / ${missing}缺失\n${(result.missing || [])
             .slice(0, 5)
-            .map((item) => '❌ ' + item.key)
+            .map((item) => '· ' + item.key + ' (缺失)')
             .join(', ')}`,
           missing > 0 ? '注入缺失项' : '已完整',
         )
@@ -313,10 +313,10 @@ export async function _doInitWorkspace(context) {
     } else if (action.value === 'detect') {
       const result = await callApi('/api/detect' + query);
       const mcps = Object.entries(result.mcps_installed || {})
-        .map(([name, installed]) => (installed ? '✅' : '❌') + name)
+        .map(([name, installed]) => `${name}(${installed ? 'OK' : '缺失'})`)
         .join(' ');
       vscode.window.showInformationMessage(
-        `WAM: 环境 — IDE:${result.ide} OS:${result.os} Python:${result.python_ok ? '✅' : '❌'} 安全中枢:${result.security_hub_running ? '✅' : '❌'}\nMCP: ${mcps}`,
+        `WAM: 环境 — IDE:${result.ide} OS:${result.os} Python:${result.python_ok ? 'OK' : '缺失'} 安全中枢:${result.security_hub_running ? '运行中' : '未运行'}\nMCP: ${mcps}`,
       );
     }
   } catch (error) {

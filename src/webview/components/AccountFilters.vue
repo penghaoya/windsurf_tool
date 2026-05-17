@@ -38,8 +38,12 @@
         :key="opt.value"
         class="af-chip"
         :class="{ on: viewState.statusFilter === opt.value }"
+        :title="opt.tooltip || opt.label"
         @click="viewState.statusFilter = opt.value"
-      >{{ opt.label }}</button>
+      >
+        <span class="af-chip-label">{{ opt.label }}</span>
+        <span v-if="opt.sub" class="af-chip-sub">({{ opt.sub }})</span>
+      </button>
     </div>
   </div>
 </template>
@@ -115,7 +119,11 @@ defineProps({
   background:transparent;border:0;color:var(--tx3);
   border-radius:10px;cursor:pointer;white-space:nowrap;
   transition:background-color .1s,color .1s;
+  display:inline-flex;align-items:baseline;gap:3px;
 }
 .af-chip:hover{color:var(--tx2);background:var(--bg2)}
 .af-chip.on{color:var(--ac);background:var(--ac-bg);font-weight:600}
+.af-chip-label{display:inline-block}
+.af-chip-sub{font-size:9.5px;font-weight:400;opacity:.62;letter-spacing:.1px}
+.af-chip.on .af-chip-sub{opacity:.78}
 </style>
