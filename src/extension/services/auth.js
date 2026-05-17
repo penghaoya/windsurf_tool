@@ -1196,16 +1196,26 @@ class AuthService {
       return { ok: false, cacheOnly: true };
     }
 
-    // v22.4: windsurf.com 整体不可达 + Firebase App Check 锁死 → 全部登录路径都没法走, 直接 fail-fast
-    if (this._isHostDead('windsurf.com') && this._isFirebaseAppCheckBlocked()) {
+    // v22.4-22.5: 登录路径全部不可用时直接 fail-fast (避免每分钟徒劳重试同一组合)
+    const _cachedProvider = this._getCachedAuthProvider(email);
+    const _fbBlocked = this._isFirebaseAppCheckBlocked();
+    const _wsDead = this._isHostDead('windsurf.com');
+
+    if (_fbBlocked && _wsDead) {
       _warn('登录', `${_emailPrefix} → 跳过 (windsurf.com 不可达 + firebase app_check 冷却中)`);
       return { ok: false, error: 'all_login_paths_blocked', skipped: true };
+    }
+    // v22.5: 账号已确认不支持 devin-auth + firebase 冷却中 → 永远不可能登录
+    if (_fbBlocked && _cachedProvider === 'unsupported-devin') {
+      const left = Math.ceil((this._firebaseBlockedUntil - Date.now()) / 1000);
+      _warn('登录', `${_emailPrefix} → 跳过 (unsupported-devin + firebase 冷却 ${left}s)`);
+      return { ok: false, error: 'no_viable_auth_path', skipped: true };
     }
 
     const payload = { returnSecureToken: true, email, password, clientType: 'CLIENT_TYPE_WEB' };
     const fbHeaders = { Referer: 'https://windsurf.com/', Origin: 'https://windsurf.com' };
     const errors = [];
-    const cachedProvider = this._getCachedAuthProvider(email);
+    const cachedProvider = _cachedProvider;
 
     const devinCooldownLeft = this._devinAuthCooldownUntil - Date.now();
     if (cachedProvider === 'firebase' || cachedProvider === 'unsupported-devin') {
@@ -1527,6 +1537,9 @@ class AuthService {
         if (r.ok) {
           const parsed = this._parsePlanStatusJson(r.data);
           if (parsed) return parsed;
+          // v22.5: 200 但 body 空/格式不符 — 通常是 token soft-expire 信号
+          _warn('额度', `JSON GetPlanStatus ${new URL(url).hostname} → 200 but empty/invalid body (token likely expired)`);
+          continue;
         }
         _warn('额度', `JSON GetPlanStatus ${new URL(url).hostname} → ${r.status}`);
       } catch (e) {

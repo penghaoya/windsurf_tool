@@ -29,6 +29,9 @@ class AccountViewProvider {
     this._lastStateFingerprint = '';
     this._statePushDelay = 80;
     this._disposeAccountChange = null;
+    // v22.6: egress IP — track last switch event to auto-refresh
+    this._lastSwitchSig = null;
+    this._egressIpFetching = false;
   }
 
   resolveWebviewView(webviewView) {
@@ -131,6 +134,10 @@ class AccountViewProvider {
     const switchCount = this._onAction ? (this._onAction('getSwitchCount') || 0) : 0;
     const switchStatus = this._onAction ? (this._onAction('getSwitchStatus') || null) : null;
     const lastDecision = this._onAction ? (this._onAction('getLastDecision') || null) : null;
+    const egressIp = this._onAction ? (this._onAction('getEgressIp') || null) : null;
+
+    // v22.6: 切号确认时主动失效 IP 缓存并触发刷新 (异步, 不阻塞当前 push)
+    this._maybeAutoRefreshEgressIp(lastDecision, egressIp);
 
     // 为每个账号附加计算属性 (Vue 侧只做展示，不做业务逻辑)
     const enriched = accounts.map((a, i) => {
@@ -174,11 +181,49 @@ class AccountViewProvider {
       switchCount,
       switchStatus,
       lastDecision,
+      egressIp,
     };
     const fingerprint = JSON.stringify(payload);
     if (!force && fingerprint === this._lastStateFingerprint) return;
     this._lastStateFingerprint = fingerprint;
     this._view.webview.postMessage(payload);
+  }
+
+  // v22.6: 出口 IP 自动刷新策略
+  //   1. 缓存为空 → 异步触发首次探测
+  //   2. lastDecision 出现新的 switch_confirmed → 失效缓存 + 强制重探
+  _maybeAutoRefreshEgressIp(lastDecision, egressIp) {
+    if (!this._onAction) return;
+
+    const switchSig =
+      lastDecision?.action === 'switch_confirmed'
+        ? `${lastDecision.fromIndex ?? -1}->${lastDecision.targetIndex ?? -1}@${lastDecision.reason || ''}`
+        : null;
+    const isNewSwitch = switchSig && switchSig !== this._lastSwitchSig;
+
+    if (isNewSwitch) {
+      this._lastSwitchSig = switchSig;
+      this._onAction('invalidateEgressIp');
+      this._fetchEgressIpAsync({ force: true });
+      return;
+    }
+
+    if (!egressIp && !this._egressIpFetching) {
+      this._fetchEgressIpAsync({ force: false });
+    }
+  }
+
+  _fetchEgressIpAsync({ force = false } = {}) {
+    if (this._egressIpFetching) return;
+    this._egressIpFetching = true;
+    Promise.resolve(this._onAction('refreshEgressIp', { force }))
+      .then((result) => {
+        if (result) this._pushState({ force: true });
+      })
+      .catch(() => {})
+      .finally(() => {
+        this._egressIpFetching = false;
+      });
   }
 
   _clearStatePushTimer() {
@@ -371,6 +416,13 @@ class AccountViewProvider {
             this._toast(`已刷新 ${msg.indices.length} 个账号`);
             return { refreshed: msg.indices.length };
           });
+        }
+        break;
+      case ACTION.REFRESH_EGRESS_IP:
+        // v22.6: 手动刷新出口 IP — 强制重探后立即重推 state
+        if (act) {
+          act('invalidateEgressIp');
+          this._fetchEgressIpAsync({ force: true });
         }
         break;
       case ACTION.BATCH_COPY:

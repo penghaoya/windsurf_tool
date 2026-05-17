@@ -25,6 +25,7 @@
 import vscode from 'vscode';
 import { AccountManager } from './services/account.js';
 import { AuthService } from './services/auth.js';
+import { createEgressIpService } from './services/egressIp.js';
 import { openAccountPanel, AccountViewProvider } from './ui/webview.js';
 import {
   resetFingerprint,
@@ -225,6 +226,7 @@ function _activate(context) {
     (tag, msg) => _logWarn(tag, msg),
     (tag, msg) => _logDebug(tag, msg),
   );
+  S.egressIp = createEgressIpService(S.auth);
   S.am.startWatching();
 
   // ═══ 状态栏：号池视图 ═══

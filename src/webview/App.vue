@@ -18,6 +18,7 @@
         :threshold="state.threshold"
         :manualThreshold="state.manualThreshold"
         :alwaysFreshFingerprint="state.alwaysFreshFingerprint"
+        :egressIp="state.egressIp"
       />
       <QuickActions :addOpen="addOpen" @toggleAdd="addOpen = !addOpen" />
       <transition name="slide">

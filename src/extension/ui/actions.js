@@ -74,6 +74,13 @@ export function createActionHandler(helpers) {
         return S.switchStatus || null;
       case 'getLastDecision':
         return S.lastDecision || null;
+      case 'getEgressIp':
+        return S.egressIp?.getCached() || null;
+      case 'refreshEgressIp':
+        return S.egressIp ? S.egressIp.fetch({ force: !!arg?.force }) : null;
+      case 'invalidateEgressIp':
+        S.egressIp?.invalidate();
+        return undefined;
       case 'showLogs':
         S.outputChannel?.show(true);
         return undefined;

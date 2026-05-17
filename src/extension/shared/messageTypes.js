@@ -35,4 +35,5 @@ export const ACTION = {
   BATCH_REMOVE: 'batchRemove',
   BATCH_REFRESH: 'batchRefresh',
   BATCH_COPY: 'batchCopy',
+  REFRESH_EGRESS_IP: 'refreshEgressIp',
 };

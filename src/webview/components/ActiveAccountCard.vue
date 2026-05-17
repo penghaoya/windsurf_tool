@@ -24,6 +24,18 @@
       <span v-if="resetInfo" class="q-reset">{{ resetInfo }}</span>
     </div>
 
+    <!-- v22.6: 出口 IP — 显示当前 Windsurf 流量真实出口 IP + 国家 -->
+    <div class="ac-egress" :title="ipTitle" @click="onRefreshIp">
+      <span class="eg-label">出口</span>
+      <template v-if="egressIp">
+        <span class="eg-flag">{{ countryFlag }}</span>
+        <span class="eg-ip">{{ egressIp.ip }}</span>
+        <span v-if="egressIp.country" class="eg-country">{{ egressIp.country }}</span>
+      </template>
+      <span v-else class="eg-pending">探测中…</span>
+      <span class="eg-refresh" :class="{ spinning: refreshing }">↻</span>
+    </div>
+
     <!-- Embedded scheduling control (replaces action buttons) -->
     <div class="ac-divider"></div>
     <ModeSwitcher
@@ -40,9 +52,11 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { meterColor, urgencyColor, formatPlanRemaining } from '../utils/format.js'
 import ModeSwitcher from './ModeSwitcher.vue'
+import { postMessage } from '../composables/useVscode.js'
+import { ACTION } from '../../extension/shared/messageTypes.js'
 
 const props = defineProps({
   accounts: { type: Array, default: () => [] },
@@ -53,7 +67,38 @@ const props = defineProps({
   threshold: { type: Number, default: 15 },
   manualThreshold: { type: Number, default: 0 },
   alwaysFreshFingerprint: { type: Boolean, default: true },
+  egressIp: { type: Object, default: null },
 })
+
+// v22.6: 出口 IP 显示 + 手动刷新
+const refreshing = ref(false)
+
+// 国旗 emoji (从 ISO countryCode 转换)
+const countryFlag = computed(() => {
+  const cc = props.egressIp?.countryCode
+  if (!cc || cc.length !== 2) return ''
+  return String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65))
+})
+
+const ipTitle = computed(() => {
+  if (!props.egressIp) return '点击刷新出口 IP'
+  const parts = [`IP: ${props.egressIp.ip}`]
+  if (props.egressIp.country) parts.push(`国家: ${props.egressIp.country}`)
+  if (props.egressIp.asOrganization) parts.push(`ASN: ${props.egressIp.asOrganization}`)
+  parts.push('点击刷新')
+  return parts.join('\n')
+})
+
+function onRefreshIp() {
+  if (refreshing.value) return
+  refreshing.value = true
+  postMessage(ACTION.REFRESH_EGRESS_IP)
+  // 12s 兜底解除 spinner (后端 6s 超时 + buffer)
+  setTimeout(() => { refreshing.value = false }, 12_000)
+}
+
+// 当 egressIp 更新时, 解除 spinner
+watch(() => props.egressIp?.ts, () => { refreshing.value = false })
 
 const activeAccount = computed(() =>
   props.currentIndex >= 0 ? props.accounts[props.currentIndex] : null
@@ -183,6 +228,37 @@ const resetInfo = computed(() => {
 .q-val{font-size:12px;font-weight:700;letter-spacing:-.3px}
 .q-sep{color:var(--tx3);font-size:10px}
 .q-reset{font-size:10px;color:var(--tx3);font-weight:500}
+
+/* v22.6: 出口 IP 显示行 */
+.ac-egress{
+  display:flex;align-items:center;gap:5px;flex-wrap:wrap;
+  font-size:10.5px;line-height:1;
+  padding:3px 6px;margin:1px 0;
+  background:color-mix(in srgb, var(--tx) 4%, transparent);
+  border-radius:4px;
+  cursor:pointer;
+  transition:background .15s ease;
+  user-select:none;
+}
+.ac-egress:hover{background:color-mix(in srgb, var(--tx) 8%, transparent)}
+.eg-label{font-size:10px;color:var(--tx3);font-weight:500;flex-shrink:0}
+.eg-flag{font-size:11px;line-height:1;flex-shrink:0}
+.eg-ip{
+  font-size:11px;color:var(--tx);font-weight:600;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:-.2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.eg-country{font-size:10px;color:var(--tx2);font-weight:500}
+.eg-pending{font-size:10px;color:var(--tx3);font-style:italic}
+.eg-refresh{
+  margin-left:auto;font-size:11px;color:var(--tx3);
+  flex-shrink:0;line-height:1;
+  transition:color .15s ease;
+}
+.ac-egress:hover .eg-refresh{color:var(--ac)}
+.eg-refresh.spinning{animation:spin 1s linear infinite;color:var(--ac)}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 
 .ac-divider{
   height:1px;background:var(--bd);

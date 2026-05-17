@@ -18,6 +18,7 @@ export const S = {
   statusBar: null,
   am: null,
   auth: null,
+  egressIp: null,           // v22.6: 出口 IP 探测服务
   panelProvider: null,
   panel: null,
   outputChannel: null,
