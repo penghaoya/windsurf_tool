@@ -1,7 +1,8 @@
-// 出口 IP 探测服务 (v22.6)
-// Why: 让用户在 webview 看到当前 Windsurf 流量的真实出口 IP
-//      复用 AuthService 的 _httpsJson — 自动按 mode/proxy 路由,
-//      保证查到的 IP 等同于 Windsurf 实际出口
+// 出口 IP 探测服务 (v22.7)
+// Why: 显示本地网络出口 IP — 直连请求, 不走 Windsurf 代理层,
+//      避免把 IP 探测请求计入 host-dead 熔断器
+import https from 'https';
+import { URL } from 'url';
 
 const IP_API_URL = 'https://my.ippure.com/v1/info';
 const CACHE_TTL_MS = 30_000;
@@ -9,7 +10,7 @@ const TIMEOUT_GUARD_MS = 6_000;
 
 class EgressIpService {
   constructor(authService) {
-    this._auth = authService;
+    this._auth = authService; // kept for compatibility; not used for fetch
     this._cache = null;        // { ip, country, countryCode, ts }
     this._cacheUntil = 0;
     this._inflight = null;     // dedupe concurrent fetches
@@ -52,22 +53,13 @@ class EgressIpService {
   }
 
   async _doFetch() {
-    // Reuse AuthService's HTTPS layer — handles proxy/direct + circuit breaker
-    const r = await this._auth._httpsJson(
-      IP_API_URL,
-      'GET',
-      null,
-      undefined,
-      { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }
-    );
-    if (!r || !r.ok || !r.data || typeof r.data !== 'object' || !r.data.ip) {
-      return null;
-    }
+    const data = await directHttpsJson(IP_API_URL, TIMEOUT_GUARD_MS);
+    if (!data || typeof data !== 'object' || !data.ip) return null;
     return {
-      ip: String(r.data.ip),
-      country: String(r.data.country || ''),
-      countryCode: String(r.data.countryCode || ''),
-      asOrganization: String(r.data.asOrganization || ''),
+      ip: String(data.ip),
+      country: String(data.country || ''),
+      countryCode: String(data.countryCode || ''),
+      asOrganization: String(data.asOrganization || ''),
       ts: Date.now(),
     };
   }
@@ -81,4 +73,42 @@ class EgressIpService {
 
 export function createEgressIpService(authService) {
   return new EgressIpService(authService);
+}
+
+// Plain direct HTTPS GET — no proxy, no agent reuse, no circuit-breaker side effects.
+function directHttpsJson(url, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    let u;
+    try { u = new URL(url); } catch { return finish(null); }
+    const req = https.request(
+      {
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: (u.pathname || '/') + (u.search || ''),
+        method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+        // why: opt out of any global agent so a custom proxy agent never leaks in
+        agent: false,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            return finish(null);
+          }
+          try {
+            const body = Buffer.concat(chunks).toString('utf8');
+            finish(JSON.parse(body));
+          } catch { finish(null); }
+        });
+        res.on('error', () => finish(null));
+      },
+    );
+    req.setTimeout(timeoutMs, () => { try { req.destroy(); } catch {}; finish(null); });
+    req.on('error', () => finish(null));
+    req.end();
+  });
 }

@@ -30,6 +30,7 @@ export const ACTION = {
   EXPORT_ACCOUNTS: 'exportAccounts',
   IMPORT_ACCOUNTS: 'importAccounts',
   CLEAR_RATE_LIMIT: 'clearRateLimit',
+  CLEAR_AUTH_ERROR: 'clearAuthError',
   COPY_PWD: 'copyPwd',
   SHOW_LOGS: 'showLogs',
   BATCH_REMOVE: 'batchRemove',

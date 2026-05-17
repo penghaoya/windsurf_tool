@@ -671,6 +671,40 @@ class AccountManager {
     return a?.authError?.type === 'invalid_credentials';
   }
 
+  // why: switch failures may be transient (Firebase/proxy/network) — accumulate
+  // count rather than mark on first failure so UI can show severity tier
+  markSwitchFailure(index, reason) {
+    if (index < 0 || index >= this._accounts.length) return;
+    const a = this._accounts[index];
+    const prev = a.authError && a.authError.type === 'switch_failed' ? a.authError : null;
+    const count = (prev?.count || 0) + 1;
+    a.authError = {
+      type: 'switch_failed',
+      message: reason || 'unknown',
+      count,
+      at: Date.now(),
+      firstAt: prev?.firstAt || Date.now(),
+    };
+    this._save();
+    this._notify();
+    return count;
+  }
+
+  clearSwitchFailure(index) {
+    if (index < 0 || index >= this._accounts.length) return;
+    const a = this._accounts[index];
+    if (a.authError?.type === 'switch_failed') {
+      delete a.authError;
+      this._save();
+      this._notify();
+    }
+  }
+
+  isAbnormal(index) {
+    const a = this.get(index);
+    return !!a?.authError;
+  }
+
   /** 保存设备指纹到账号 (持久化) */
   setFingerprint(index, ids) {
     if (index < 0 || index >= this._accounts.length || !ids) return;

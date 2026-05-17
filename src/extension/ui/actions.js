@@ -60,6 +60,13 @@ export function createActionHandler(helpers) {
           refreshPanel();
         }
         return undefined;
+      case 'clearAuthError':
+        if (arg !== undefined) {
+          S.am.clearAuthError(arg);
+          updatePoolBar();
+          refreshPanel();
+        }
+        return undefined;
       case 'getCurrentIndex':
         return S.activeIndex;
       case 'getProxyStatus':

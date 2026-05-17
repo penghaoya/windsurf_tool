@@ -378,6 +378,17 @@ class AccountViewProvider {
           this._pushState();
         }
         break;
+      case ACTION.CLEAR_AUTH_ERROR:
+        if (msg.index !== undefined) {
+          if (act) {
+            await act('clearAuthError', msg.index);
+          } else {
+            this._am.clearAuthError(msg.index);
+          }
+          this._toast('已解除异常标记');
+          this._pushState();
+        }
+        break;
       case ACTION.COPY_PWD:
         if (msg.index !== undefined) {
           const account = this._am.get(msg.index);

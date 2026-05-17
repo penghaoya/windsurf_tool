@@ -22,6 +22,7 @@ export const SORT_OPTIONS = [
 export const STATUS_OPTIONS = [
   { value: 'all',       label: '全部' },
   { value: 'available', label: '可用' },
+  { value: 'abnormal',  label: '异常' },
   { value: 'depleted',  label: '额度耗尽' },
   { value: 'free',      label: 'Free' },
   { value: 'expired',   label: '到期' },
@@ -76,12 +77,14 @@ function isFreeAccount(account) {
 // Mutually-exclusive buckets by priority: expired > free > depleted > available.
 // Every non-'all' account belongs to exactly one bucket.
 function categorize(account, threshold) {
+  // why: surface anything needing manual intervention (bad creds / switch failures) first
+  if (account.authError) return 'abnormal'
   if (account.isExpired) return 'expired'
   // Trial/Pro that was downgraded to Free also lands here
   if (isFreeAccount(account)) return 'free'
   // Hard-unusable states
   if (account.dailyDepleted || account.rateLimit ||
-      account.schedulerBlocked || account.invalidAuth) return 'depleted'
+      account.schedulerBlocked) return 'depleted'
   // Soft-depleted: effective quota at/below preemptive threshold
   const eff = account.effective
   if (typeof eff === 'number' && typeof threshold === 'number' && eff <= threshold) {

@@ -714,6 +714,8 @@ export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
     });
     const confirmed = await _waitForSwitchConfirmation(targetEmail);
     if (confirmed.ok) {
+      // why: account proved usable — drop stale switch_failed mark
+      S.am.clearSwitchFailure?.(targetIndex);
       _commitConfirmedSwitch(context, {
         prevIndex,
         targetIndex,
@@ -738,6 +740,7 @@ export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
     }
     return true;
   } catch (e) {
+    const failCount = S.am.markSwitchFailure?.(targetIndex, e.message) || 0;
     _setSwitchStatus({
       phase: 'failed',
       pendingIndex: targetIndex,
@@ -745,8 +748,9 @@ export async function _seamlessSwitch(context, targetIndex, source = 'direct') {
       targetEmail,
       message: '切换失败',
       reason: e.message,
+      failCount,
     });
-    _logError("切换", `❌ 切换失败 #${targetIndex + 1}`, e.message);
+    _logError("切换", `❌ 切换失败 #${targetIndex + 1} (累计${failCount}次)`, e.message);
     S.statusBar.text = prevBar;
     return false;
   } finally {

@@ -33,35 +33,37 @@
 
     <span class="mode-spacer"></span>
 
-    <button
-      type="button"
-      class="fp-toggle"
-      :class="{ active: alwaysFreshFingerprint }"
-      role="switch"
-      :aria-checked="alwaysFreshFingerprint"
-      :title="alwaysFreshFingerprint ? '每次切号强制重新生成指纹 (推荐)' : '使用账号绑定的指纹 (Per-Account 缓存)'"
-      @click="toggleFreshFp"
-    >
-      <svg v-if="alwaysFreshFingerprint" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-      <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
-      新指纹
-    </button>
-
-    <div class="mode-field" :title="autoRotate ? '自动模式: 达到该剩余额度时提前切换' : '手动模式: 激活账号≤此值时自动切换一次 (0=纯手动)'">
-      <span class="f-label">{{ autoRotate ? '预防' : '安全网' }}</span>
-      <div class="f-input-wrap">
-        <input
-          type="number"
-          min="0"
-          max="100"
-          step="1"
-          class="f-input"
-          :value="autoRotate ? threshold : manualThreshold"
-          @change="onThresholdChange"
-          @keydown.enter="onThresholdChange"
-        />
-        <span class="f-suffix">%</span>
+    <div class="mode-right">
+      <div class="mode-field" :title="autoRotate ? '自动模式: 达到该剩余额度时提前切换' : '手动模式: 激活账号≤此值时自动切换一次 (0=纯手动)'">
+        <span class="f-label">{{ autoRotate ? '预防' : '安全网' }}</span>
+        <div class="f-input-wrap">
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            class="f-input"
+            :value="autoRotate ? threshold : manualThreshold"
+            @change="onThresholdChange"
+            @keydown.enter="onThresholdChange"
+          />
+          <span class="f-suffix">%</span>
+        </div>
       </div>
+
+      <button
+        type="button"
+        class="fp-toggle"
+        :class="{ active: alwaysFreshFingerprint }"
+        role="switch"
+        :aria-checked="alwaysFreshFingerprint"
+        :title="alwaysFreshFingerprint ? '每次切号强制重新生成指纹 (推荐)' : '使用账号绑定的指纹 (Per-Account 缓存)'"
+        @click="toggleFreshFp"
+      >
+        <svg v-if="alwaysFreshFingerprint" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+        <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+        新指纹
+      </button>
     </div>
   </div>
   <div v-if="embedded" class="mode-hint embedded below" :class="hintClass">
@@ -120,9 +122,15 @@ function toggleFreshFp() {
 <style scoped>
 /* Flat row to harmonize with Toolbar — no outer card. Controls carry their own borders */
 .mode-bar{
-  display:flex;align-items:center;gap:4px;
+  display:flex;align-items:flex-start;gap:4px;
   margin-bottom:3px;
 }
+.mode-seg,.mode-spacer{align-self:flex-start}
+.mode-right{
+  display:flex;flex-direction:column;align-items:stretch;gap:3px;
+  min-width:0;
+}
+.mode-right .fp-toggle{justify-content:center}
 /* Embedded inside ActiveAccountCard — strip outer margin/padding */
 .mode-bar.embedded{margin-bottom:0;padding:0}
 .mode-spacer{flex:1}

@@ -127,6 +127,13 @@
 
     <div v-if="isInvalidAuth" class="ac-auth">
       <span>登录凭据无效</span>
+      <button class="ac-auth-clear" @click.stop="onClearAuthError" title="解除标记">解除</button>
+    </div>
+
+    <div v-if="switchFailureBadge" class="ac-auth ac-sf" :title="switchFailureBadge.tooltip">
+      <span>⚠ 切换失败 ×{{ switchFailureBadge.count }}</span>
+      <span v-if="switchFailureBadge.hint" class="ac-sf-hint">{{ switchFailureBadge.hint }}</span>
+      <button class="ac-auth-clear" @click.stop="onClearAuthError" title="解除标记">解除</button>
     </div>
 
     <!-- Rate Limited Badge -->
@@ -234,6 +241,20 @@ watch(needsClock, (v) => v ? startClock() : stopClock(), { immediate: true })
 
 const isDailyDepleted = computed(() => props.account.dailyDepleted === true)
 const isInvalidAuth = computed(() => props.account.invalidAuth === true)
+
+// why: surface accumulated switch failures so user can decide retry vs abandon
+const switchFailureBadge = computed(() => {
+  const err = props.account.authError
+  if (!err || err.type !== 'switch_failed') return null
+  const count = err.count || 1
+  const msg = String(err.message || '').slice(0, 64)
+  const hint = msg && msg !== 'none' ? msg : '注入失败'
+  return {
+    count,
+    hint,
+    tooltip: `${count} 次失败 · ${msg || 'unknown'}\n首次: ${new Date(err.firstAt || err.at).toLocaleString()}`,
+  }
+})
 
 const effectiveRemaining = computed(() => props.account.effective ?? null)
 
@@ -382,6 +403,10 @@ function onClearRateLimit() {
   postMessage('clearRateLimit', { index: props.index })
 }
 
+function onClearAuthError() {
+  postMessage('clearAuthError', { index: props.index })
+}
+
 function onRemove() {
   if (confirmRemove.value) {
     clearTimeout(confirmTimer)
@@ -478,6 +503,10 @@ onBeforeUnmount(() => {
 .ac-pc{color:var(--ac)}
 .ac-dep{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--tx3);margin-top:3px}
 .ac-auth{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--rd);margin-top:3px}
+.ac-auth.ac-sf{color:var(--yw)}
+.ac-sf-hint{color:var(--tx3);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.ac-auth-clear{margin-left:auto;border:1px solid var(--bd2);background:transparent;color:inherit;font:inherit;font-size:10px;padding:1px 6px;border-radius:3px;cursor:pointer;line-height:1.4}
+.ac-auth-clear:hover{background:color-mix(in srgb, currentColor 12%, transparent);border-color:currentColor}
 .ac.sel{border-color:var(--ac);background:color-mix(in srgb, var(--ac) 8%, var(--sf))}
 .ac.batch-on{cursor:pointer}
 .ac.batch-on .ac-acts{opacity:.3;pointer-events:none}
