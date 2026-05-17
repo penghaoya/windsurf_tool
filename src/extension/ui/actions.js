@@ -81,6 +81,8 @@ export function createActionHandler(helpers) {
         return S.switchStatus || null;
       case 'getLastDecision':
         return S.lastDecision || null;
+      case 'getRefreshProgress':
+        return S.refreshProgress || null;
       case 'getEgressIp':
         return S.egressIp?.getCached() || null;
       case 'refreshEgressIp':

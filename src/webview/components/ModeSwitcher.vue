@@ -4,36 +4,37 @@
     <span class="hint-text">{{ hintText }}</span>
   </div>
   <div class="mode-bar" :class="{ embedded }">
-    <div class="mode-seg" role="tablist">
-      <button
-        class="seg-btn"
-        :class="{ active: autoRotate }"
-        role="tab"
-        :aria-selected="autoRotate"
-        @click="setMode(true)"
-        title="启用全部自动调度 (预防/响应/限流/Opus 预算等)"
-      >
-        <svg v-if="autoRotate" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-        <svg v-else width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
-        自动
-      </button>
-      <button
-        class="seg-btn"
-        :class="{ active: !autoRotate }"
-        role="tab"
-        :aria-selected="!autoRotate"
-        @click="setMode(false)"
-        title="仅在激活账号剩余≤阈值时才自动切换，其余时间手动"
-      >
-        <svg v-if="!autoRotate" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-        <svg v-else width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
-        手动
-      </button>
-    </div>
+    <!-- Row 1: 自动/手动 + 安全网/预防 -->
+    <div class="mode-row">
+      <div class="mode-seg" role="tablist">
+        <button
+          class="seg-btn"
+          :class="{ active: autoRotate }"
+          role="tab"
+          :aria-selected="autoRotate"
+          @click="setMode(true)"
+          title="启用全部自动调度 (预防/响应/限流/Opus 预算等)"
+        >
+          <svg v-if="autoRotate" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          自动
+        </button>
+        <button
+          class="seg-btn"
+          :class="{ active: !autoRotate }"
+          role="tab"
+          :aria-selected="!autoRotate"
+          @click="setMode(false)"
+          title="仅在激活账号剩余≤阈值时才自动切换，其余时间手动"
+        >
+          <svg v-if="!autoRotate" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg v-else width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          手动
+        </button>
+      </div>
 
-    <span class="mode-spacer"></span>
+      <span class="mode-spacer"></span>
 
-    <div class="mode-right">
       <div class="mode-field" :title="autoRotate ? '自动模式: 达到该剩余额度时提前切换' : '手动模式: 激活账号≤此值时自动切换一次 (0=纯手动)'">
         <span class="f-label">{{ autoRotate ? '预防' : '安全网' }}</span>
         <div class="f-input-wrap">
@@ -50,7 +51,15 @@
           <span class="f-suffix">%</span>
         </div>
       </div>
+    </div>
 
+    <!-- Row 2 (embedded): hint 左侧 + 新指纹 右侧 -->
+    <div v-if="embedded" class="mode-row mode-row-2">
+      <div class="mode-hint inline" :class="hintClass">
+        <span class="hint-dot"></span>
+        <span class="hint-text">{{ hintText }}</span>
+      </div>
+      <span class="mode-spacer"></span>
       <button
         type="button"
         class="fp-toggle"
@@ -65,10 +74,22 @@
         新指纹
       </button>
     </div>
-  </div>
-  <div v-if="embedded" class="mode-hint embedded below" :class="hintClass">
-    <span class="hint-dot"></span>
-    <span class="hint-text">{{ hintText }}</span>
+
+    <!-- non-embedded: 新指纹 inline 在 row 1 后 (legacy 单行布局) -->
+    <button
+      v-if="!embedded"
+      type="button"
+      class="fp-toggle fp-inline"
+      :class="{ active: alwaysFreshFingerprint }"
+      role="switch"
+      :aria-checked="alwaysFreshFingerprint"
+      :title="alwaysFreshFingerprint ? '每次切号强制重新生成指纹 (推荐)' : '使用账号绑定的指纹 (Per-Account 缓存)'"
+      @click="toggleFreshFp"
+    >
+      <svg v-if="alwaysFreshFingerprint" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+      <svg v-else width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+      新指纹
+    </button>
   </div>
 </template>
 
@@ -120,20 +141,19 @@ function toggleFreshFp() {
 </script>
 
 <style scoped>
-/* Flat row to harmonize with Toolbar — no outer card. Controls carry their own borders */
+/* v23.x: two-row layout — row 1 = [seg | field], row 2 (embedded) = [hint | fp-toggle] */
 .mode-bar{
-  display:flex;align-items:flex-start;gap:4px;
+  display:flex;flex-direction:column;gap:4px;
   margin-bottom:3px;
 }
-.mode-seg,.mode-spacer{align-self:flex-start}
-.mode-right{
-  display:flex;flex-direction:column;align-items:stretch;gap:3px;
-  min-width:0;
-}
-.mode-right .fp-toggle{justify-content:center}
+.mode-row{display:flex;align-items:center;gap:4px;min-width:0}
+.mode-spacer{flex:1}
 /* Embedded inside ActiveAccountCard — strip outer margin/padding */
 .mode-bar.embedded{margin-bottom:0;padding:0}
-.mode-spacer{flex:1}
+/* non-embedded: keep legacy single-line — fp-toggle inline after row 1 */
+.mode-bar:not(.embedded){flex-direction:row;align-items:center}
+.mode-bar:not(.embedded) .mode-row{flex:1}
+.fp-inline{margin-left:4px}
 
 .mode-seg{
   display:inline-flex;gap:0;
@@ -202,6 +222,12 @@ function toggleFreshFp() {
 }
 .mode-hint.embedded{padding:0;margin:0}
 .mode-hint.embedded.below{margin-top:4px}
+/* v23.x: inline hint — shares row 2 with fp-toggle */
+.mode-hint.inline{
+  height:auto;margin:0;padding:0 2px;
+  flex:1;min-width:0;
+  font-size:10.5px;
+}
 .hint-dot{
   width:4px;height:4px;border-radius:50%;
   flex-shrink:0;

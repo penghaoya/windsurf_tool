@@ -16,7 +16,9 @@ import { shouldAcceptUsageWrite } from '../shared/quota.js';
 // Fields the user would lose if we don't persist them. Volatile fields
 // (usage, rateLimit, authError, credits) are recoverable via re-fetch and
 // stay only in the primary file to avoid 3x I/O on every quota refresh.
-const PERSISTENT_FIELDS = ['email', 'password', 'addedAt', 'fingerprint', 'loginCount', 'selectionMode'];
+// apiKey/apiKeyAt/apiKeySource: persisted so quota refreshes can skip Firebase
+// login chain (windsurf-pool style: long-lived sessionToken → GetUserStatus).
+const PERSISTENT_FIELDS = ['email', 'password', 'addedAt', 'fingerprint', 'loginCount', 'selectionMode', 'apiKey', 'apiKeyAt', 'apiKeySource'];
 
 function _extractPersistent(account) {
   const out = {};
@@ -705,6 +707,38 @@ class AccountManager {
     return !!a?.authError;
   }
 
+  // ========== Persisted apiKey (v23.0: GetUserStatus fast-path) ==========
+
+  /** Persist long-lived apiKey/sessionToken. source: 'register_user' | 'devin_auth' | 'manual' */
+  setApiKey(index, apiKey, source = 'unknown') {
+    if (index < 0 || index >= this._accounts.length || !apiKey) return;
+    const a = this._accounts[index];
+    if (a.apiKey === apiKey && a.apiKeySource === source) return; // no-op
+    a.apiKey = apiKey;
+    a.apiKeyAt = Date.now();
+    a.apiKeySource = source;
+    this._markPersistent();
+    this._save();
+  }
+
+  /** Drop apiKey when GetUserStatus returns 401/403 (key expired/revoked). */
+  clearApiKey(index) {
+    if (index < 0 || index >= this._accounts.length) return;
+    const a = this._accounts[index];
+    if (!a.apiKey) return;
+    delete a.apiKey;
+    delete a.apiKeyAt;
+    delete a.apiKeySource;
+    this._markPersistent();
+    this._save();
+  }
+
+  getApiKey(index) {
+    const a = this.get(index);
+    if (!a?.apiKey) return null;
+    return { apiKey: a.apiKey, source: a.apiKeySource || 'unknown', at: a.apiKeyAt || 0 };
+  }
+
   /** 保存设备指纹到账号 (持久化) */
   setFingerprint(index, ids) {
     if (index < 0 || index >= this._accounts.length || !ids) return;
@@ -748,7 +782,10 @@ class AccountManager {
       rateLimit: a.rateLimit || null,
       authError: a.authError || null,
       usage: a.usage || null,
-      fingerprint: a.fingerprint || null
+      fingerprint: a.fingerprint || null,
+      apiKey: a.apiKey || null,
+      apiKeyAt: a.apiKeyAt || null,
+      apiKeySource: a.apiKeySource || null,
     }));
   }
 
@@ -795,6 +832,11 @@ class AccountManager {
           this._rateLimits.set(ext.email, ext.rateLimit);
         }
         if (ext.authError) newAccount.authError = ext.authError;
+        if (ext.apiKey) {
+          newAccount.apiKey = ext.apiKey;
+          newAccount.apiKeyAt = ext.apiKeyAt || Date.now();
+          newAccount.apiKeySource = ext.apiKeySource || 'imported';
+        }
         this._accounts.push(newAccount);
         added++;
       } else {
@@ -814,6 +856,19 @@ class AccountManager {
           if (local.authError) {
             delete local.authError;
           }
+          // v23.0: apiKey was bound to the OLD password, drop it
+          if (local.apiKey) {
+            delete local.apiKey;
+            delete local.apiKeyAt;
+            delete local.apiKeySource;
+          }
+          changed = true;
+        }
+        // v23.0: sync apiKey if remote has fresher one
+        if (ext.apiKey && (!local.apiKey || (ext.apiKeyAt || 0) > (local.apiKeyAt || 0))) {
+          local.apiKey = ext.apiKey;
+          local.apiKeyAt = ext.apiKeyAt || Date.now();
+          local.apiKeySource = ext.apiKeySource || 'sync';
           changed = true;
         }
         // Sync rate limit state (remote RL always wins if still active)

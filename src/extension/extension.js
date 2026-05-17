@@ -379,6 +379,26 @@ function _activate(context) {
     "启动",
     `✅ 就绪 v${_version} | 账号:${accounts.length} 代理:${proxyInfo.mode}:${proxyInfo.port} 窗口:${winCount} 对话:${S.cascadeTabCount}${S.burstMode ? ' (BURST)' : ''}`,
   );
+
+  // v23.2: startup apiKey harvest — bind IDE-injected apiKey to the matching pool account.
+  // This is the rescue path when Firebase App Check is enforced and devin-auth is unsupported.
+  // After binding, the GetUserStatus fast-path can refresh that account without Firebase login.
+  _harvestIdeApiKey();
+}
+
+function _harvestIdeApiKey() {
+  try {
+    const status = S.auth?.readWindsurfAuthStatus?.();
+    if (!status?.apiKey || !status?.email) return;
+    const found = S.am.findByEmail?.(status.email);
+    if (!found) return;
+    const before = S.am.getApiKey?.(found.index);
+    if (before?.apiKey === status.apiKey) return; // already bound
+    S.am.setApiKey?.(found.index, status.apiKey, 'ide_startup');
+    _logInfo('启动', `已绑定 IDE 当前 apiKey → #${found.index + 1} ${status.email.split('@')[0]} (后续刷新可跳过 Firebase)`);
+  } catch (e) {
+    // silent — non-critical
+  }
 }
 
 // ========== Refresh Helpers ==========
@@ -425,11 +445,20 @@ async function _refreshOne(index, options = {}) {
     //   - full_scan: 摘要由 scheduler 打印, 每账号详情降 DEBUG
     //   - active_tick: 周期性激活刷新, 仅在额度变化时由本函数 emit 一行 INFO
     const isQuietReason = options.reason === 'full_scan' || options.reason === 'active_tick';
-    const authOptions = isQuietReason ? { ...options, quiet: true } : options;
+    // v23.0: pass persisted apiKey for the GetUserStatus fast-path
+    const apiKeyEntry = S.am.getApiKey ? S.am.getApiKey(index) : null;
+    const authOptions = {
+      ...(isQuietReason ? { ...options, quiet: true } : options),
+      apiKey: apiKeyEntry?.apiKey || undefined,
+    };
     const prevDaily = account.usage?.daily?.remaining ?? null;
     const prevWeekly = account.usage?.weekly?.remaining ?? null;
     const prevCredits = account.credits ?? null;
     const usageInfo = await S.auth.getUsageInfo(account.email, account.password, authOptions);
+    // v23.0: drop stale apiKey if server rejected it
+    if (usageInfo?.clearApiKey && S.am.clearApiKey) {
+      S.am.clearApiKey(index);
+    }
     if (usageInfo?.ok === false) {
       if (usageInfo.cacheOnly) {
         return { ok: true, skipped: true, errorType: 'cache_miss' };
@@ -439,6 +468,10 @@ async function _refreshOne(index, options = {}) {
         _logWarn('账号验证', `#${index + 1} 登录凭据无效，已标记坏号`);
       }
       return { ok: false, credits: undefined, errorType: usageInfo.errorType, error: usageInfo.error };
+    }
+    // v23.0: persist newly-obtained apiKey/sessionToken for next call's fast-path
+    if (usageInfo?.newApiKey && S.am.setApiKey) {
+      S.am.setApiKey(index, usageInfo.newApiKey, usageInfo.newApiKeySource || 'login_chain');
     }
     if (usageInfo) {
       if (!_usageBelongsToAccount(account, usageInfo)) {
@@ -622,14 +655,83 @@ function _enqueueBatchImportValidation(addedAccounts) {
 
 /** 刷新号池 — 全部账号额度 + 自动轮转
  *  reason='manual_full_scan' 让 worker 启用 preferLocal，优先吃 cache，
- *  避免手动点刷新时发起 N 个 password 登录 → Firebase 限流 → 熝断。 */
+ *  避免手动点刷新时发起 N 个 password 登录 → Firebase 限流 → 熝断。
+ *
+ *  v23.1: VS Code 原生 withProgress 通知 + webview 同步 S.refreshProgress
+ */
 async function _doRefreshPool(context) {
   const accounts = S.am.getAll();
   if (accounts.length === 0) return;
   S.statusBar.text = "$(sync~spin) 刷新号池...";
-  await _refreshAll((i, n) => {
-    S.statusBar.text = `$(sync~spin) ${i + 1}/${n}...`;
-  }, { priority: 'low', reason: 'manual_full_scan' });
+
+  // why: split init/done from progress callback so cancel + finish both reset state cleanly
+  const total = accounts.length;
+  S.refreshProgress = {
+    phase: 'running',
+    total,
+    done: 0,
+    ok: 0,
+    fail: 0,
+    activeIndex: -1,
+    activeEmail: null,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    reason: 'manual_full_scan',
+  };
+  _refreshPanel();
+
+  let cancelRequested = false;
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `刷新号池 (0/${total})`,
+      cancellable: true,
+    },
+    async (progress, token) => {
+      token.onCancellationRequested(() => {
+        cancelRequested = true;
+        S.refreshProgress.phase = 'done';
+        S.refreshProgress.updatedAt = Date.now();
+        _refreshPanel();
+      });
+      let lastDone = 0;
+      await _refreshAll((i, n, result) => {
+        const ok = result?.value?.ok !== false;
+        const idx = Number.isInteger(result?.value?.index) ? result.value.index : -1;
+        const email = idx >= 0 ? S.am.get(idx)?.email || null : null;
+        const done = i + 1;
+        if (ok) S.refreshProgress.ok++;
+        else S.refreshProgress.fail++;
+        S.refreshProgress.done = done;
+        S.refreshProgress.activeIndex = idx;
+        S.refreshProgress.activeEmail = email;
+        S.refreshProgress.updatedAt = Date.now();
+
+        const incrementPercent = ((done - lastDone) / n) * 100;
+        lastDone = done;
+        const okStr = S.refreshProgress.ok;
+        const failStr = S.refreshProgress.fail;
+        const emailShort = email ? email.split('@')[0] : '';
+        progress.report({
+          increment: incrementPercent,
+          message: `${done}/${n} · ✅${okStr} ❌${failStr}${emailShort ? ' · ' + emailShort : ''}`,
+        });
+        S.statusBar.text = `$(sync~spin) ${done}/${n}`;
+        _refreshPanel();
+      }, { priority: 'low', reason: 'manual_full_scan' });
+    },
+  );
+
+  // mark done, then settle UI
+  S.refreshProgress.phase = 'done';
+  S.refreshProgress.updatedAt = Date.now();
+  _refreshPanel();
+
+  if (cancelRequested) {
+    _logWarn('全池扫描', '用户取消刷新');
+    _updatePoolBar();
+    return;
+  }
   // 刷新后自动轮转
   const threshold = _getPreemptiveThreshold();
   if (

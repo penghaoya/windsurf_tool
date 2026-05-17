@@ -177,6 +177,8 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
           account.password,
         );
         if (regResult && regResult.apiKey) {
+          // v23.0: persist for GetUserStatus fast-path on next refresh
+          S.am.setApiKey?.(index, regResult.apiKey, 'register_user');
           for (const command of discoveredCommands || []) {
             if (injected) break;
             try {
@@ -237,6 +239,13 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
         '登录',
         `✅ ${injectResult.method} → #${index + 1} | apiKey ${changed ? '已更新' : '未变'}`,
       );
+      // v23.0: persist full apiKey for GetUserStatus fast-path (covers S0/S1/S2/S3 paths)
+      try {
+        const fullKey = readAuthApiKeyFull();
+        if (fullKey && S.am.setApiKey) {
+          S.am.setApiKey(index, fullKey, 'windsurf_inject');
+        }
+      } catch {}
     }
 
     updatePoolBar();
@@ -373,6 +382,20 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       if (!raw) return null;
       const data = JSON.parse(raw);
       return (data.apiKey || '').substring(0, 20) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // v23.0: full apiKey reader — used to persist windsurf-injected key per account
+  function readAuthApiKeyFull() {
+    try {
+      const dbPath = getStateDbPath();
+      if (!fs.existsSync(dbPath)) return null;
+      const raw = dbReadKey(dbPath, 'windsurfAuthStatus');
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      return data.apiKey || null;
     } catch {
       return null;
     }

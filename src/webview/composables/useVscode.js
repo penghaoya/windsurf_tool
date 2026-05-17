@@ -37,6 +37,7 @@ export const state = reactive({
   switchStatus: null,
   lastDecision: null,
   egressIp: null, // v22.6: { ip, country, countryCode, asOrganization, ts }
+  refreshProgress: null, // v23.1: { phase, total, done, ok, fail, activeIndex, activeEmail, ... }
 })
 
 /** Toast 消息队列 */
@@ -94,6 +95,7 @@ export function initMessageListener() {
         if (m.switchStatus !== undefined) state.switchStatus = m.switchStatus
         if (m.lastDecision !== undefined) state.lastDecision = m.lastDecision
         if (m.egressIp !== undefined) state.egressIp = m.egressIp
+        if (m.refreshProgress !== undefined) state.refreshProgress = m.refreshProgress
         break
       case MSG.TOAST:
         addToast(m.msg, m.isError)

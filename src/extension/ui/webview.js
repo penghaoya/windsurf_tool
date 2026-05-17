@@ -135,6 +135,7 @@ class AccountViewProvider {
     const switchStatus = this._onAction ? (this._onAction('getSwitchStatus') || null) : null;
     const lastDecision = this._onAction ? (this._onAction('getLastDecision') || null) : null;
     const egressIp = this._onAction ? (this._onAction('getEgressIp') || null) : null;
+    const refreshProgress = this._onAction ? (this._onAction('getRefreshProgress') || null) : null;
 
     // v22.6: 切号确认时主动失效 IP 缓存并触发刷新 (异步, 不阻塞当前 push)
     this._maybeAutoRefreshEgressIp(lastDecision, egressIp);
@@ -182,6 +183,7 @@ class AccountViewProvider {
       switchStatus,
       lastDecision,
       egressIp,
+      refreshProgress,
     };
     const fingerprint = JSON.stringify(payload);
     if (!force && fingerprint === this._lastStateFingerprint) return;

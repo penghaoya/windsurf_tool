@@ -1,6 +1,7 @@
 <template>
   <div class="app-root" :class="{ loading: isLoading }">
     <div class="app-fixed">
+      <RefreshProgress :progress="state.refreshProgress" />
       <PoolOverview
         :accounts="state.accounts"
         :currentIndex="state.currentIndex"
@@ -75,6 +76,7 @@
 import { ref, computed, reactive, provide, toRef, onBeforeUnmount, onMounted } from 'vue'
 import { state, toasts, isLoading, initMessageListener, postMessage } from './composables/useVscode.js'
 import PoolOverview from './components/PoolOverview.vue'
+import RefreshProgress from './components/RefreshProgress.vue'
 import ActiveAccountCard from './components/ActiveAccountCard.vue'
 import QuickActions from './components/QuickActions.vue'
 import AddAccount from './components/AddAccount.vue'

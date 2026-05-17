@@ -43,6 +43,19 @@ export const S = {
     updatedAt: 0,
     message: '',
   },
+  // v23.1: 全池刷新进度 (用户手动 / scheduler 全池扫描共用)
+  refreshProgress: {
+    phase: 'idle', // idle | running | done
+    total: 0,
+    done: 0,
+    ok: 0,
+    fail: 0,
+    activeIndex: -1,
+    activeEmail: null,
+    startedAt: 0,
+    updatedAt: 0,
+    reason: null,
+  },
   lastDecision: null,
   refreshCircuitUntil: 0,
   refreshCircuitReason: null,

@@ -65,6 +65,9 @@ const REGISTER_JSON_FALLBACK_URLS = [
 const TOKEN_TTL = 30 * 60 * 1000; // 30 minutes (Firebase idToken hard cap)
 const AUTH1_TOKEN_TTL = 14 * 24 * 60 * 60 * 1000; // 14 days (Auth1 sessionToken, matches windsurf-switch)
 const AUTH_PROVIDER_TTL = 24 * 60 * 60 * 1000;
+// v23.2: 'unsupported-devin' is detection-based and may be wrong (server-side
+// rule change, transient detection error, etc). Short TTL gives self-healing.
+const UNSUPPORTED_DEVIN_TTL = 30 * 60 * 1000; // 30 minutes
 const PROXY_HOST = '127.0.0.1';
 const PROXY_PORTS = [7890, 7897, 7891, 10808, 1080, 8080, 8118, 3128, 9090]; // 按优先级探测
 let ACTIVE_PROXY_PORT = 7890; // 当前生效端口（自动探测更新）
@@ -576,10 +579,24 @@ class AuthService {
       if (!p) return;
       const data = safeReadJsonSync(p, {});
       const now = Date.now();
+      let capped = 0;
       for (const [email, entry] of Object.entries(data)) {
         if (entry?.provider && entry.expireTime > now) {
+          // v23.2: legacy unsupported-devin entries used 24h TTL → cap to 30min so
+          // an upgrade doesn't keep accounts stuck for the rest of the original window.
+          if (entry.provider === 'unsupported-devin') {
+            const newExpire = now + UNSUPPORTED_DEVIN_TTL;
+            if (entry.expireTime > newExpire) {
+              entry.expireTime = newExpire;
+              capped++;
+            }
+          }
           this._providerCache.set(email, entry);
         }
+      }
+      if (capped > 0) {
+        // best-effort persist so the cap survives next launch
+        this._saveProviderCache();
       }
     } catch {}
   }
@@ -605,9 +622,11 @@ class AuthService {
   _setCachedAuthProvider(email, provider) {
     const key = (email || '').trim().toLowerCase();
     if (!key || !provider) return;
+    // v23.2: shorter TTL for tentative negative results
+    const ttl = provider === 'unsupported-devin' ? UNSUPPORTED_DEVIN_TTL : AUTH_PROVIDER_TTL;
     this._providerCache.set(key, {
       provider,
-      expireTime: Date.now() + AUTH_PROVIDER_TTL,
+      expireTime: Date.now() + ttl,
     });
     this._saveProviderCache();
   }
@@ -1223,17 +1242,27 @@ class AuthService {
       _logSkip('登录', `${_emailPrefix} → 跳过 (windsurf.com 不可达 + firebase app_check 冷却中)`);
       return { ok: false, error: 'all_login_paths_blocked', skipped: true };
     }
-    // v22.5: 账号已确认不支持 devin-auth + firebase 冷却中 → 永远不可能登录
+    // v22.5: 账号已确认不支持 devin-auth + firebase 冷却中 → 大概率无法登录
+    // v23.2: 给一次自愈机会 — 每账号每 30min 清缓存重试 devin-auth, 防 detection 误判永久锁死
     if (_fbBlocked && _cachedProvider === 'unsupported-devin') {
-      const left = Math.ceil((this._firebaseBlockedUntil - Date.now()) / 1000);
-      _logSkip('登录', `${_emailPrefix} → 跳过 (unsupported-devin + firebase 冷却 ${left}s)`);
-      return { ok: false, error: 'no_viable_auth_path', skipped: true };
+      const lastRescue = this._lastDevinRescueByEmail?.get(email) || 0;
+      const rescueGap = Date.now() - lastRescue;
+      if (rescueGap < 30 * 60_000) {
+        const left = Math.ceil((this._firebaseBlockedUntil - Date.now()) / 1000);
+        _logSkip('登录', `${_emailPrefix} → 跳过 (unsupported-devin + firebase 冷却 ${left}s)`);
+        return { ok: false, error: 'no_viable_auth_path', skipped: true };
+      }
+      this._lastDevinRescueByEmail = this._lastDevinRescueByEmail || new Map();
+      this._lastDevinRescueByEmail.set(email, Date.now());
+      _li('登录', `${_emailPrefix} → firebase 拦截中, 重置 unsupported-devin 缓存重试 devin-auth`);
+      this._clearAuthProviderCache(email);
     }
 
     const payload = { returnSecureToken: true, email, password, clientType: 'CLIENT_TYPE_WEB' };
     const fbHeaders = { Referer: 'https://windsurf.com/', Origin: 'https://windsurf.com' };
     const errors = [];
-    const cachedProvider = _cachedProvider;
+    // v23.2: rescue branch above may have cleared the cache → re-read so devin-auth can actually run
+    const cachedProvider = this._getCachedAuthProvider(email);
 
     const devinCooldownLeft = this._devinAuthCooldownUntil - Date.now();
     if (cachedProvider === 'firebase' || cachedProvider === 'unsupported-devin') {
@@ -1372,6 +1401,27 @@ class AuthService {
     const _emailPrefix = email.split('@')[0];
     // v20.4: 透传 quiet 给 login (full_scan/active_tick 的 [登录] 也降为 DEBUG)
     const loginOpts = { quiet: !!options.quiet };
+
+    // v23.0 fast-path: try persisted apiKey first → GetUserStatus (one network call,
+    // no Firebase login chain). 借鉴 windsurf-pool 的"一次登录长期持有"设计。
+    let clearApiKey = false;
+    if (options.apiKey) {
+      const fast = await this._fetchPlanStatusByApiKey(options.apiKey, { quiet: !!options.quiet });
+      if (fast?.ok) {
+        if (!options.quiet) {
+          _info('额度', `${_emailPrefix} → apikey daily=${fast.daily?.remaining ?? '?'}% weekly=${fast.weekly?.remaining ?? '?'}% (${Date.now() - _t0}ms)`);
+        }
+        return { ...fast, source: 'apikey_status' };
+      }
+      if (fast?.errorType === 'apikey_invalid') {
+        if (!options.quiet) {
+          _warn('额度', `${_emailPrefix} → apikey 失效, 回退 Firebase`);
+        }
+        clearApiKey = true;
+      }
+      // null/transport error: silently fall through to Firebase
+    }
+
     const loginResult = await this.login(email, password, false, !!options.cacheOnly, loginOpts);
     if (!loginResult.ok) {
       if (loginResult.cacheOnly) {
@@ -1444,12 +1494,19 @@ class AuthService {
     }
     if (!resp && !jsonUsage) {
       _warn('额度', `${_emailPrefix} → no response (${Date.now() - _t0}ms, login=${_t1 - _t0}ms)`);
-      return { ok: false, errorType: 'plan_status_failed', error: 'no_response' };
+      return { ok: false, errorType: 'plan_status_failed', error: 'no_response', clearApiKey };
     }
     const result = resp ? parseUsageInfo(resp.buffer) : jsonUsage;
     if (result) {
       result.userEmail = loginResult.email || email;
       result.source = resp ? 'api' : 'api_json';
+      if (clearApiKey) result.clearApiKey = true;
+      // v23.0: surface a freshly-obtained apiKey/sessionToken so caller can persist it
+      // devin-auth login result IS a sessionToken (windsurf-pool style); carry it.
+      if (isDevinAuth && loginResult.idToken) {
+        result.newApiKey = loginResult.idToken;
+        result.newApiKeySource = 'devin_auth';
+      }
     }
     // v20.3: 条件化时序 — 慢请求(>2s)/重登(login>500ms) 才打时序，日常请求精简
     // quiet 模式(全池扫描)直接走 DEBUG，不污染 outputChannel
@@ -1555,6 +1612,51 @@ class AuthService {
       if (!result.daily && billingStrategy === 'credits') result.mode = 'credits';
     }
     return result;
+  }
+
+  /**
+   * v23.0 fast-path: GetUserStatus with persisted apiKey, no Firebase login needed.
+   * Returns usageInfo-shaped result on success; errorType='apikey_invalid' if key
+   * was rejected so the caller can drop it; null on transport/parse failure.
+   * 借鉴 windsurf-pool/ai-quote 的多通道设计 — apiKey 一次拿到, 长期持有。
+   */
+  async _fetchPlanStatusByApiKey(apiKey, { quiet = false } = {}) {
+    if (!apiKey) return null;
+    // sk-ws-01- session token: server returns 200+empty (ai-quote 实测), skip
+    if (apiKey.startsWith('sk-ws-01-')) return null;
+    if (!PROXY_CHECKED) await this._probeProxy();
+
+    const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
+    const headers = { 'Connect-Protocol-Version': '1', Accept: 'application/json' };
+
+    for (const url of AuthService.GET_USER_STATUS_URLS) {
+      try {
+        const r = await this._httpsJson(url, 'POST', body, undefined, headers);
+        if (r.ok) {
+          // GetUserStatus wraps planStatus inside userStatus → unwrap before parse
+          const planTree = r.data?.userStatus || r.data;
+          const parsed = this._parsePlanStatusJson(planTree);
+          if (parsed) {
+            // Carry email so upstream can validate target match
+            const userEmail = r.data?.userStatus?.email || r.data?.userStatus?.userEmail || '';
+            if (userEmail) parsed.userEmail = userEmail;
+            parsed.source = 'apikey_status';
+            return { ok: true, errorType: null, ...parsed };
+          }
+          // 200 + empty body via apiKey usually means token soft-expire/invalid
+          if (!quiet) _warn('UserStatus', `JSON ${new URL(url).hostname} → 200 but empty/invalid body (apikey expired)`);
+          return { ok: false, errorType: 'apikey_invalid', error: 'empty_body' };
+        }
+        if (r.status === 401 || r.status === 403) {
+          if (!quiet) _warn('UserStatus', `${new URL(url).hostname} → ${r.status} (apikey rejected)`);
+          return { ok: false, errorType: 'apikey_invalid', error: `HTTP ${r.status}` };
+        }
+        if (!quiet) _warn('UserStatus', `${new URL(url).hostname} → ${r.status}`);
+      } catch (e) {
+        if (!quiet) _warn('UserStatus', `${new URL(url).hostname} ERR ${e.message}`);
+      }
+    }
+    return null;
   }
 
   async _fetchPlanStatusJson(idToken) {
@@ -1721,6 +1823,23 @@ class AuthService {
   /** Read the locally effective Windsurf account email without network.
    *  Switch confirmation needs identity, not quota freshness.
    *  v20.1: authStatus.userEmail is cheaper than proto decode — read it first. */
+  /** v23.2: read full {email, apiKey} from windsurfAuthStatus — used by activate hook
+   *  to bind the IDE-injected apiKey onto the matching account, giving stuck accounts
+   *  (unsupported-devin + firebase cooldown) a viable refresh path. */
+  readWindsurfAuthStatus() {
+    try {
+      const dbPath = getStateDbPath();
+      if (!fs.existsSync(dbPath)) return null;
+      const authRaw = dbReadKey(dbPath, 'windsurfAuthStatus');
+      if (!authRaw) return null;
+      const authStatus = JSON.parse(authRaw);
+      const email = authStatus.userEmail || authStatus.email || null;
+      const apiKey = authStatus.apiKey || null;
+      if (!email && !apiKey) return null;
+      return { email, apiKey };
+    } catch { return null; }
+  }
+
   readCachedAuthEmail() {
     try {
       const dbPath = getStateDbPath();
