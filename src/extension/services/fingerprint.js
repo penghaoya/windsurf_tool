@@ -26,11 +26,55 @@ const TELEMETRY_KEYS = [
   'telemetry.sqmId',
 ];
 
+// v23.5: HTTP profile pools — used by auth.js for per-account login headers.
+// Stored as 3 seed values (os/chromeVersion/acceptLanguage); dependent fields
+// (sec-ch-ua, sec-ch-ua-platform, major version) are derived from these seeds
+// so headers are strictly internally consistent (no Mac+Windows ch-ua mismatch).
+const _HTTP_OS = [
+  'Windows NT 10.0; Win64; x64',
+  'Macintosh; Intel Mac OS X 10_15_7',
+  'Macintosh; Intel Mac OS X 13_4_1',
+  'Macintosh; Intel Mac OS X 14_2_1',
+  'X11; Linux x86_64',
+];
+const _HTTP_CHROME = ['125.0.0.0', '126.0.0.0', '128.0.0.0', '130.0.0.0', '132.0.0.0', '134.0.0.0', '140.0.0.0'];
+const _HTTP_LANG = ['en-US,en;q=0.9', 'zh-CN,zh;q=0.9,en;q=0.8', 'ja,en-US;q=0.9,en;q=0.8'];
+
 function _uuid() { return crypto.randomUUID(); }
 function _hex32() { return crypto.randomBytes(16).toString('hex'); }
+function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+/** v23.5: Generate HTTP profile seeds for per-account binding.
+ *  Three seed values; full request headers derived deterministically via
+ *  httpProfileToHeaders() so dependent fields stay internally consistent. */
+function generateHttpProfile() {
+  return {
+    os: _pick(_HTTP_OS),
+    chromeVersion: _pick(_HTTP_CHROME),
+    acceptLanguage: _pick(_HTTP_LANG),
+  };
+}
+
+/** v23.5: Derive request headers from a stored HTTP profile (or generate if
+ *  none provided). Same profile in → same headers out; sec-ch-ua-platform
+ *  always agrees with the OS string, etc. */
+function httpProfileToHeaders(profile) {
+  const p = profile || generateHttpProfile();
+  const major = String(p.chromeVersion || '').split('.')[0] || '140';
+  const platform = p.os && p.os.includes('Windows') ? '"Windows"'
+    : p.os && p.os.includes('Mac') ? '"macOS"' : '"Linux"';
+  return {
+    'User-Agent': `Mozilla/5.0 (${p.os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${p.chromeVersion} Safari/537.36`,
+    'Accept-Language': p.acceptLanguage,
+    'sec-ch-ua': `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not-A.Brand";v="99"`,
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': platform,
+  };
+}
 
 /** Generate a new fingerprint set (without applying to disk)
- *  v18.0: 用于 per-account 指纹绑定 — 生成后保存到账号数据 */
+ *  v18.0: 用于 per-account 指纹绑定 — 生成后保存到账号数据
+ *  v23.5: 同时生成 HTTP profile, 让单账号的硬件 ID + 浏览器/OS/语言一致绑定 */
 function generateFingerprint() {
   const machineId = _uuid();
   return {
@@ -40,6 +84,7 @@ function generateFingerprint() {
     'telemetry.macMachineId': _hex32(),
     'telemetry.machineId': _hex32(),
     'telemetry.sqmId': _hex32(),
+    http: generateHttpProfile(),
     createdAt: Date.now(),
   };
 }
@@ -345,6 +390,36 @@ function ensureComplete() {
 }
 
 /**
+ * v23.5: Hot-verify with auto re-apply on mismatch.
+ * VS Code's built-in telemetry service occasionally rewrites
+ * telemetry.devDeviceId / machineId on its own schedule, silently breaking
+ * per-account fingerprint binding. This wraps hotVerify() with up to N
+ * re-apply attempts so the binding self-heals instead of staying broken.
+ *
+ * @param {object} expectedIds - same shape as hotVerify()
+ * @param {object} [options]
+ * @param {number} [options.maxRetries=2] — re-apply up to this many times after first failure
+ * @param {number} [options.retryDelayMs=1500] — wait between attempts
+ * @returns {{ verified, attempts, mismatches }}
+ */
+async function hotVerifyWithRetry(expectedIds, options = {}) {
+  const maxRetries = Number.isFinite(options.maxRetries) ? options.maxRetries : 2;
+  const retryDelayMs = Number.isFinite(options.retryDelayMs) ? options.retryDelayMs : 1500;
+  let last = { verified: false, mismatches: [] };
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    if (attempt > 1) {
+      // Re-apply before re-verifying — assume VS Code (or another writer)
+      // clobbered the value we wrote earlier.
+      try { applyFingerprint(expectedIds); } catch {}
+      await new Promise((r) => setTimeout(r, retryDelayMs));
+    }
+    last = hotVerify(expectedIds);
+    if (last.verified) return { verified: true, attempts: attempt, mismatches: [] };
+  }
+  return { verified: false, attempts: maxRetries + 1, mismatches: last.mismatches };
+}
+
+/**
  * Hot-verify: confirm state.vscdb machine IDs match expected values.
  * Call after injection to verify LS restart picked up new fingerprint.
  * @param {object} expectedIds - { 'storage.serviceMachineId': '...', ... }
@@ -375,4 +450,10 @@ function hotVerify(expectedIds) {
   }
 }
 
-export { readFingerprint, resetFingerprint, restoreFingerprint, listResetHistory, getFingerPrintPaths, ensureComplete, hotVerify, generateFingerprint, applyFingerprint };
+export {
+  readFingerprint, resetFingerprint, restoreFingerprint, listResetHistory,
+  getFingerPrintPaths, ensureComplete, hotVerify, hotVerifyWithRetry,
+  generateFingerprint, applyFingerprint,
+  // v23.5: HTTP profile (per-account login fingerprint binding)
+  generateHttpProfile, httpProfileToHeaders,
+};

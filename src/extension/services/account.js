@@ -747,6 +747,39 @@ class AccountManager {
     this._save();
   }
 
+  // v23.5: HTTP profile lookup/persist by email — used by auth.js login path
+  // to bind the same User-Agent/sec-ch-ua/Accept-Language to a single email
+  // forever. Closes the "same hardware ID, browser jumps every login" anti-
+  // fingerprint signature.
+  //
+  // We index by email (not index) because auth.js's login flow only knows the
+  // email — the slot index isn't always available (e.g. add-account flow
+  // calls login before the row is fully persisted into _accounts).
+
+  /** Get the cached HTTP profile (3 seeds) for a given email, or null. */
+  getHttpProfileByEmail(email) {
+    if (!email) return null;
+    const target = String(email).trim().toLowerCase();
+    const a = this._accounts.find((x) => x.email && String(x.email).toLowerCase() === target);
+    return (a && a.fingerprint && a.fingerprint.http) ? a.fingerprint.http : null;
+  }
+
+  /** Persist the HTTP profile under the given email's fingerprint.http.
+   *  Stub-creates the fingerprint object when only the http profile is being
+   *  seeded — the device IDs are still filled in lazily by the per-account
+   *  switch flow (applyAccountFingerprintForSwitch).
+   */
+  setHttpProfileForEmail(email, http) {
+    if (!email || !http) return;
+    const target = String(email).trim().toLowerCase();
+    const a = this._accounts.find((x) => x.email && String(x.email).toLowerCase() === target);
+    if (!a) return;
+    if (!a.fingerprint) a.fingerprint = { createdAt: Date.now() };
+    a.fingerprint.http = http;
+    this._markPersistent();
+    this._save();
+  }
+
   /** Smart batch add — auto-detect ANY seller format
    *  Supports: email----pass | email:pass | email pass | 卡号/卡密 pairs | 账号/密码 pairs
    *  Returns: { added, skipped, errors, total, accounts: [{email, password}] } */

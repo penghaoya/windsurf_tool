@@ -47,6 +47,10 @@ import tls from 'tls';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+// v23.5: per-account HTTP fingerprint binding — generation + persistence
+// helpers live in fingerprint.js (single source of truth for ID + http
+// profile) so the device IDs and the HTTP headers stay in lockstep.
+import { generateHttpProfile, httpProfileToHeaders } from './fingerprint.js';
 
 // v22.1: Shared direct HTTPS agent — bypasses VS Code's global proxy interceptor
 // VS Code patches https.globalAgent to route through its proxy settings.
@@ -109,29 +113,14 @@ let _lastKnownPort = 0;
 // 双模式: 'local' = 本地代理, 'relay' = 网站中转(无需VPN)
 let ACTIVE_MODE = 'local';
 
-// v21.0: login fingerprint randomization (mimics WindsurfAPI)
-const _FP_OS = [
-  'Windows NT 10.0; Win64; x64', 'Macintosh; Intel Mac OS X 10_15_7',
-  'Macintosh; Intel Mac OS X 13_4_1', 'Macintosh; Intel Mac OS X 14_2_1',
-  'X11; Linux x86_64',
-];
-const _FP_CHROME = ['125.0.0.0', '126.0.0.0', '128.0.0.0', '130.0.0.0', '132.0.0.0', '134.0.0.0'];
-const _FP_LANG = ['en-US,en;q=0.9', 'zh-CN,zh;q=0.9,en;q=0.8', 'ja,en-US;q=0.9,en;q=0.8'];
-function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-function _generateLoginFingerprint() {
-  const os = _pick(_FP_OS);
-  const cv = _pick(_FP_CHROME);
-  const major = cv.split('.')[0];
-  return {
-    'User-Agent': `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${cv} Safari/537.36`,
-    'Accept-Language': _pick(_FP_LANG),
-    'sec-ch-ua': `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not-A.Brand";v="99"`,
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': os.includes('Windows') ? '"Windows"' : os.includes('Mac') ? '"macOS"' : '"Linux"',
-    'Origin': 'https://windsurf.com',
-    'Referer': 'https://windsurf.com/',
-  };
-}
+// v21.0 → v23.5: login fingerprint moved to instance method.
+// Headers (Origin / Referer) are static; the OS / Chrome / Accept-Language
+// fields come from the per-account http profile (see fingerprint.js).
+// Static origin headers — same for every request, never randomized.
+const _LOGIN_STATIC_HEADERS = {
+  'Origin': 'https://windsurf.com',
+  'Referer': 'https://windsurf.com/',
+};
 
 // 可注入日志函数 — setLogger() 注入后写入 outputChannel, 否则降级 console.log
 let _info = (tag, msg) => console.log(`WAM: [${tag}] ${msg}`);
@@ -214,10 +203,46 @@ class AuthService {
     // v22.3
     this._proxyTlsFailures = new Map();    // hostname -> { count, until }
     this._firebaseBlockedUntil = 0;        // App Check 命中后短期跳过 firebase
+    // v23.5: AccountManager handle for per-account HTTP fingerprint lookup.
+    // Wired up by extension.js after both services are constructed.
+    this._accountManager = null;
     this._loadCache();
     this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
     // This prevents TCP socket operations during Extension Host activation
+  }
+
+  /** v23.5: late-bind the AccountManager so login fingerprints can be
+   *  cached/looked-up per account. Called from extension.js wiring. */
+  bindAccountManager(am) {
+    this._accountManager = am || null;
+  }
+
+  /** v23.5: Per-account HTTP login fingerprint.
+   *  - Cached: same email → same User-Agent / sec-ch-ua / Accept-Language forever.
+   *  - First-call: generates a profile, persists it under account.fingerprint.http,
+   *    so subsequent logins of this email reuse it.
+   *  - No email or no AccountManager: returns a one-shot ephemeral profile (e.g.
+   *    early activation paths) without persisting — keeps backward compat.
+   *
+   *  Closes the v23.5 anti-fingerprint hole: previously every login generated
+   *  a fresh UA, so the same hardware ID looked like 3-5 different browsers
+   *  across a few switches — a textbook anti-fraud signature.
+   */
+  _generateLoginFingerprint(email) {
+    let profile = null;
+    const am = this._accountManager;
+    if (email && am && typeof am.getHttpProfileByEmail === 'function') {
+      profile = am.getHttpProfileByEmail(email);
+      if (!profile) {
+        profile = generateHttpProfile();
+        try { am.setHttpProfileForEmail(email, profile); } catch {}
+      }
+    } else {
+      // Ephemeral: pre-bind activation, anonymous probes, etc.
+      profile = generateHttpProfile();
+    }
+    return { ...httpProfileToHeaders(profile), ..._LOGIN_STATIC_HEADERS };
   }
 
   // ========== v22.3-22.4: Host Connection Circuit Breaker ==========
@@ -1241,8 +1266,9 @@ class AuthService {
   }
 
   async _doSignInWithDevinAuth(email, password, opts = {}, _emailPrefix, _li) {
-    // v21.0: per-login fingerprint randomization
-    const fp = _generateLoginFingerprint();
+    // v23.5: per-account fingerprint binding (cached by email).
+    // Falls back to one-shot generation if AccountManager not yet wired up.
+    const fp = this._generateLoginFingerprint(email);
 
     // v21.0: probe sequence — CheckUserLoginMethod (fast) → _devin-auth/connections (legacy fallback)
     let conn = await this._checkUserLoginMethod(email, fp);

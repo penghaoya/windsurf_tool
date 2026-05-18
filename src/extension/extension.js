@@ -221,6 +221,9 @@ function _activate(context) {
   initUsageDiskCache(storagePath);
   S.am = new AccountManager(storagePath);
   S.auth = new AuthService(storagePath);
+  // v23.5: late-bind AccountManager so login HTTP fingerprints are cached
+  // per email (closes the "same hardware, browser jumps every login" hole).
+  S.auth.bindAccountManager(S.am);
   S.auth.setLogger(
     (tag, msg) => _logInfo(tag, msg),
     (tag, msg) => _logWarn(tag, msg),

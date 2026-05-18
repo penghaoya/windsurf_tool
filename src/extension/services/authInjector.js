@@ -7,7 +7,7 @@ import {
   dbUpdateKeys,
   getStateDbPath,
 } from '../infra/sqlite.js';
-import { hotVerify, generateFingerprint, applyFingerprint } from './fingerprint.js';
+import { hotVerifyWithRetry, generateFingerprint, applyFingerprint } from './fingerprint.js';
 import { S, _logInfo, _logWarn } from '../core/state.js';
 
 export function createAuthInjector({ refreshOne, updatePoolBar }) {
@@ -244,15 +244,25 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       );
 
       // v20.2 (方案B): skipped=true 时本次未实际写入磁盘，hotVerify 无意义
+      // v23.5: switched to hotVerifyWithRetry — VS Code's built-in telemetry
+      // service occasionally rewrites our IDs ~1-2s after we apply them, so
+      // a one-shot verify silently misses the breakage. The retrying variant
+      // re-applies up to 2 times before giving up, self-healing the binding.
       if (S.lastRotatedIds && !S.lastRotatedIdsSkipped) {
-        setTimeout(() => {
+        setTimeout(async () => {
           try {
-            const verify = hotVerify(S.lastRotatedIds);
+            const verify = await hotVerifyWithRetry(S.lastRotatedIds);
             if (verify.verified) {
               S.hotResetVerified++;
+              const tail = verify.attempts > 1 ? ` (重试${verify.attempts - 1}次后生效)` : '';
               _logInfo(
                 '热重置',
-                `✅ 验证成功 (#${S.hotResetVerified}/${S.hotResetCount})`,
+                `✅ 验证成功 (#${S.hotResetVerified}/${S.hotResetCount})${tail}`,
+              );
+            } else {
+              _logWarn(
+                '热重置',
+                `⚠ 验证失败 (重试${verify.attempts - 1}次仍 mismatch): ${verify.mismatches.join(' | ')}`,
               );
             }
           } catch {}
