@@ -72,8 +72,17 @@ export function _updatePoolBar() {
   const winTag = winCount > 1 ? ` W${winCount}` : '';
   const tabTag =
     S.cascadeTabCount > CONCURRENT_TAB_SAFE ? ` T${S.cascadeTabCount}` : '';
-  const pendingTag = S.pendingSwitchIndex >= 0 ? ' ?' : '';
-  S.statusBar.text = `${modeIcon} ${acctTag} ${quotaDisplay} ${poolTag}${winTag}${tabTag}${pendingTag}${burst}${boost}${auto}`;
+  // v23.5: 切换动画 — pending 时用 codicon sync~spin spinner 替换主显示,
+  // 直观反馈"正在切换 #N → #M",完成后回到正常文本。
+  // VS Code 内置 codicon, 零成本; ~spin 后缀自动旋转。
+  if (S.pendingSwitchIndex >= 0) {
+    const fromTag = S.activeIndex >= 0 ? `#${S.activeIndex + 1}` : '?';
+    const toTag = `#${S.pendingSwitchIndex + 1}`;
+    S.statusBar.text = `$(sync~spin) ${fromTag} → ${toTag}${winTag}${tabTag}`;
+    S.statusBar.color = new vscode.ThemeColor('charts.blue');
+    return;
+  }
+  S.statusBar.text = `${modeIcon} ${acctTag} ${quotaDisplay} ${poolTag}${winTag}${tabTag}${burst}${boost}${auto}`;
   S.statusBar.color = isLow
     ? new vscode.ThemeColor('errorForeground')
     : pool.available === 0

@@ -1,7 +1,7 @@
 <template>
   <div
     class="ac"
-    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth, abn: isAbnormal, sel: isSelected, 'batch-on': batchMode }"
+    :class="{ cur: isCurrent, rl: isRateLimited, exp: account.isExpired, blk: isBlocked, dep: isDailyDepleted, badauth: isInvalidAuth, abn: isAbnormal, sel: isSelected, 'batch-on': batchMode, switching: isPendingSwitchTarget }"
     :id="`row${index}`"
     @click.capture="onCardClick"
   >
@@ -488,6 +488,21 @@ onBeforeUnmount(() => {
 .ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--R);padding:5px 8px;transition:border-color .12s ease,background-color .12s ease;contain:layout style paint}
 .ac:hover{border-color:var(--bd2);background:var(--sf2)}
 .ac.cur{border-color:var(--gn);background:color-mix(in srgb, var(--gn) 6%, var(--sf));box-shadow:0 0 8px color-mix(in srgb, var(--gn) 8%, transparent)}
+/* v23.5: 切换中目标 row 呼吸光晕 — 强调"这一行即将激活" */
+.ac.switching{
+  border-color:var(--ac);
+  animation:ac-row-pulse 1.3s ease-in-out infinite;
+}
+@keyframes ac-row-pulse{
+  0%,100%{
+    box-shadow:0 0 0 0 color-mix(in srgb, var(--ac) 0%, transparent),
+               0 0 6px 1px color-mix(in srgb, var(--ac) 16%, transparent);
+  }
+  50%{
+    box-shadow:0 0 0 2px color-mix(in srgb, var(--ac) 25%, transparent),
+               0 0 12px 2px color-mix(in srgb, var(--ac) 30%, transparent);
+  }
+}
 .ac.dep{opacity:.35}
 .ac.rl{opacity:.45}
 .ac.blk:not(.rl){opacity:.55}
