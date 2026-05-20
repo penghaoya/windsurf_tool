@@ -839,13 +839,18 @@ class AuthService {
           const sock = await this._proxyTunnel(u.hostname);
           const resp = await this._rawRequest(sock, u.hostname, u.pathname + u.search, method || 'GET', hdrs, data);
           const rawText = resp.bodyBuffer.toString('utf8');
-          // v22.7: 代理篡改/截断检测 — 200 但 body 几乎为空, 通常是代理 RST 或 strip
-          // 不要让这种响应当作"成功"或"token expired", 直接当作代理坏抛错
+          // v22.7→v24.0: 代理篡改/截断检测 — 200 但 body 几乎为空
+          // 仅当 body 不是合法 JSON 时才判为代理坏 (真正的 RST/strip 返回 0 字节或 HTML)
+          // 合法 JSON 如 {} 说明服务端正常响应,只是无数据 (如 CheckUserLoginMethod cold start)
           if (resp.ok && rawText.length < 8) {
-            this._recordProxyTlsResult(u.hostname, false);
-            _warn('HTTP', `JSON ${u.hostname}${u.pathname} → 200+empty body (proxy, ${Date.now() - _t0}ms) 视为代理坏`);
-            reject(new Error('proxy_empty_body'));
-            return;
+            let isValidJson = false;
+            try { const p = JSON.parse(rawText); isValidJson = p !== null && typeof p === 'object'; } catch {}
+            if (!isValidJson) {
+              this._recordProxyTlsResult(u.hostname, false);
+              _warn('HTTP', `JSON ${u.hostname}${u.pathname} → 200+empty body (proxy, ${Date.now() - _t0}ms) 视为代理坏`);
+              reject(new Error('proxy_empty_body'));
+              return;
+            }
           }
           this._recordProxyTlsResult(u.hostname, true);
           if (!resp.ok) {

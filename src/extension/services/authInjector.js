@@ -79,6 +79,7 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
     let injected = false;
     let method = 'none';
     let providerHint = null;
+    let injectedIdToken = null; // v24.0: capture for caller, source-of-truth
     const discoveredCommands = await discoverAuthCommand();
 
     // v23.4: Devin-only injection chain.
@@ -106,6 +107,7 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       // forceFresh=true just doubles the noise without changing the outcome.
       const idToken = loginResult?.ok ? loginResult.idToken : null;
       if (idToken) {
+        injectedIdToken = idToken;
         try {
           const result = await vscode.commands.executeCommand(
             'windsurf.provideAuthTokenToAuthProvider',
@@ -186,7 +188,10 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
       await postInjectionRefresh();
     }
 
-    return { ok: injected, injected, method };
+    // v24.0: surface the injected token so caller can persist it directly
+    // instead of reading it back from the IDE (which may still serve stale
+    // apiKey when 'apiKey 未变', leading to cross-account contamination).
+    return { ok: injected, injected, method, idToken: injectedIdToken, providerHint };
   }
 
   async function loginToAccount(context, index) {
@@ -202,11 +207,22 @@ export function createAuthInjector({ refreshOne, updatePoolBar }) {
         '登录',
         `✅ ${injectResult.method} → #${index + 1} | apiKey ${changed ? '已更新' : '未变'}`,
       );
-      // v23.0: persist full apiKey for GetUserStatus fast-path (covers S0/S1/S2/S3 paths)
+      // v24.0: prefer the freshly-injected idToken — it is guaranteed to belong
+      // to the target account. Reading from IDE state (readAuthApiKeyFull) is
+      // unreliable when 'apiKey 未变' (IDE still serves the previous account's
+      // token), which corrupts the per-account apiKey mapping and causes
+      // GetUserStatus to return the WRONG email (root cause of
+      // '[额度写入] 拒绝写入 #N').
       try {
-        const fullKey = readAuthApiKeyFull();
-        if (fullKey && S.am.setApiKey) {
-          S.am.setApiKey(index, fullKey, 'windsurf_inject');
+        if (injectResult.idToken && S.am.setApiKey) {
+          const source = injectResult.providerHint === 'devin-auth' ? 'devin_auth' : 'login_chain';
+          S.am.setApiKey(index, injectResult.idToken, source);
+        } else if (changed) {
+          // Fallback: only trust the IDE-side apiKey when it actually rotated.
+          const fullKey = readAuthApiKeyFull();
+          if (fullKey && S.am.setApiKey) {
+            S.am.setApiKey(index, fullKey, 'windsurf_inject');
+          }
         }
       } catch {}
     }

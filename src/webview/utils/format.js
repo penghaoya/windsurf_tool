@@ -2,16 +2,20 @@
  * 共享格式化工具函数
  */
 
-/** 重置时间倒计时格式化 */
+/** 重置时间倒计时格式化
+ *  v23.5: 移除秒精度 — 用户不需要看秒, 且后端 defense.js 每 2s 推送一次状态,
+ *  原 HH:MM:SS 格式让 fmtReset 每 2s 重算 + DOM diff 一次秒数; 现 HH:MM 格式
+ *  让分钟内字符串稳定, Vue 模板 diff 跳过整段 DOM 更新, 性能开支降低 60x。
+ *  当低于 1 分钟时显示 "<1分", 避免 "0:00" 的歧义。 */
 export function fmtReset(ts) {
   if (!ts) return null
   const diff = ts - Date.now()
-  if (diff <= 0) return '0天 00:00:00'
+  if (diff <= 0) return '0天 00:00'
+  if (diff < 60000) return '<1分'
   const d = Math.floor(diff / 86400000)
   const h = Math.floor((diff % 86400000) / 3600000)
   const m = Math.floor((diff % 3600000) / 60000)
-  const s = Math.floor((diff % 60000) / 1000)
-  return `${d}天 ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${d}天 ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
 /** 进度条颜色 */

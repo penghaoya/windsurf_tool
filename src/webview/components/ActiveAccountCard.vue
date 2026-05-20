@@ -1,67 +1,64 @@
 <template>
-  <!-- v23.5: 切换动画封装容器 — 提供过渡参考点 + 顶部 indeterminate progress bar -->
+  <!-- v23.5: 切换动画容器 — 顶部 progress bar + 卡片本体 (Vue reactive 原地更新, 不做 DOM unmount/mount, 避免布局跳动) -->
   <div class="ac-wrap">
-    <!-- 切换中 indeterminate progress bar (1px,顶部) -->
+    <!-- 切换中 indeterminate progress bar (2px,顶部叠加) -->
     <div v-if="isSwitching" class="ac-progress" :title="switchTip"></div>
 
-    <transition name="ac-swap" mode="out-in">
-      <!-- 用 currentIndex 作为 key,触发卡片切换过渡 -->
-      <div
-        v-if="activeAccount"
-        :key="currentIndex"
-        class="ac-card"
-        :class="{ low: isLow, critical: isCritical, 'just-switched': justSwitched }"
-      >
-        <!-- Identity row -->
-        <div class="ac-head">
-          <span class="ac-dot" :title="dotTitle"></span>
-          <span class="ac-idx">#{{ currentIndex + 1 }}</span>
-          <span class="ac-name" :title="activeAccount.email">{{ activeAccount.email }}</span>
-          <span v-if="activeQuota?.plan" class="ac-plan" :class="planClass">{{ activeQuota.plan }}</span>
-          <span v-if="expiryText" class="ac-expiry" :style="expiryStyle">{{ expiryText }}</span>
-        </div>
-
-        <!-- Compact quota row -->
-        <div class="ac-quota">
-          <span class="q-item" :style="{ color: dailyColor }">
-            <span class="q-label">天</span>
-            <span class="q-val">{{ dailyPct !== null ? dailyPct + '%' : '—' }}</span>
-          </span>
-          <span class="q-sep">·</span>
-          <span class="q-item" :style="{ color: weeklyColor }">
-            <span class="q-label">周</span>
-            <span class="q-val">{{ weeklyPct !== null ? weeklyPct + '%' : '—' }}</span>
-          </span>
-          <span v-if="resetInfo" class="q-sep">·</span>
-          <span v-if="resetInfo" class="q-reset">{{ resetInfo }}</span>
-        </div>
-
-        <!-- v22.6: 出口 IP — 显示当前 Windsurf 流量真实出口 IP + 国家 -->
-        <div class="ac-egress" :title="ipTitle" @click="onRefreshIp">
-          <span class="eg-label">出口</span>
-          <template v-if="egressIp">
-            <span class="eg-flag">{{ countryFlag }}</span>
-            <span class="eg-ip">{{ egressIp.ip }}</span>
-            <span v-if="egressIp.country" class="eg-country">{{ egressIp.country }}</span>
-          </template>
-          <span v-else class="eg-pending">探测中…</span>
-          <span class="eg-refresh" :class="{ spinning: refreshing }">↻</span>
-        </div>
-
-        <!-- Embedded scheduling control (replaces action buttons) -->
-        <div class="ac-divider"></div>
-        <ModeSwitcher
-          :autoRotate="autoRotate"
-          :threshold="threshold"
-          :manualThreshold="manualThreshold"
-          :alwaysFreshFingerprint="alwaysFreshFingerprint"
-          embedded
-        />
+    <!-- 卡片本体 — props 变化时 Vue 原地 patch 文本 / 颜色, DOM 树稳定. 切换完成后由 just-switched 类做 highlight pulse 表达"刚切到此账号". -->
+    <div
+      v-if="activeAccount"
+      class="ac-card"
+      :class="{ low: isLow, critical: isCritical, 'just-switched': justSwitched }"
+    >
+      <!-- Identity row -->
+      <div class="ac-head">
+        <span class="ac-dot" :title="dotTitle"></span>
+        <span class="ac-idx">#{{ currentIndex + 1 }}</span>
+        <span class="ac-name" :title="activeAccount.email">{{ activeAccount.email }}</span>
+        <span v-if="activeQuota?.plan" class="ac-plan" :class="planClass">{{ activeQuota.plan }}</span>
+        <span v-if="expiryText" class="ac-expiry" :style="expiryStyle">{{ expiryText }}</span>
       </div>
-      <div v-else class="ac-empty" key="empty">
-        <span>无活跃账号 — 请从下方列表选择</span>
+
+      <!-- Compact quota row -->
+      <div class="ac-quota">
+        <span class="q-item" :style="{ color: dailyColor }">
+          <span class="q-label">天</span>
+          <span class="q-val">{{ dailyPct !== null ? dailyPct + '%' : '—' }}</span>
+        </span>
+        <span class="q-sep">·</span>
+        <span class="q-item" :style="{ color: weeklyColor }">
+          <span class="q-label">周</span>
+          <span class="q-val">{{ weeklyPct !== null ? weeklyPct + '%' : '—' }}</span>
+        </span>
+        <span v-if="resetInfo" class="q-sep">·</span>
+        <span v-if="resetInfo" class="q-reset">{{ resetInfo }}</span>
       </div>
-    </transition>
+
+      <!-- v22.6: 出口 IP — 显示当前 Windsurf 流量真实出口 IP + 国家 -->
+      <div class="ac-egress" :title="ipTitle" @click="onRefreshIp">
+        <span class="eg-label">出口</span>
+        <template v-if="egressIp">
+          <span class="eg-flag">{{ countryFlag }}</span>
+          <span class="eg-ip">{{ egressIp.ip }}</span>
+          <span v-if="egressIp.country" class="eg-country">{{ egressIp.country }}</span>
+        </template>
+        <span v-else class="eg-pending">探测中…</span>
+        <span class="eg-refresh" :class="{ spinning: refreshing }">↻</span>
+      </div>
+
+      <!-- Embedded scheduling control (replaces action buttons) -->
+      <div class="ac-divider"></div>
+      <ModeSwitcher
+        :autoRotate="autoRotate"
+        :threshold="threshold"
+        :manualThreshold="manualThreshold"
+        :alwaysFreshFingerprint="alwaysFreshFingerprint"
+        embedded
+      />
+    </div>
+    <div v-else class="ac-empty">
+      <span>无活跃账号 — 请从下方列表选择</span>
+    </div>
   </div>
 </template>
 
@@ -244,16 +241,6 @@ const resetInfo = computed(() => {
   0%{left:-40%}
   100%{left:100%}
 }
-
-/* 卡片切换过渡 — out-in fade + slight slide */
-.ac-swap-enter-active{
-  transition:opacity .26s ease, transform .26s cubic-bezier(.34,1.56,.64,1);
-}
-.ac-swap-leave-active{
-  transition:opacity .15s ease, transform .15s ease;
-}
-.ac-swap-enter-from{opacity:0;transform:translateY(4px) scale(.985)}
-.ac-swap-leave-to{opacity:0;transform:translateY(-3px) scale(1.005)}
 
 /* 新激活卡片 highlight pulse (~1.5s) — 强调"已切换到这个账号" */
 .ac-card.just-switched{
