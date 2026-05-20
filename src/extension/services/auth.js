@@ -162,14 +162,14 @@ const DEVIN_AUTH_MAX_CONCURRENCY = 2;
 const DEVIN_AUTH_MIN_START_GAP_MS = 500;
 const DEVIN_AUTH_ACQUIRE_TIMEOUT_MS = 8_000;
 
-// v22.3-22.4: 主机级 TLS 健康熔断 — 同一 host 连接失败 (代理或直连) 时短期 fail-fast
-// 阶段1: 失败 1-2 次 → 仍尝试 (可能是抖动)
-// 阶段2: 失败 3 次 → 强制走直连模式 (跳过代理)
-// 阶段3: 失败 6 次 → 整体 fail-fast (代理直连都不试, 立即抛错)
-const PROXY_TLS_FAIL_THRESHOLD = 3;          // 连续 3 次失败触发代理熔断
-const HOST_DEAD_THRESHOLD = 6;               // 连续 6 次失败标记为整体不可达
-const PROXY_TLS_BREAKER_MS = 90_000;         // 代理熔断期 90s
-const HOST_DEAD_BREAKER_MS = 180_000;        // 整体不可达熔断期 3min
+// v22.3-22.4 / v24.2: 主机级 TLS 健康熔断 — 阈值和时长调优, 减少抖动误伤
+// 阶段1: 失败 1-3 次 → 仍尝试 (网络抖动很常见)
+// 阶段2: 失败 4 次 → 强制走直连模式 (跳过代理)
+// 阶段3: 失败 8 次 → 整体 fail-fast (代理直连都不试, 立即抛错)
+const PROXY_TLS_FAIL_THRESHOLD = 4;          // v24.2: 3→4, 给抖动多 1 次机会
+const HOST_DEAD_THRESHOLD = 8;               // v24.2: 6→8, 唤醒场景的多次同步失败不会瞬秒
+const PROXY_TLS_BREAKER_MS = 45_000;         // v24.2: 90s→45s, 上游恢复后更快试探
+const HOST_DEAD_BREAKER_MS = 90_000;         // v24.2: 180s→90s, 减少误伤恢复期
 const FIREBASE_APP_CHECK_BLOCK_MS = 30 * 60_000;  // App Check 命中后 30min 内全局跳过 Firebase
 // v23.4: Firebase signInWithPassword (identitytoolkit) is dead since 2026-05-04.
 // Google now demands App Check tokens that server-side / IDE callers cannot
@@ -203,6 +203,12 @@ class AuthService {
     // v22.3
     this._proxyTlsFailures = new Map();    // hostname -> { count, until }
     this._firebaseBlockedUntil = 0;        // App Check 命中后短期跳过 firebase
+    // v24.2: 系统休眠检测 — macOS App Nap / 整机休眠会暂停 event loop, 唤醒后
+    // 大量陈旧请求同时 timeout, 全部计入熔断会瞬间标记多 host_dead, 全池扫描全军覆没
+    // 用 5s 心跳检测休眠 (实际间隔 >> 5s 即休眠), 唤醒后清空熔断 + 直连 socket pool
+    this._lastTickTs = Date.now();
+    this._sleepResetUntil = 0;             // 唤醒后 30s 内不计入熔断 (避免误伤)
+    this._startSleepWatchdog();
     // v23.5: AccountManager handle for per-account HTTP fingerprint lookup.
     // Wired up by extension.js after both services are constructed.
     this._accountManager = null;
@@ -210,6 +216,29 @@ class AuthService {
     this._loadProviderCache();
     // P1 fix: proxy probing is lazy — runs on first network request, not at construction
     // This prevents TCP socket operations during Extension Host activation
+  }
+
+  /** v24.2: 5s 心跳检测系统休眠/唤醒 — 实际间隔 >> 5s 即视为唤醒 */
+  _startSleepWatchdog() {
+    const HEARTBEAT_MS = 5_000;
+    const SLEEP_THRESHOLD_MS = 15_000;     // 心跳间隔 >15s 视为休眠
+    const RESET_GRACE_MS = 30_000;         // 唤醒后宽限 30s
+    setInterval(() => {
+      const now = Date.now();
+      const elapsed = now - this._lastTickTs;
+      this._lastTickTs = now;
+      if (elapsed > SLEEP_THRESHOLD_MS) {
+        const sleepSec = Math.round(elapsed / 1000);
+        this._sleepResetUntil = now + RESET_GRACE_MS;
+        this._proxyTlsFailures.clear();
+        this._devinAuthCooldownUntil = 0;
+        this._devinAuth429Count = 0;
+        try { _directAgent.destroy(); } catch {}
+        if (typeof _warn === 'function') {
+          _warn('网络', `检测到系统休眠 ${sleepSec}s, 已清空熔断状态 + socket pool`);
+        }
+      }
+    }, HEARTBEAT_MS).unref();
   }
 
   /** v23.5: late-bind the AccountManager so login fingerprints can be
@@ -274,6 +303,8 @@ class AuthService {
       this._proxyTlsFailures.delete(hostname);
       return;
     }
+    // v24.2: 唤醒宽限期内不计入熔断 — 避免休眠唤醒一次性吃掉阈值
+    if (Date.now() < this._sleepResetUntil) return;
     const entry = this._proxyTlsFailures.get(hostname) || { count: 0, until: 0 };
     entry.count++;
     // 整体不可达使用更长的熔断窗口
@@ -377,10 +408,22 @@ class AuthService {
     if (Number.isFinite(n) && n > 0 && n < 65536) _lastKnownPort = n;
   }
 
-  /** 智能探测本地可用代理：缓存端口 → 系统代理 → 端口扫描(并行) → 连通性验证 */
+  /** 智能探测：TUN直连 → 缓存端口 → 系统代理 → 端口扫描 → relay */
   async _probeProxy() {
     if (PROXY_CHECKED) return;
     const startTs = Date.now();
+
+    // Phase -1: TUN/VPN 直连探测 — 默认优先, 适配 Clash TUN / 系统级 VPN
+    // 直接对 windsurf.com:443 做 TCP probe, 能通即说明系统层透明转发可用
+    // 优于走 HTTP 代理: 少一跳, 避免代理层 BAD_DECRYPT/TLS handshake 失败
+    const tunOk = await this._tcpProbe('windsurf.com', 443, 1500);
+    if (tunOk) {
+      ACTIVE_MODE = 'direct';
+      PROXY_CHECKED = true;
+      _probeDetail = { source: 'tun_direct', verified: true, lastProbe: Date.now(), host: 'windsurf.com', elapsed: Date.now() - startTs };
+      _info('代理', `direct (TUN/VPN) works → 跳过代理探测 (${_probeDetail.elapsed}ms)`);
+      return;
+    }
 
     // Phase 0: Cached port fast-path — most users keep proxy stable across sessions
     if (_lastKnownPort > 0) {
@@ -459,9 +502,9 @@ class AuthService {
     return { mode: ACTIVE_MODE, port: ACTIVE_PROXY_PORT, checked: PROXY_CHECKED, detail: _probeDetail };
   }
 
-  /** 手动切换模式 */
+  /** 手动切换模式 — local | relay | direct (TUN/VPN, 跳过代理但用主域名) */
   setMode(mode) {
-    if (mode === 'local' || mode === 'relay') {
+    if (mode === 'local' || mode === 'relay' || mode === 'direct') {
       ACTIVE_MODE = mode;
       PROXY_CHECKED = true;
       _info('代理', `mode switched to ${mode}`);
@@ -821,10 +864,10 @@ class AuthService {
         return reject(new Error(`host_dead:${u.hostname}`));
       }
 
-      // 双模式：relay模式下跳过代理，local模式下按需代理
+      // 三模式: local 按需代理 / relay 跳代理+中转 / direct (TUN/VPN) 跳代理+主域名
       let wantProxy;
       if (useProxy !== undefined) wantProxy = useProxy;
-      else if (ACTIVE_MODE === 'relay') wantProxy = false;
+      else if (ACTIVE_MODE === 'relay' || ACTIVE_MODE === 'direct') wantProxy = false;
       else wantProxy = this._needsProxy(u.hostname);
 
       // v22.3: 该 host 代理熔断中 → 强制走直连
@@ -886,7 +929,7 @@ class AuthService {
           });
           res.on('error', () => { clearTimeout(wallClock); settle(reject, new Error('response error')); });
         });
-        // v22.4: wall-clock timeout — req.setTimeout 在 TCP SYN 阶段不生效, 必须用外部 timer 强制 abort
+        // v22.4 / v24.2: wall-clock timeout 8s→12s (中美跨境 SYN+TLS 常需 ~6s)
         const wallClock = setTimeout(() => {
           try { req.destroy(); } catch {}
           if (!settled) {
@@ -894,7 +937,7 @@ class AuthService {
             _warn('HTTP', `JSON ${u.hostname}${u.pathname} → TIMEOUT (direct, ${Date.now() - _t0}ms)`);
             settle(reject, new Error('connect timeout'));
           }
-        }, 8000);
+        }, 12000);
         req.on('error', e => {
           clearTimeout(wallClock);
           if (/econn|socket|hang up|timeout/i.test(e.message || '')) {
@@ -921,7 +964,7 @@ class AuthService {
 
       let wantProxy;
       if (useProxy !== undefined) wantProxy = useProxy;
-      else if (ACTIVE_MODE === 'relay') wantProxy = false;
+      else if (ACTIVE_MODE === 'relay' || ACTIVE_MODE === 'direct') wantProxy = false;
       else wantProxy = this._needsProxy(u.hostname);
 
       // v22.3: 代理熔断 → 直连
@@ -982,7 +1025,7 @@ class AuthService {
           });
           res.on('error', () => { clearTimeout(wallClock); settle(reject, new Error('response error')); });
         });
-        // v22.4: wall-clock timeout
+        // v22.4 / v24.2: wall-clock timeout 8s→12s
         const wallClock = setTimeout(() => {
           try { req.destroy(); } catch {}
           if (!settled) {
@@ -990,7 +1033,7 @@ class AuthService {
             _warn('HTTP', `BIN ${u.hostname}${u.pathname.split('/').pop()} → TIMEOUT (direct, ${Date.now() - _t0}ms)`);
             settle(reject, new Error('connect timeout'));
           }
-        }, 8000);
+        }, 12000);
         req.on('error', e => {
           clearTimeout(wallClock);
           if (/econn|socket|hang up|timeout/i.test(e.message || '')) {

@@ -14,8 +14,10 @@
  * The workbench-side interceptor is deployed via wisdom or manual injection.
  */
 
+import vscode from 'vscode';
 import { _logInfo, _logWarn, S } from '../core/state.js';
 import { _doPoolRotate } from '../core/scheduler.js';
+import { _parseResetSeconds } from '../core/defense.js';
 
 // ═══ Constants ═══
 
@@ -37,6 +39,19 @@ export function getSignalBridgeScript() {
     var RESULT_KEY = '${RESULT_KEY}';
     var lastSignalTs = 0;
 
+    // Wait for Vue app to acquire vscode API and expose it on window
+    function getVscode() {
+      if (window.__wamVscode) return window.__wamVscode;
+      try {
+        // Fallback: try to acquire if Vue hasn't yet
+        if (typeof acquireVsCodeApi === 'function') {
+          window.__wamVscode = acquireVsCodeApi();
+          return window.__wamVscode;
+        }
+      } catch (e) {}
+      return null;
+    }
+
     function pollSignal() {
       try {
         var raw = localStorage.getItem(SIGNAL_KEY);
@@ -45,6 +60,8 @@ export function getSignalBridgeScript() {
         if (!signal || !signal.ts) return;
         if (signal.ts <= lastSignalTs) return;
         if (Date.now() - signal.ts > ${SIGNAL_MAX_AGE_MS}) { lastSignalTs = signal.ts; return; }
+        var vscode = getVscode();
+        if (!vscode) return;
         lastSignalTs = signal.ts;
         vscode.postMessage({ type: 'poolSignal', data: signal });
       } catch(e) {}
@@ -200,6 +217,14 @@ export function getWorkbenchInterceptorScript() {
  */
 export async function handlePoolSignal(signal, context, respond) {
   const t0 = Date.now();
+
+  // Check if auto-continue is enabled
+  const enabled = vscode.workspace.getConfiguration('wam').get('autoContinueOnRateLimit', true);
+  if (!enabled) {
+    _logInfo('信号桥', `收到UI信号但 autoContinueOnRateLimit=false, 忽略`);
+    return;
+  }
+
   _logInfo('信号桥', `收到UI信号: ${signal.type} (detail: ${(signal.detail || '').slice(0, 100)})`);
 
   respond({ type: 'retrying', ts: t0 });
@@ -207,7 +232,8 @@ export async function handlePoolSignal(signal, context, respond) {
   try {
     // Mark current account as rate-limited before switching
     if (S.activeIndex >= 0) {
-      S.am.markRateLimited(S.activeIndex, 300, {
+      const cooldown = _parseResetSeconds(signal.detail) || 300;
+      S.am.markRateLimited(S.activeIndex, cooldown, {
         model: 'current',
         trigger: `signal_bridge:${signal.type}`,
         type: 'tier_cap',

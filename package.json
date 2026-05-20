@@ -3,7 +3,7 @@
   "displayName": "Windsurf Tools",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.5.9",
+  "version": "2.6.5",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -102,6 +102,21 @@
         "command": "wam.initWorkspace",
         "title": "工作区配置 (智慧部署+源启动)",
         "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.installInterceptor",
+        "title": "安装 Interceptor (自动重试)",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.uninstallInterceptor",
+        "title": "卸载 Interceptor",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.interceptorStatus",
+        "title": "Interceptor 状态",
+        "category": "Windsurf小助手"
       }
     ],
     "configuration": {
@@ -135,6 +150,16 @@
           "type": "boolean",
           "default": true,
           "description": "切号时强制重新生成指纹 (默认开启)。关闭后将使用账号已绑定的指纹 (Per-Account 绑定模式)"
+        },
+        "wam.autoContinueOnRateLimit": {
+          "type": "boolean",
+          "default": true,
+          "description": "限流时自动切号并重试 (UI信号桥)"
+        },
+        "wam.l5ProbeEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用 L5 主动容量探测 (CheckUserMessageRateLimit)"
         }
       }
     }

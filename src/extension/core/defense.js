@@ -64,6 +64,29 @@ export function _classifyRateLimit(errorText, contextKey) {
   return 'unknown';
 }
 
+export function _parseResetSeconds(text) {
+  if (!text) return null;
+  const s = String(text);
+  const directSec = s.match(/(?:resets?|reset|try\s*again|retry)\s*(?:in|after)?[:\s]*(\d+)\s*(?:sec|secs|second|seconds|s)\b/i);
+  if (directSec) return parseInt(directSec[1], 10);
+  const directMin = s.match(/(?:resets?|reset|try\s*again|retry)\s*(?:in|after)?[:\s]*(\d+)\s*(?:min|mins|minute|minutes|m)\b/i);
+  if (directMin) return parseInt(directMin[1], 10) * 60;
+  const directHour = s.match(/(?:resets?|reset|try\s*again|retry)\s*(?:in|after)?[:\s]*(\d+)\s*(?:hr|hrs|hour|hours|h)\b/i);
+  if (directHour) return parseInt(directHour[1], 10) * 3600;
+  const combo = s.match(/(?:resets?|reset|try\s*again|retry)\s*(?:in|after)?[:\s]*(?:(\d+)\s*(?:hr|hrs|hour|hours|h))?\s*(?:(\d+)\s*(?:min|mins|minute|minutes|m))?\s*(?:(\d+)\s*(?:sec|secs|second|seconds|s))?/i);
+  if (combo && (combo[1] || combo[2] || combo[3])) {
+    return (parseInt(combo[1] || '0', 10) * 3600) +
+      (parseInt(combo[2] || '0', 10) * 60) +
+      parseInt(combo[3] || '0', 10);
+  }
+  const zhHour = s.match(/(?:重置|恢复|再试|重试)[^\d]*(\d+)\s*(?:小时|时)/);
+  if (zhHour) return parseInt(zhHour[1], 10) * 3600;
+  const zhMin = s.match(/(?:重置|恢复|再试|重试)[^\d]*(\d+)\s*(?:分钟|分)/);
+  if (zhMin) return parseInt(zhMin[1], 10) * 60;
+  if (ABOUT_HOUR_RE.test(s)) return 3600;
+  return null;
+}
+
 // ═══ 消息追踪 ═══
 
 /** 追踪每小时消息数(用于Gate 4预测) */
@@ -228,6 +251,7 @@ export function _invalidateApiKeyCache() {
 /** 主动调用CheckUserMessageRateLimit获取精确容量 */
 export async function _probeCapacity() {
   if (!S.auth || S.activeIndex < 0) return null;
+  if (!vscode.workspace.getConfiguration('wam').get('l5ProbeEnabled', true)) return null;
   const capacityState = _getCapacityState();
   if (!capacityState) return null;
 

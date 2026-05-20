@@ -67,6 +67,7 @@ import {
   enqueueRefreshAll,
   getRefreshQueueStatus,
 } from './core/refreshQueue.js';
+import { registerInterceptorCommands } from './ui/workbenchInjector.js';
 import {
   initUsageDiskCache,
   readDiskCacheEntry,
@@ -273,19 +274,19 @@ function _activate(context) {
   const savedPort = context.globalState.get("wam-proxy-port", 0);
   if (savedPort > 0) S.auth.setLastKnownPort(savedPort);
 
-  // 后台代理探测
+  // 后台代理探测 — _probeProxy 内部会优先尝试 TUN 直连
   setTimeout(() => {
     if (!S.auth) return;
     S.auth
       .reprobeProxy()
       .then((r) => {
-        if (r.port > 0) {
-          context.globalState.update("wam-proxy-mode", r.mode);
-          // Only persist port when actually using local proxy (relay mode port is stale/meaningless)
-          if (r.mode === "local") context.globalState.update("wam-proxy-port", r.port);
+        context.globalState.update("wam-proxy-mode", r.mode);
+        // Only persist port when actually using local proxy
+        if (r.mode === "local" && r.port > 0) {
+          context.globalState.update("wam-proxy-port", r.port);
         }
         _updatePoolBar();
-        _logInfo("代理", `探测完成 → 模式:${r.mode} 端口:${r.port}`);
+        _logInfo("代理", `探测完成 → 模式:${r.mode}${r.port > 0 ? ` 端口:${r.port}` : ''}`);
       })
       .catch((e) => {
         _logWarn("代理", "探测失败", e.message);
@@ -370,6 +371,8 @@ function _activate(context) {
     ),
   );
 
+  // ═══ Interceptor 命令注册 + 自动更新 ═══
+  registerInterceptorCommands(context);
   // ═══ 号池引擎启动 ═══
   _startPoolEngine(context);
   // ═══ 多窗口协调 (v6.3) ═══
@@ -815,6 +818,11 @@ async function _doSwitchMode(context) {
         label: "$(globe) 本地代理",
         description: `端口 ${status.port}`,
         value: "local",
+      },
+      {
+        label: "$(arrow-right) 直连 (TUN/VPN)",
+        description: "Clash TUN / 系统级 VPN — 跳过代理探测",
+        value: "direct",
       },
       { label: "$(cloud) 网络中转", description: "无需VPN", value: "relay" },
     ],

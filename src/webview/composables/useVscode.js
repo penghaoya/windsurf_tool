@@ -6,8 +6,12 @@ import { ref, reactive } from 'vue'
 import { ACTION, MSG } from '../../extension/shared/messageTypes.js'
 
 // acquireVsCodeApi 在 VS Code webview 环境中全局可用
+// 只能调用一次, 因此在此处获取并通过 window.__wamVscode 共享给信号桥脚本
 let _vscode = null
-try { _vscode = acquireVsCodeApi() } catch {}
+try {
+  _vscode = window.__wamVscode || acquireVsCodeApi()
+  window.__wamVscode = _vscode
+} catch {}
 
 /** 发送消息到 Extension Host */
 export function postMessage(type, data = {}) {
