@@ -298,6 +298,7 @@ function _activate(context) {
     S.am,
     S.auth,
     (action, arg) => _handleAction(context, action, arg),
+    context,
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

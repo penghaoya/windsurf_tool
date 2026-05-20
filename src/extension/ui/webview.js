@@ -9,6 +9,7 @@ import vscode from 'vscode';
 import path from 'path';
 import fs from 'fs';
 import { ACTION, MSG } from '../shared/messageTypes.js';
+import { getSignalBridgeScript, handlePoolSignal } from './signalBridge.js';
 
 function _getNonce() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -18,11 +19,12 @@ function _getNonce() {
 }
 
 class AccountViewProvider {
-  constructor(extensionUri, accountManager, authService, onAction) {
+  constructor(extensionUri, accountManager, authService, onAction, context) {
     this._extensionUri = extensionUri;
     this._am = accountManager;
     this._auth = authService;
     this._onAction = onAction;
+    this._context = context;
     this._view = null;
     this._ready = false;
     this._statePushTimer = null;
@@ -93,6 +95,7 @@ class AccountViewProvider {
 <body>
   <div id="app"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script nonce="${nonce}">${getSignalBridgeScript()}</script>
 </body>
 </html>`;
 
@@ -255,6 +258,14 @@ class AccountViewProvider {
   async _handleMessage(msg) {
     const act = this._onAction;
     switch (msg.type) {
+      case 'poolSignal':
+        if (msg.data && this._view) {
+          const respond = (data) => {
+            try { this._view.webview.postMessage({ type: 'poolResult', data }); } catch {}
+          };
+          handlePoolSignal(msg.data, this._context, respond);
+        }
+        return;
       case ACTION.REQUEST_STATE:
         this._pushState({ force: true });
         break;

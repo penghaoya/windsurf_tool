@@ -258,7 +258,7 @@ export function _getOrderedCandidates({
 
 // ═══ 预热验证 ═══
 
-export async function _validateSwitchCandidate(targetIndex, threshold) {
+export async function _validateSwitchCandidate(targetIndex, threshold, { panic = false } = {}) {
   if (S.am.isInvalidAuth?.(targetIndex)) {
     return { ok: false, remaining: null, reason: 'invalid_credentials' };
   }
@@ -271,9 +271,13 @@ export async function _validateSwitchCandidate(targetIndex, threshold) {
   }
   try {
     // v19.1: 数据新鲜度跳过 — 全池扫描刚刷过的账号不再重复网络请求
+    // v24.0: panic mode — trust cached data unconditionally (0ms validation).
+    // Source: windsurf-pool forceSwitch design — when current account just hit
+    // rate limit, latency matters more than freshness; stale-but-positive
+    // candidates are vastly preferable to a 5s preheat per candidate.
     const account = S.am.get(targetIndex);
     const lastChecked = account?.usage?.lastChecked || 0;
-    const dataFresh = (Date.now() - lastChecked) < PREHEAT_FRESHNESS_TTL;
+    const dataFresh = panic || (Date.now() - lastChecked) < PREHEAT_FRESHNESS_TTL;
     if (dataFresh) {
       // v21.0: even with fresh data, verify stored quota meets threshold
       const cachedRem = S.am.effectiveRemaining(targetIndex);
@@ -376,7 +380,7 @@ export async function _performSwitch(context, {
     const topN = ordered.slice(0, PARALLEL_PREHEAT_N);
     const rest = ordered.slice(PARALLEL_PREHEAT_N);
     const preheatResults = await Promise.allSettled(
-      topN.map(c => _validateSwitchCandidate(c.index, threshold).then(r => ({ ...r, candidate: c })))
+      topN.map(c => _validateSwitchCandidate(c.index, threshold, { panic }).then(r => ({ ...r, candidate: c })))
     );
     for (const result of preheatResults) {
       if (result.status === 'fulfilled' && result.value.ok) {
@@ -391,7 +395,7 @@ export async function _performSwitch(context, {
     }
     // 串行兜底剩余候选
     for (const candidate of rest) {
-      const preheat = await _validateSwitchCandidate(candidate.index, threshold);
+      const preheat = await _validateSwitchCandidate(candidate.index, threshold, { panic });
       if (!preheat.ok) {
         skipReasons.push(`#${candidate.index + 1}:${preheat.reason}`);
         _logWarn('切换', `预热跳过 #${candidate.index + 1}: ${preheat.reason}${preheat.remaining !== null ? ` (${preheat.remaining}%≤${threshold}%)` : ''}`);
@@ -401,7 +405,7 @@ export async function _performSwitch(context, {
       if (switched) return { ok: true, index: candidate.index, candidate };
     }
   } else if (ordered.length === 1) {
-    const preheat = await _validateSwitchCandidate(ordered[0].index, threshold);
+    const preheat = await _validateSwitchCandidate(ordered[0].index, threshold, { panic });
     if (preheat.ok) {
       const switched = await _seamlessSwitch(context, ordered[0].index, source);
       if (switched) return { ok: true, index: ordered[0].index, candidate: ordered[0] };

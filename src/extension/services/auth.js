@@ -1275,22 +1275,21 @@ class AuthService {
     // Falls back to one-shot generation if AccountManager not yet wired up.
     const fp = this._generateLoginFingerprint(email);
 
-    // v21.0: probe sequence — CheckUserLoginMethod (fast) → _devin-auth/connections (legacy fallback)
-    let conn = await this._checkUserLoginMethod(email, fp);
-    if (!conn || conn.method === null) {
-      const legacyData = await this._withNetworkRetry('Devin Auth connections', async () => {
-        const r = await this._httpsJson(
-          'https://windsurf.com/_devin-auth/connections',
-          'POST',
-          { product: 'windsurf', email },
-          undefined,
-          fp,
-        );
-        if (!r.ok) throw new Error(r.data?.error?.message || r.data?.detail || `HTTP ${r.status}`);
-        return r.data;
-      });
-      conn = AuthService._interpretConnections(legacyData);
-    }
+    // v24.0: skip CheckUserLoginMethod — it often returns {} (empty body) causing
+    // false-positive proxy circuit-breaking, and _devin-auth/connections is strictly
+    // more reliable (one step, always returns hasPassword). Saves ~500ms per login.
+    const legacyData = await this._withNetworkRetry('Devin Auth connections', async () => {
+      const r = await this._httpsJson(
+        'https://windsurf.com/_devin-auth/connections',
+        'POST',
+        { product: 'windsurf', email },
+        undefined,
+        fp,
+      );
+      if (!r.ok) throw new Error(r.data?.error?.message || r.data?.detail || `HTTP ${r.status}`);
+      return r.data;
+    });
+    const conn = AuthService._interpretConnections(legacyData);
     if (conn.method !== 'auth1' || !conn.hasPassword) {
       throw new Error('Devin Auth 不支持密码登录');
     }
@@ -2274,7 +2273,13 @@ class AuthService {
     if (!apiKey || !modelUid) return null;
     if (!PROXY_CHECKED) await this._probeProxy();
 
-    const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
+    // v24.0: include modelUid in the body so the server returns per-model
+    // capacity (parity with windsurf-pool/WindsurfAPI). Without it, the server
+    // falls back to account-level which returns NO_DATA for Trial accounts.
+    const body = {
+      metadata: AuthService._buildConnectMetadata(apiKey),
+      modelUid,
+    };
     const headers = {
       'Connect-Protocol-Version': '1',
     };
