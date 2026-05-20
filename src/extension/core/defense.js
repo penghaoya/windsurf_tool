@@ -297,6 +297,15 @@ export async function _probeCapacity() {
       capacityState.consecutiveNoData = (capacityState.consecutiveNoData || 0) + 1;
     }
 
+    // v25.0: track stable state — suppress aggressive polling when nothing changes
+    const prevResult = capacityState.lastResult;
+    if (prevResult && prevResult.messagesRemaining === result.messagesRemaining
+        && prevResult.maxMessages === result.maxMessages) {
+      capacityState._stableCount = (capacityState._stableCount || 0) + 1;
+    } else {
+      capacityState._stableCount = 0;
+    }
+
     capacityState.lastResult = result;
     const modelShort = modelUid.replace('claude-', '').replace(/-\d{4}.*$/, '');
 
@@ -312,7 +321,8 @@ export async function _probeCapacity() {
         _logInfo('L5探测', `消息上限: ${old} → ${result.maxMessages}条 (${modelShort})`);
       }
       // Log when remaining is low (≤5) or periodically every 30 probes
-      if (result.messagesRemaining <= 5) {
+      // v25.0: suppress repetitive logs when stable (same value 3+ times)
+      if (result.messagesRemaining <= 5 && capacityState._stableCount < 3) {
         _logInfo('L5探测', `⚠ 剩余${result.messagesRemaining}/${result.maxMessages}条 (${modelShort})`);
       } else if (S.capacityProbeCount % 30 === 0) {
         _logInfo('L5探测', `剩余${result.messagesRemaining}/${result.maxMessages}条 (${modelShort})`);
@@ -605,16 +615,28 @@ export function _startQuotaWatcher(context) {
     // L5 gRPC 探测 (Proto schema 变更时可通过 L5_ENABLED 开关禁用)
     if (!L5_ENABLED) return;
 
-    let interval = isThinking ? CAPACITY_CHECK_THINKING
-      : (_isBoost() || S.burstMode) ? CAPACITY_CHECK_FAST : CAPACITY_CHECK_INTERVAL;
+    const lastResult = capacityState.lastResult;
+    // v25.0: stable-state detection — when remaining == max (full capacity) or
+    // unchanged for 3+ probes, the account is idle. No need for aggressive polling.
+    const isFullCapacity = lastResult && lastResult.messagesRemaining >= 0
+      && lastResult.maxMessages > 0 && lastResult.messagesRemaining === lastResult.maxMessages;
+    const stableCount = capacityState._stableCount || 0;
+
+    let interval;
+    if (isFullCapacity || stableCount >= 3) {
+      // Idle/stable: use normal interval regardless of thinking model
+      interval = (_isBoost() || S.burstMode) ? CAPACITY_CHECK_FAST : CAPACITY_CHECK_INTERVAL;
+    } else {
+      interval = isThinking ? CAPACITY_CHECK_THINKING
+        : (_isBoost() || S.burstMode) ? CAPACITY_CHECK_FAST : CAPACITY_CHECK_INTERVAL;
+    }
     const noDataCount = capacityState.consecutiveNoData || 0;
     if (noDataCount >= L5_NODATA_SLOWDOWN_AFTER) {
       const slowFactor = Math.min(noDataCount - L5_NODATA_SLOWDOWN_AFTER + 1, 4);
       interval = Math.min(interval * (1 + slowFactor), L5_NODATA_MAX_INTERVAL);
     }
     // v16.0: 容量自适应 — 剩余消息越少,探测越频繁 (防止最后几条消息撞限流)
-    const lastResult = capacityState.lastResult;
-    if (lastResult && lastResult.messagesRemaining >= 0) {
+    if (lastResult && lastResult.messagesRemaining >= 0 && !isFullCapacity) {
       if (lastResult.messagesRemaining <= 2) interval = Math.min(interval, 3000);
       else if (lastResult.messagesRemaining <= 5) interval = Math.min(interval, 8000);
       else if (lastResult.messagesRemaining <= 10) interval = Math.min(interval, 15000);
