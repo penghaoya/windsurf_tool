@@ -51,6 +51,7 @@ import os from 'os';
 // helpers live in fingerprint.js (single source of truth for ID + http
 // profile) so the device IDs and the HTTP headers stay in lockstep.
 import { generateHttpProfile, httpProfileToHeaders } from './fingerprint.js';
+import { resolveModelProtoName } from '../shared/config.js';
 
 // v22.1: Shared direct HTTPS agent — bypasses VS Code's global proxy interceptor
 // VS Code patches https.globalAgent to route through its proxy settings.
@@ -1187,7 +1188,7 @@ class AuthService {
     'https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
   ];
 
-  async _windsurfPostAuth(auth1Token, fp = null) {
+  async _windsurfPostAuth(auth1Token, fp = null, accountId = '') {
     const protoBody = Buffer.concat([
       encodeProtoString(auth1Token, 1),
       encodeProtoString('', 2),
@@ -1195,6 +1196,7 @@ class AuthService {
     const protoHeaders = {
       Accept: 'application/proto',
       'X-Devin-Auth1-Token': auth1Token,
+      ...(accountId ? { 'X-Devin-Account-Id': accountId } : {}),
       ...(fp || { 'User-Agent': 'Mozilla/5.0' }),
     };
 
@@ -1212,6 +1214,7 @@ class AuthService {
     const jsonHeaders = {
       'X-Devin-Auth1-Token': auth1Token,
       'Connect-Protocol-Version': '1',
+      ...(accountId ? { 'X-Devin-Account-Id': accountId } : {}),
       ...(fp || { Referer: 'https://windsurf.com/editor/signin' }),
     };
     for (const url of AuthService.WINDSURF_POST_AUTH_URLS) {
@@ -1350,7 +1353,8 @@ class AuthService {
     });
     if (!login?.token) throw new Error('Devin Auth 返回空 token');
 
-    const postAuth = await this._withNetworkRetry('WindsurfPostAuth', () => this._windsurfPostAuth(login.token, fp));
+    // v25.0: pass user_id for X-Devin-Account-Id header (parity with windsurf-pool)
+    const postAuth = await this._withNetworkRetry('WindsurfPostAuth', () => this._windsurfPostAuth(login.token, fp, login.user_id || ''));
     if (!postAuth.sessionToken) throw new Error('WindsurfPostAuth 返回空 sessionToken');
 
     _li('登录', `${_emailPrefix} → devin-auth`);
@@ -1813,7 +1817,12 @@ class AuthService {
     if (!PROXY_CHECKED) await this._probeProxy();
 
     const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
-    const headers = { 'Connect-Protocol-Version': '1', Accept: 'application/json' };
+    // v25.0: x-devin-session-token for devin-auth compatibility (windsurf-pool parity)
+    const headers = {
+      'Connect-Protocol-Version': '1',
+      Accept: 'application/json',
+      'x-devin-session-token': apiKey,
+    };
 
     for (const url of AuthService.GET_USER_STATUS_URLS) {
       try {
@@ -1846,11 +1855,12 @@ class AuthService {
   }
 
   async _fetchPlanStatusJson(idToken) {
-    const body = { auth_token: idToken };
+    // v25.0: parity with windsurf-pool — includeTopUpStatus for overage balance,
+    // x-devin-session-token for devin-auth session tokens (old X-Auth-Token kept for firebase compat)
+    const body = { includeTopUpStatus: true };
     const headers = {
       'X-Auth-Token': idToken,
-      'User-Agent': 'Mozilla/5.0',
-      'x-client-version': 'Chrome/JsCore/11.0.0/FirebaseCore-web',
+      'x-devin-session-token': idToken,
       'Connect-Protocol-Version': '1',
     };
     const urls = [
@@ -1862,7 +1872,15 @@ class AuthService {
         const r = await this._httpsJson(url, 'POST', body, undefined, headers);
         if (r.ok) {
           const parsed = this._parsePlanStatusJson(r.data);
-          if (parsed) return parsed;
+          if (parsed) {
+            // v25.0: merge topUpStatus overage balance (parity with windsurf-pool)
+            const topUp = r.data?.topUpStatus || {};
+            const topUpBalance = topUp.overageBalanceMicros ?? topUp.balanceMicros;
+            if (topUpBalance !== undefined && topUpBalance !== null) {
+              parsed.extraBalance = Number(topUpBalance) / 1000000;
+            }
+            return parsed;
+          }
           // v22.5: 200 但 body 空/格式不符 — 通常是 token soft-expire 信号
           _warn('额度', `JSON GetPlanStatus ${new URL(url).hostname} → 200 but empty/invalid body (token likely expired)`);
           continue;
@@ -2319,9 +2337,11 @@ class AuthService {
     // v24.0: include modelUid in the body so the server returns per-model
     // capacity (parity with windsurf-pool/WindsurfAPI). Without it, the server
     // falls back to account-level which returns NO_DATA for Trial accounts.
+    // v25.0: resolve UID to proto name for accurate per-model check (windsurf-pool parity)
+    const protoModelUid = resolveModelProtoName(modelUid);
     const body = {
       metadata: AuthService._buildConnectMetadata(apiKey),
-      modelUid,
+      modelUid: protoModelUid,
     };
     const headers = {
       'Connect-Protocol-Version': '1',
@@ -2370,7 +2390,11 @@ class AuthService {
     if (!PROXY_CHECKED) await this._probeProxy();
 
     const body = { metadata: AuthService._buildConnectMetadata(apiKey) };
-    const headers = { 'Connect-Protocol-Version': '1' };
+    // v25.0: x-devin-session-token for devin-auth compatibility (windsurf-pool parity)
+    const headers = {
+      'Connect-Protocol-Version': '1',
+      'x-devin-session-token': apiKey,
+    };
 
     for (const url of AuthService.GET_USER_STATUS_URLS) {
       try {

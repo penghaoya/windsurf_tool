@@ -3,7 +3,7 @@
   "displayName": "Windsurf Tools",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.6.5",
+  "version": "2.6.6",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -81,6 +81,11 @@
       {
         "command": "wam.batchAdd",
         "title": "批量添加账号",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.oauthLogin",
+        "title": "浏览器授权登录 (Google/SSO)",
         "category": "Windsurf小助手"
       },
       {

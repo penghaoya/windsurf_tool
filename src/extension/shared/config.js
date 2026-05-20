@@ -143,6 +143,109 @@ export const SWE_FREE_FALLBACK = 'swe-1.5';  // 免费模型,不消耗 quota
 // ═══ L5容量探测间隔 ═══
 export const CAPACITY_CHECK_THINKING = 3000;
 
+// ═══ UID → Proto Name 模型映射 (v25.0, from windsurf-pool-7.7.0) ═══
+// CheckUserMessageRateLimit 需要 proto model name 才能返回精确 per-model 数据。
+// 数据来源: WindsurfAPI/src/models.js + GetUserStatus cascadeAllowedModelsConfig。
+export const UID_PROTO_MAP = {
+  // ── Claude ──
+  'claude-4-sonnet': 'MODEL_CLAUDE_4_SONNET',
+  'claude-4-sonnet-thinking': 'MODEL_CLAUDE_4_SONNET_THINKING',
+  'claude-4-opus': 'MODEL_CLAUDE_4_OPUS',
+  'claude-4-opus-thinking': 'MODEL_CLAUDE_4_OPUS_THINKING',
+  'claude-4-1-opus': 'MODEL_CLAUDE_4_1_OPUS',
+  'claude-4-1-opus-thinking': 'MODEL_CLAUDE_4_1_OPUS_THINKING',
+  'claude-4-5-haiku': 'MODEL_PRIVATE_11',
+  'claude-4-5-sonnet': 'MODEL_PRIVATE_2',
+  'claude-4-5-sonnet-thinking': 'MODEL_PRIVATE_3',
+  'claude-4-5-opus': 'MODEL_CLAUDE_4_5_OPUS',
+  'claude-4-5-opus-thinking': 'MODEL_CLAUDE_4_5_OPUS_THINKING',
+  'claude-sonnet-4-6': 'MODEL_PRIVATE_2',
+  'claude-sonnet-4-6-thinking': 'MODEL_PRIVATE_3',
+  'claude-opus-4-6': 'MODEL_CLAUDE_4_5_OPUS',
+  'claude-opus-4-6-thinking': 'MODEL_CLAUDE_4_5_OPUS_THINKING',
+  'claude-sonnet-4-6-1m': 'claude-sonnet-4-6-1m',
+  'claude-sonnet-4-6-thinking-1m': 'claude-sonnet-4-6-thinking-1m',
+  'claude-opus-4-6-1m': 'claude-opus-4-6-1m',
+  'claude-opus-4-6-thinking-1m': 'claude-opus-4-6-thinking-1m',
+  // ── GPT ──
+  'gpt-4o': 'MODEL_CHAT_GPT_4O_2024_08_06',
+  'gpt-4-1': 'MODEL_CHAT_GPT_4_1_2025_04_14',
+  'gpt-4-1-mini': 'MODEL_CHAT_GPT_4_1_MINI_2025_04_14',
+  'gpt-5': 'MODEL_PRIVATE_6',
+  'gpt-5-medium': 'MODEL_PRIVATE_7',
+  'gpt-5-high': 'MODEL_PRIVATE_8',
+  'gpt-5-codex': 'MODEL_CHAT_GPT_5_CODEX',
+  'gpt-5-nano': 'MODEL_GPT_5_NANO',
+  'gpt-5-2': 'MODEL_GPT_5_2_MEDIUM',
+  'gpt-5-2-none': 'MODEL_GPT_5_2_NONE',
+  'gpt-5-2-low': 'MODEL_GPT_5_2_LOW',
+  'gpt-5-2-high': 'MODEL_GPT_5_2_HIGH',
+  'gpt-5-2-xhigh': 'MODEL_GPT_5_2_XHIGH',
+  'gpt-5-1': 'MODEL_PRIVATE_12',
+  'gpt-5.4': 'gpt-5-4-low',
+  'gpt-5-4': 'gpt-5-4-low',
+  'gpt-5-4-none': 'gpt-5-4-none',
+  'gpt-5-4-low': 'gpt-5-4-low',
+  'gpt-5-4-medium': 'gpt-5-4-medium',
+  'gpt-5-4-high': 'gpt-5-4-high',
+  'gpt-5-4-xhigh': 'gpt-5-4-xhigh',
+  'gpt-5.4-mini': 'gpt-5-4-mini-low',
+  'gpt-5-4-mini-low': 'gpt-5-4-mini-low',
+  'gpt-5-4-mini-medium': 'gpt-5-4-mini-medium',
+  'gpt-5-4-mini-high': 'gpt-5-4-mini-high',
+  'gpt-5-4-mini-xhigh': 'gpt-5-4-mini-xhigh',
+  'gpt-5.5': 'gpt-5-5-low',
+  'gpt-5-5': 'gpt-5-5-low',
+  'gpt-5-5-none': 'gpt-5-5-none',
+  'gpt-5-5-low': 'gpt-5-5-low',
+  'gpt-5-5-medium': 'gpt-5-5-medium',
+  'gpt-5-5-high': 'gpt-5-5-high',
+  'gpt-5-5-xhigh': 'gpt-5-5-xhigh',
+  'gpt-5-5-review': 'gpt-5-5-review',
+  // ── O-series ──
+  'o3': 'MODEL_CHAT_O3',
+  'o3-high': 'MODEL_CHAT_O3_HIGH',
+  // ── Gemini ──
+  'gemini-2-5-pro': 'MODEL_GOOGLE_GEMINI_2_5_PRO',
+  'gemini-2-5-flash': 'MODEL_GOOGLE_GEMINI_2_5_FLASH',
+  'gemini-2-5-flash-thinking': 'MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING',
+  'gemini-3-0-flash': 'MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM',
+  'gemini-3-0-flash-low': 'MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW',
+  'gemini-3-0-flash-high': 'MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH',
+  'gemini-3-pro': 'gemini-3-pro',
+  'gemini-3.0-flash': 'gemini-3-0-flash',
+  'gemini-3-1-pro-low': 'gemini-3-1-pro-low',
+  'gemini-3-1-pro-high': 'gemini-3-1-pro-high',
+  'gemini-3.1-pro': 'gemini-3-1-pro-low',
+  'gemini-3-1-pro': 'gemini-3-1-pro-low',
+  // ── Grok ──
+  'grok-3': 'MODEL_XAI_GROK_3',
+  'grok-3-mini-thinking': 'MODEL_XAI_GROK_3_MINI_REASONING',
+  // ── SWE ──
+  'swe-1-5': 'MODEL_SWE_1_5_SLOW',
+  'swe-1-5-fast': 'MODEL_SWE_1_5',
+  'swe-1-6': 'MODEL_SWE_1_6',
+  'swe-1-6-fast': 'MODEL_SWE_1_6_FAST',
+  // ── GLM ──
+  'glm-4-7': 'MODEL_GLM_4_7',
+  'glm-5.1': 'glm-5-1',
+  'glm-5-1': 'glm-5-1',
+  // ── Kimi ──
+  'kimi-k2': 'MODEL_KIMI_K2',
+  'kimi-k2.5': 'kimi-k2-5',
+  'kimi-k2-5': 'kimi-k2-5',
+  'kimi-k2.6': 'kimi-k2-6',
+  'kimi-k2-6': 'kimi-k2-6',
+  // ── MiniMax ──
+  'minimax-m2-5': 'MODEL_MINIMAX_M2_1',
+};
+
+/** Resolve model UID to proto name for CheckUserMessageRateLimit */
+export function resolveModelProtoName(uid) {
+  if (!uid) return '';
+  return UID_PROTO_MAP[uid] || uid;
+}
+
 // ═══ L5容量探测 ═══
 export const L5_ENABLED = true;  // JSON Connect-RPC CheckUserMessageRateLimit (v20.0: 从 binary proto 迁移到 JSON, 参考 WindsurfAPI)
 export const CAPACITY_CHECK_INTERVAL = 45000;

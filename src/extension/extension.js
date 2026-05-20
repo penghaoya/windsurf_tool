@@ -35,6 +35,7 @@ import { createAuthInjector } from './services/authInjector.js';
 import { createActionHandler } from './ui/actions.js';
 import { _updatePoolBar as renderStatusBar } from './ui/statusbar.js';
 import { _doInitWorkspace } from './ui/wisdom.js';
+import { loginByWindsurfOAuth, setOAuthLogger } from './services/oauthService.js';
 
 import {
   S,
@@ -357,6 +358,7 @@ function _activate(context) {
       _doPoolRotate(context, true),
     ),
     vscode.commands.registerCommand("wam.batchAdd", () => _doBatchAdd()),
+    vscode.commands.registerCommand("wam.oauthLogin", () => _doOAuthLogin()),
     vscode.commands.registerCommand("wam.refreshAllCredits", () =>
       _doRefreshPool(context),
     ),
@@ -833,6 +835,41 @@ async function _doSwitchMode(context) {
     context.globalState.update("wam-proxy-mode", pick.value);
     _updatePoolBar();
     _refreshPanel();
+  }
+}
+
+async function _doOAuthLogin() {
+  setOAuthLogger(_logInfo, _logWarn);
+  try {
+    const result = await loginByWindsurfOAuth();
+    if (!result?.email || !result?.apiKey) {
+      vscode.window.showErrorMessage('OAuth 授权失败: 未获取到账号信息');
+      return { ok: false };
+    }
+    const existing = S.am.findByEmail(result.email);
+    if (existing) {
+      // Account already exists — update apiKey
+      S.am.setApiKey(existing.index, result.apiKey, 'oauth');
+      _logInfo('OAuth', `已有账号 apiKey 已更新: ${result.email}`);
+      vscode.window.showInformationMessage(`OAuth 授权成功，已更新: ${result.email}`);
+    } else {
+      // New account — add with placeholder password, then set apiKey
+      S.am.add(result.email, 'oauth_placeholder');
+      const added = S.am.findByEmail(result.email);
+      if (added) {
+        S.am.setApiKey(added.index, result.apiKey, 'oauth');
+      }
+      _logInfo('OAuth', `账号已添加: ${result.email}`);
+      vscode.window.showInformationMessage(`OAuth 授权成功: ${result.email}`);
+    }
+    _refreshPanel();
+    _updatePoolBar();
+    return { ok: true, email: result.email };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    _logWarn('OAuth', `授权失败: ${msg}`);
+    vscode.window.showErrorMessage(`OAuth 授权失败: ${msg}`);
+    return { ok: false, error: msg };
   }
 }
 

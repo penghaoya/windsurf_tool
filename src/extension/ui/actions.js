@@ -148,6 +148,8 @@ export function createActionHandler(helpers) {
         return _doPoolRotate(context, true);
       case 'batchAdd':
         return doBatchAdd(arg);
+      case 'oauthLogin':
+        return vscode.commands.executeCommand('wam.oauthLogin');
       case 'refreshAllAndRotate':
         return helpers.doRefreshPool(context);
       case 'getFingerprint':
