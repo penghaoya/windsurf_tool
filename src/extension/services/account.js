@@ -18,7 +18,7 @@ import { shouldAcceptUsageWrite } from '../shared/quota.js';
 // stay only in the primary file to avoid 3x I/O on every quota refresh.
 // apiKey/apiKeyAt/apiKeySource: persisted so quota refreshes can skip Firebase
 // login chain (windsurf-pool style: long-lived sessionToken → GetUserStatus).
-const PERSISTENT_FIELDS = ['email', 'password', 'addedAt', 'fingerprint', 'loginCount', 'selectionMode', 'apiKey', 'apiKeyAt', 'apiKeySource'];
+const PERSISTENT_FIELDS = ['email', 'password', 'addedAt', 'fingerprint', 'loginCount', 'selectionMode', 'apiKey', 'apiKeyAt', 'apiKeySource', 'accountId', 'primaryOrgId'];
 
 function _extractPersistent(account) {
   const out = {};
@@ -785,18 +785,51 @@ class AccountManager {
    *  Returns: { added, skipped, errors, total, accounts: [{email, password}] } */
   addBatch(text) {
     const pairs = AccountManager.parseAccounts(text);
-    let added = 0, skipped = 0;
+    let added = 0, skipped = 0, updated = 0;
     const addedAccounts = [];
     const existingEmails = new Set(this._accounts.map(a => a.email?.toLowerCase()));
-    for (const {email, password} of pairs) {
-      if (existingEmails.has(email.toLowerCase())) { skipped++; continue; }
+    for (const entry of pairs) {
+      const { email, password } = entry;
+      // v25.0: pre-authed JSON accounts carry sessionToken/accountId/primaryOrgId
+      const hasPreAuth = !!(entry.sessionToken || entry.auth1Token);
+
+      if (existingEmails.has(email.toLowerCase())) {
+        // Existing account — update apiKey/metadata if pre-authed data is fresher
+        if (hasPreAuth) {
+          const idx = this._accounts.findIndex(a => a.email?.toLowerCase() === email.toLowerCase());
+          if (idx >= 0) {
+            const a = this._accounts[idx];
+            if (entry.sessionToken) {
+              a.apiKey = entry.sessionToken;
+              a.apiKeyAt = Date.now();
+              a.apiKeySource = 'imported_session';
+            }
+            if (entry.accountId) a.accountId = entry.accountId;
+            if (entry.primaryOrgId) a.primaryOrgId = entry.primaryOrgId;
+            if (password && password !== a.password) a.password = password;
+            updated++;
+          }
+        } else {
+          skipped++;
+        }
+        continue;
+      }
       existingEmails.add(email.toLowerCase());
-      this._accounts.push({ email, password, credits: undefined, loginCount: 0, addedAt: Date.now() });
-      addedAccounts.push({email, password});
+      const newAccount = { email, password: password || '', credits: undefined, loginCount: 0, addedAt: Date.now() };
+      // v25.0: persist pre-auth fields — sessionToken as apiKey, skip login chain
+      if (entry.sessionToken) {
+        newAccount.apiKey = entry.sessionToken;
+        newAccount.apiKeyAt = Date.now();
+        newAccount.apiKeySource = 'imported_session';
+      }
+      if (entry.accountId) newAccount.accountId = entry.accountId;
+      if (entry.primaryOrgId) newAccount.primaryOrgId = entry.primaryOrgId;
+      this._accounts.push(newAccount);
+      addedAccounts.push(entry);
       added++;
     }
-    if (added > 0) { this._markPersistent(); this._save(); this._notify(); }
-    return { added, skipped, errors: 0, total: pairs.length, accounts: addedAccounts };
+    if (added > 0 || updated > 0) { this._markPersistent(); this._save(); this._notify(); }
+    return { added, skipped, updated, errors: 0, total: pairs.length, accounts: addedAccounts };
   }
 
   /** Universal account format parser (static, testable)
@@ -819,6 +852,8 @@ class AccountManager {
       apiKey: a.apiKey || null,
       apiKeyAt: a.apiKeyAt || null,
       apiKeySource: a.apiKeySource || null,
+      accountId: a.accountId || null,
+      primaryOrgId: a.primaryOrgId || null,
     }));
   }
 
@@ -852,7 +887,7 @@ class AccountManager {
     if (!Array.isArray(externalAccounts)) return { added: 0, updated: 0, unchanged: 0, total: this._accounts.length };
     let added = 0, updated = 0, unchanged = 0;
     for (const ext of externalAccounts) {
-      if (!ext.email || !ext.password) { unchanged++; continue; }
+      if (!ext.email || (!ext.password && !ext.apiKey)) { unchanged++; continue; }
       const extLower = ext.email.toLowerCase();
       const idx = this._accounts.findIndex(a => a.email && a.email.toLowerCase() === extLower);
       if (idx < 0) {
@@ -870,6 +905,8 @@ class AccountManager {
           newAccount.apiKeyAt = ext.apiKeyAt || Date.now();
           newAccount.apiKeySource = ext.apiKeySource || 'imported';
         }
+        if (ext.accountId) newAccount.accountId = ext.accountId;
+        if (ext.primaryOrgId) newAccount.primaryOrgId = ext.primaryOrgId;
         this._accounts.push(newAccount);
         added++;
       } else {
@@ -904,6 +941,9 @@ class AccountManager {
           local.apiKeySource = ext.apiKeySource || 'sync';
           changed = true;
         }
+        // v25.0: sync accountId/primaryOrgId
+        if (ext.accountId && !local.accountId) { local.accountId = ext.accountId; changed = true; }
+        if (ext.primaryOrgId && !local.primaryOrgId) { local.primaryOrgId = ext.primaryOrgId; changed = true; }
         // Sync rate limit state (remote RL always wins if still active)
         if (ext.rateLimit && ext.rateLimit.until > Date.now() && !local.rateLimit) {
           local.rateLimit = ext.rateLimit;

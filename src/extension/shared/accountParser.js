@@ -1,6 +1,11 @@
 /** Universal account format parser.
- *  Shared by Extension Host and Webview so previews match real imports. */
+ *  Shared by Extension Host and Webview so previews match real imports.
+ *  v25.0: supports JSON objects/arrays with sessionToken (pre-authed accounts). */
 export function parseAccounts(text = '') {
+  // v25.0: Try JSON parse first — supports single object or array of objects
+  const jsonResult = _tryParseJson(text);
+  if (jsonResult.length > 0) return jsonResult;
+
   const lines = String(text).split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
   const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
   const LABEL_EMAIL_RE = /^(?:卡号\d*|账号|邮箱|email|account|用户名?)\s*[:：\s]\s*(.+)/i;
@@ -52,6 +57,34 @@ export function parseAccounts(text = '') {
   }
   for (let i = 0; i < Math.min(emailLines.length, passLines.length); i++) {
     results.push({ email: emailLines[i], password: passLines[i] });
+  }
+  return results;
+}
+
+/** v25.0: Parse JSON account format — single object or array.
+ *  Recognized fields: email, password, sessionToken, auth1Token, accountId, primaryOrgId.
+ *  Returns enriched objects; downstream addBatch uses extra fields for apiKey/metadata. */
+function _tryParseJson(text) {
+  const trimmed = String(text).trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return [];
+  let parsed;
+  try { parsed = JSON.parse(trimmed); } catch { return []; }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  const results = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const email = (item.email || item.Email || '').trim();
+    if (!email || !email.includes('@')) continue;
+    const entry = {
+      email,
+      password: (item.password || item.Password || '').trim(),
+    };
+    // Carry pre-auth tokens so addBatch can persist them
+    if (item.sessionToken) entry.sessionToken = item.sessionToken;
+    if (item.auth1Token) entry.auth1Token = item.auth1Token;
+    if (item.accountId) entry.accountId = item.accountId;
+    if (item.primaryOrgId) entry.primaryOrgId = item.primaryOrgId;
+    results.push(entry);
   }
   return results;
 }

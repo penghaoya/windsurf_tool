@@ -885,9 +885,16 @@ async function _doBatchAdd(textFromWebview) {
   if (!text) return { added: 0, skipped: 0 };
 
   const result = S.am.addBatch(text);
-  if (result.added > 0) {
-    _logInfo("批量添加", `已添加${result.added}个账号(智能解析)`);
-    result.validation = _enqueueBatchImportValidation(result.accounts);
+  if (result.added > 0 || result.updated > 0) {
+    const parts = [];
+    if (result.added > 0) parts.push(`添加${result.added}个`);
+    if (result.updated > 0) parts.push(`更新${result.updated}个`);
+    _logInfo("批量添加", `已${parts.join('+')}账号(智能解析)`);
+    // Pre-authed accounts (with sessionToken) skip login validation — they're ready to use
+    const needsValidation = result.accounts.filter(a => !a.sessionToken);
+    if (needsValidation.length > 0) {
+      result.validation = _enqueueBatchImportValidation(needsValidation);
+    }
   }
   _refreshPanel();
   return result;
