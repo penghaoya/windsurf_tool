@@ -70,6 +70,11 @@ import {
 } from './core/refreshQueue.js';
 import { registerInterceptorCommands } from './ui/workbenchInjector.js';
 import {
+  installCascadeMonitor,
+  uninstallCascadeMonitor,
+  getCascadeMonitorStatus,
+} from './core/cascadeMonitor.js';
+import {
   initUsageDiskCache,
   readDiskCacheEntry,
   writeDiskCacheEntry,
@@ -375,6 +380,28 @@ function _activate(context) {
 
   // ═══ Interceptor 命令注册 + 自动更新 ═══
   registerInterceptorCommands(context);
+
+  // ═══ Cascade Monitor — 双层信号拦截 (in-process, ai-switch 风格) ═══
+  context.subscriptions.push(
+    vscode.commands.registerCommand('wam.toggleCascadeMonitor', async () => {
+      const status = getCascadeMonitorStatus();
+      if (status.installed) {
+        uninstallCascadeMonitor();
+        vscode.window.showInformationMessage('Cascade Monitor 已关闭');
+      } else {
+        await installCascadeMonitor(context);
+        vscode.window.showInformationMessage('Cascade Monitor 已开启');
+      }
+    }),
+    vscode.commands.registerCommand('wam.cascadeMonitorStatus', () => {
+      const s = getCascadeMonitorStatus();
+      vscode.window.showInformationMessage(
+        `Cascade Monitor: ${s.installed ? '运行中' : '未安装'} | Layer1(Hook)=${s.layer1 ? '✓' : '✗'} Layer2(Net)=${s.layer2 ? '✓' : '✗'}`,
+      );
+    }),
+  );
+  installCascadeMonitor(context).catch(e => _logWarn('CascadeMonitor', `启动失败: ${e.message}`));
+
   // ═══ 号池引擎启动 ═══
   _startPoolEngine(context);
   // ═══ 多窗口协调 (v6.3) ═══

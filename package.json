@@ -3,7 +3,7 @@
   "displayName": "Windsurf Tools",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.6.8",
+  "version": "2.7.3",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
@@ -122,6 +122,16 @@
         "command": "wam.interceptorStatus",
         "title": "Interceptor 状态",
         "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.toggleCascadeMonitor",
+        "title": "切换 Cascade Monitor (限流自动换号)",
+        "category": "Windsurf小助手"
+      },
+      {
+        "command": "wam.cascadeMonitorStatus",
+        "title": "Cascade Monitor 状态",
+        "category": "Windsurf小助手"
       }
     ],
     "configuration": {
@@ -165,6 +175,16 @@
           "type": "boolean",
           "default": true,
           "description": "启用 L5 主动容量探测 (CheckUserMessageRateLimit)"
+        },
+        "wam.cascadeMonitorEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用 Cascade Monitor 双层信号拦截 (Hook codeium.windsurf prototype + 全局 fetch/http)，限流时自动 panic 切号"
+        },
+        "wam.cascadeMonitorVerbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Cascade Monitor 详细日志模式：打印每个流式 chunk 的结构与预览、所有目标 host 的请求/响应。仅用于排查，会刷屏"
         }
       }
     }
