@@ -111,22 +111,111 @@ export function getWorkbenchInterceptorScript() {
   var lastSignalTs = 0;
   var MIN_SIGNAL_GAP = 5000;
 
+  function matchPattern(text) {
+    if (!text) return false;
+    for (var j = 0; j < RATE_LIMIT_PATTERNS.length; j++) {
+      if (RATE_LIMIT_PATTERNS[j].test(text)) return true;
+    }
+    return false;
+  }
+
   function checkForRateLimit() {
     try {
       var messages = document.querySelectorAll(
-        '.error-message, .cascade-error, [class*="error"], [class*="warning"]'
+        '.error-message, .cascade-error, [class*="error"], [class*="warning"], [class*="rate-limit"]'
       );
-      for (var i = messages.length - 1; i >= Math.max(0, messages.length - 5); i--) {
+      for (var i = messages.length - 1; i >= Math.max(0, messages.length - 8); i--) {
         var text = messages[i].textContent || '';
-        for (var j = 0; j < RATE_LIMIT_PATTERNS.length; j++) {
-          if (RATE_LIMIT_PATTERNS[j].test(text)) {
-            emitSignal(text);
-            return;
-          }
-        }
+        if (matchPattern(text)) { emitSignal(text); return; }
       }
+      // Fallback: scan recent text nodes near bottom of cascade panel.
+      var bodyText = (document.body && document.body.innerText) || '';
+      if (bodyText.length > 4000) bodyText = bodyText.slice(-4000);
+      if (matchPattern(bodyText)) emitSignal(bodyText.slice(-500));
     } catch(e) {}
   }
+
+  // Hook window.fetch — primary path. Cascade UI in renderer hits server.codeium.com
+  // and the local LS HTTP/2 endpoint via fetch; streaming bodies are clone()-able.
+  // why: this catches rate-limit errors at the network layer before they render.
+  try {
+    var origFetch = window.fetch;
+    if (typeof origFetch === 'function' && !window.__wamFetchHooked) {
+      window.__wamFetchHooked = true;
+      window.fetch = function() {
+        var p = origFetch.apply(this, arguments);
+        try {
+          var url = arguments[0];
+          var urlStr = typeof url === 'string' ? url : (url && (url.url || url.href)) || '';
+          var isTarget = /codeium\\.com|windsurf\\.com|localhost|127\\.0\\.0\\.1/i.test(urlStr);
+          if (!isTarget) return p;
+          return p.then(function(resp) {
+            try {
+              if (!resp || !resp.clone) return resp;
+              var clone = resp.clone();
+              var rdr = clone.body && clone.body.getReader && clone.body.getReader();
+              if (!rdr) return resp;
+              var dec = new TextDecoder();
+              var acc = '';
+              var hit = false;
+              function pump() {
+                rdr.read().then(function(r) {
+                  if (r.done || hit) return;
+                  try {
+                    var t = dec.decode(r.value, { stream: true });
+                    acc += t;
+                    if (acc.length > 16384) acc = acc.slice(-16384);
+                    if (matchPattern(t) || matchPattern(acc)) {
+                      hit = true;
+                      emitSignal(t || acc.slice(-500));
+                      return;
+                    }
+                  } catch(e) {}
+                  pump();
+                }).catch(function(){});
+              }
+              pump();
+            } catch(e) {}
+            return resp;
+          }, function(err) {
+            try { if (err && matchPattern(err.message || String(err))) emitSignal(err.message || String(err)); } catch(e) {}
+            throw err;
+          });
+        } catch(e) {}
+        return p;
+      };
+    }
+  } catch(e) {}
+
+  // Hook XMLHttpRequest — fallback path for non-fetch HTTP clients.
+  try {
+    var XHR = window.XMLHttpRequest;
+    if (XHR && XHR.prototype && !XHR.prototype.__wamHooked) {
+      XHR.prototype.__wamHooked = true;
+      var origOpen = XHR.prototype.open;
+      var origSend = XHR.prototype.send;
+      XHR.prototype.open = function(method, url) {
+        try { this.__wamUrl = url; } catch(e) {}
+        return origOpen.apply(this, arguments);
+      };
+      XHR.prototype.send = function() {
+        try {
+          var self = this;
+          var url = self.__wamUrl || '';
+          if (/codeium\\.com|windsurf\\.com|localhost|127\\.0\\.0\\.1/i.test(url)) {
+            self.addEventListener('load', function() {
+              try {
+                var txt = '';
+                try { txt = self.responseText || ''; } catch(e) {}
+                if (matchPattern(txt)) emitSignal(txt.slice(0, 500));
+              } catch(e) {}
+            });
+          }
+        } catch(e) {}
+        return origSend.apply(this, arguments);
+      };
+    }
+  } catch(e) {}
 
   function emitSignal(errorText) {
     var now = Date.now();

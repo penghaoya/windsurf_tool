@@ -221,18 +221,47 @@ export function registerInterceptorCommands(context) {
     }),
   );
 
-  // Auto-check on startup: if injected but outdated, prompt update
+  // Auto-install/auto-update on startup.
+  // why: workbench.html injection is the ONLY reliable signal path for Cascade
+  // rate-limit detection (extension host can't see renderer fetch nor LS gRPC
+  // child-process traffic). If we don't auto-install, users get a non-functional
+  // panic-switch by default. Behavior:
+  //   - not injected      → install + prompt reload
+  //   - injected, outdated → re-install + prompt reload
+  //   - injected, current  → no-op
+  // Respects wam.cascadeMonitorEnabled to allow opting out.
+  const enabled = vscode.workspace.getConfiguration('wam').get('cascadeMonitorEnabled', true);
+  if (!enabled) {
+    _logInfo('注入器', '跳过自动注入 (wam.cascadeMonitorEnabled=false)');
+    return;
+  }
   const status = getInjectionStatus();
-  if (status.injected && status.needsUpdate) {
-    _logInfo('注入器', `Interceptor 版本过期 (${status.hash} → ${status.currentHash})，自动更新...`);
-    const result = installInterceptor();
-    if (result.needRestart) {
-      vscode.window.showInformationMessage(
-        'WAM: Interceptor 已自动更新，重启后生效。',
-        '立即重启',
-      ).then(action => {
-        if (action === '立即重启') vscode.commands.executeCommand('workbench.action.reloadWindow');
-      });
-    }
+  if (!status.path) {
+    _logWarn('注入器', '未找到 workbench.html — 跳过自动注入');
+    return;
+  }
+  if (status.injected && !status.needsUpdate) {
+    _logInfo('注入器', `Interceptor 已就绪 (hash=${status.hash})`);
+    return;
+  }
+  const reason = !status.injected ? '首次部署' : `版本升级 ${status.hash}→${status.currentHash}`;
+  _logInfo('注入器', `自动注入 — ${reason}`);
+  const result = installInterceptor();
+  if (result.error) {
+    _logError('注入器', `自动注入失败: ${result.error}`);
+    vscode.window.showWarningMessage(
+      `WAM: Interceptor 自动注入失败 — ${result.error}。限流自动切号/重试功能不可用，请手动运行 "WAM: 安装 Interceptor"。`,
+    );
+    return;
+  }
+  if (result.needRestart) {
+    _logInfo('注入器', `${reason}完成，等待重启`);
+    vscode.window.showInformationMessage(
+      `WAM: Interceptor 已${status.injected ? '更新' : '注入'}到 workbench.html，重启窗口后限流自动切号即可生效。`,
+      '立即重启',
+      '稍后',
+    ).then(action => {
+      if (action === '立即重启') vscode.commands.executeCommand('workbench.action.reloadWindow');
+    });
   }
 }

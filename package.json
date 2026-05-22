@@ -3,7 +3,7 @@
   "displayName": "Windsurf Tools",
   "publisher": "labubu",
   "description": "无感切换账号",
-  "version": "2.7.3",
+  "version": "2.7.6",
   "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
